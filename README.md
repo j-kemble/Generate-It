@@ -6,7 +6,57 @@ It can generate either:
 - **Random characters** (choose a length and character categories)
 - **Random words** separated by hyphens (a passphrase)
 
-## Run
+## Install
+
+### From source (recommended for now)
+
+```bash
+python3 -m venv .venv
+
+# Linux/macOS
+source .venv/bin/activate
+
+# Windows (PowerShell)
+# .\.venv\Scripts\Activate.ps1
+
+pip install -e .
+```
+
+Windows note: the full-screen TUI uses curses. If you’re on Windows and want the TUI, install with:
+
+```bash
+pip install -e ".[tui]"
+```
+
+(Otherwise you can always run `generate-it --cli`.)
+
+Then run:
+
+```bash
+generate-it
+```
+
+### From GitHub
+
+```bash
+python3 -m venv .venv
+
+# Linux/macOS
+source .venv/bin/activate
+
+# Windows (PowerShell)
+# .\.venv\Scripts\Activate.ps1
+
+pip install git+https://github.com/j-kemble/Generate-It.git
+```
+
+Then run:
+
+```bash
+generate-it
+```
+
+## Run (without installing)
 
 ```bash
 python3 main.py
@@ -16,14 +66,6 @@ If you prefer a simple prompt-based mode (no curses):
 
 ```bash
 python3 main.py --cli
-```
-
-Optional (recommended): use a virtual environment.
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python main.py
 ```
 
 ## TUI controls
@@ -56,6 +98,15 @@ python main.py
 
 ## Custom word list
 
-The included `wordlist.txt` contains **1000** lowercase words.
+The included word list contains **1000** lowercase words.
 
-Edit `wordlist.txt` to customize which words can appear in passphrases.
+Override the word list in one of these ways (highest priority first):
+
+1) Set `GENERATE_IT_WORDLIST` to a file path
+2) Put a `wordlist.txt` in your current working directory
+
+Otherwise, Generate It uses the bundled default word list.
+
+## License
+
+Generate It is licensed under the **GNU Affero General Public License v3.0 or later** (**AGPL-3.0-or-later**). See `LICENSE`.

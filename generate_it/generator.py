@@ -6,6 +6,7 @@ This module is UI-agnostic: both the curses TUI and any CLI wrapper can use it.
 from __future__ import annotations
 
 from pathlib import Path
+import os
 import secrets
 import string
 
@@ -22,8 +23,12 @@ SPECIAL_CHARACTERS = "!@#$%^&*()-_=+[]{};:,.?/"
 # Used when the user asks to add special characters to a passphrase.
 PASSPHRASE_SPECIALS = "!@#$%&*?"
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-WORDLIST_PATH = PROJECT_ROOT / "wordlist.txt"
+# Wordlist lookup order:
+# 1) explicit `path` argument
+# 2) $GENERATE_IT_WORDLIST
+# 3) ./wordlist.txt (current working directory)
+# 4) packaged default: generate_it/wordlist.txt
+PACKAGED_WORDLIST_PATH = Path(__file__).with_name("wordlist.txt")
 
 DEFAULT_WORDLIST = [
     # Small built-in fallback list (you can expand by editing wordlist.txt).
@@ -63,25 +68,51 @@ def secure_shuffle(items: list[str]) -> None:
         items[i], items[j] = items[j], items[i]
 
 
+def _dedupe_preserve_order(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for x in items:
+        if x in seen:
+            continue
+        seen.add(x)
+        out.append(x)
+    return out
+
+
 def load_wordlist(path: Path | None = None) -> list[str]:
-    """Load passphrase words from `wordlist.txt`.
+    """Load passphrase words.
+
+    Source order:
+    1) explicit `path`
+    2) $GENERATE_IT_WORDLIST
+    3) ./wordlist.txt (current working directory)
+    4) packaged default (generate_it/wordlist.txt)
 
     Lines starting with `#` and blank lines are ignored.
     Falls back to a small built-in list if the file is missing or too small.
     """
 
-    path = WORDLIST_PATH if path is None else path
+    if path is None:
+        env_path = os.environ.get("GENERATE_IT_WORDLIST")
+        if env_path:
+            path = Path(env_path).expanduser()
+        else:
+            cwd_path = Path.cwd() / "wordlist.txt"
+            path = cwd_path if cwd_path.exists() else PACKAGED_WORDLIST_PATH
 
     if not path.exists():
         return DEFAULT_WORDLIST
 
     words: list[str] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
         w = line.strip()
         if not w or w.startswith("#"):
             continue
         words.append(w)
 
+    words = _dedupe_preserve_order(words)
+
+    # If the file is empty or nearly empty, fall back to the built-in list.
     return words if len(words) >= 10 else DEFAULT_WORDLIST
 
 
