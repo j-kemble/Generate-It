@@ -23,6 +23,9 @@ classifiers = [
 # On Windows, the TUI requires a curses implementation. The CLI works without it.
 tui = ["windows-curses; platform_system == 'Windows'"]
 
+# Test suite dependencies (not required to run the app).
+test = ["pytest>=7"]
+
 [project.scripts]
 generate-it = "generate_it.__main__:main"
 
@@ -34,3 +37,6 @@ packages = ["generate_it"]
 
 [tool.setuptools.package-data]
 generate_it = ["wordlist.txt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
