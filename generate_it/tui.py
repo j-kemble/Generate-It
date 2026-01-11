@@ -346,7 +346,7 @@ def _add_gradient(
 
 @dataclass
 class AppState:
-    mode: str = "chars"  # "chars" or "words"
+    mode: str = "chars"  # "chars", "words", or "username"
 
     char_length: int = 12
     use_letters: bool = True
@@ -357,19 +357,39 @@ class AppState:
     add_numbers: bool = True
     add_special: bool = False
 
+    # Username settings
+    username_style: str = "adjective"  # "adjective", "random", or "words"
+    username_length: int = 12
+    username_separator: str = "_"  # "_" or "-"
+    username_word_count: int = 2
+    username_add_numbers: bool = True
+
     output: str = ""
     seen_passphrases: set[str] = field(default_factory=set)
+    seen_usernames: set[str] = field(default_factory=set)
 
     message: str = "Press Enter (or g) to generate."
     focus_index: int = 0
 
 
 def _focus_items(state: AppState) -> list[str]:
-    items = ["mode_chars", "mode_words"]
+    items = ["mode_chars", "mode_words", "mode_username"]
     if state.mode == "chars":
         items += ["char_length", "letters", "numbers", "special", "generate"]
-    else:
+    elif state.mode == "words":
         items += ["word_count", "add_numbers", "add_special", "generate"]
+    else:  # username
+        items += ["username_style", "generate"]
+        if state.username_style == "adjective":
+            items.insert(-1, "username_add_numbers")
+            items.insert(-1, "username_separator")
+        elif state.username_style == "random":
+            items.insert(-1, "username_length")
+            items.insert(-1, "username_separator")
+        else:  # words
+            items.insert(-1, "username_word_count")
+            items.insert(-1, "username_add_numbers")
+            items.insert(-1, "username_separator")
     return items
 
 
@@ -501,6 +521,7 @@ def _render_mode_box(
     opts = [
         ("mode_chars", f"{_radio(state.mode == 'chars')} Random characters"),
         ("mode_words", f"{_radio(state.mode == 'words')} Random words (passphrase)"),
+        ("mode_username", f"{_radio(state.mode == 'username')} Random username"),
     ]
 
     row = y + 1
@@ -524,7 +545,12 @@ def _render_settings_box(
     state: AppState,
     focus_id: str,
 ) -> None:
-    title = "SETTINGS • characters" if state.mode == "chars" else "SETTINGS • words"
+    if state.mode == "chars":
+        title = "SETTINGS • characters"
+    elif state.mode == "words":
+        title = "SETTINGS • words"
+    else:
+        title = "SETTINGS • username"
     _draw_box(stdscr, y, x, h, w, title=title, border_attr=theme.border, title_attr=theme.title)
 
     inner_w = max(0, w - 4)
@@ -571,7 +597,7 @@ def _render_settings_box(
         count = _selected_category_count(state)
         _addstr_safe(stdscr, row, x + 2, f"Selected: {count}"[:inner_w], theme.ok)
 
-    else:
+    elif state.mode == "words":
         bar_w = max(10, inner_w - 22)
         bar = _bar(
             state.word_count - generator.MIN_PASSPHRASE_WORDS,
@@ -606,6 +632,73 @@ def _render_settings_box(
             "Numbers/specials are inserted into random words."[:inner_w],
             theme.dim,
         )
+
+    else:  # username mode
+        _addstr_safe(stdscr, row, x + 2, "Style:"[:inner_w], theme.dim)
+        row += 1
+
+        styles = [
+            ("username_style_adj", "Adjective + Noun", state.username_style == "adjective"),
+            ("username_style_rand", "Random chars", state.username_style == "random"),
+            ("username_style_words", "Multiple words", state.username_style == "words"),
+        ]
+
+        for cid, label, selected in styles:
+            mark = "[*]" if selected else "[ ]"
+            attr = theme.focus if focus_id == "username_style" else 0
+            _addstr_safe(stdscr, row, x + 2, f"{mark} {label}"[:inner_w], attr)
+            row += 1
+
+        row += 1
+
+        if state.username_style == "random":
+            bar_w = max(10, inner_w - 22)
+            bar = _bar(
+                state.username_length - generator.MIN_USERNAME_LENGTH,
+                generator.MAX_USERNAME_LENGTH - generator.MIN_USERNAME_LENGTH,
+                bar_w,
+            )
+            _line(
+                "Length",
+                f"[{bar}] {state.username_length}",
+                focus_id == "username_length",
+            )
+
+        elif state.username_style == "words":
+            bar_w = max(10, inner_w - 22)
+            bar = _bar(
+                state.username_word_count - generator.MIN_USERNAME_WORDS,
+                generator.MAX_USERNAME_WORDS - generator.MIN_USERNAME_WORDS,
+                bar_w,
+            )
+            _line(
+                "Words",
+                f"[{bar}] {state.username_word_count}",
+                focus_id == "username_word_count",
+            )
+
+        row += 1
+
+        # Separator (for all styles except random-only)
+        if state.username_style != "random":
+            sep_opts = [
+                ("username_separator_u", "Underscore", state.username_separator == "_"),
+                ("username_separator_h", "Hyphen", state.username_separator == "-"),
+            ]
+            for cid, label, selected in sep_opts:
+                mark = "[*]" if selected else "[ ]"
+                attr = theme.focus if focus_id == "username_separator" else 0
+                _addstr_safe(stdscr, row, x + 2, f"{mark} {label}"[:inner_w], attr)
+                row += 1
+
+            row += 1
+
+        # Numbers option (for adjective and words)
+        if state.username_style in {"adjective", "words"}:
+            mark = "[x]" if state.username_add_numbers else "[ ]"
+            attr = theme.focus if focus_id == "username_add_numbers" else 0
+            _addstr_safe(stdscr, row, x + 2, f"{mark} Add numbers"[:inner_w], attr)
+            row += 1
 
 
 def _render_actions_box(
@@ -763,22 +856,46 @@ def _generate(state: AppState, words: list[str]) -> None:
                 state.message = "Generated password."
             return
 
-        # Avoid repeating the same passphrase during a single run of the program.
-        for _ in range(200):
-            candidate = generator.generate_passphrase(
-                state.word_count,
-                add_numbers=state.add_numbers,
-                add_special=state.add_special,
+        if state.mode == "words":
+            # Avoid repeating the same passphrase during a single run of the program.
+            for _ in range(200):
+                candidate = generator.generate_passphrase(
+                    state.word_count,
+                    add_numbers=state.add_numbers,
+                    add_special=state.add_special,
+                    words=words,
+                )
+                if candidate not in state.seen_passphrases:
+                    state.seen_passphrases.add(candidate)
+                    state.output = candidate
+                    state.message = "Generated passphrase."
+                    return
+
+            state.message = "Unable to generate a unique passphrase (too many already generated)."
+            curses.beep()
+            return
+
+        # Username mode
+        if state.username_style == "adjective":
+            username = generator.generate_username_adjective_noun(
+                add_numbers=state.username_add_numbers,
+                separator=state.username_separator,
+            )
+        elif state.username_style == "random":
+            username = generator.generate_username_random(
+                state.username_length,
+                separator_style="none",
+            )
+        else:  # words
+            username = generator.generate_username_words(
+                state.username_word_count,
+                add_numbers=state.username_add_numbers,
+                separator=state.username_separator,
                 words=words,
             )
-            if candidate not in state.seen_passphrases:
-                state.seen_passphrases.add(candidate)
-                state.output = candidate
-                state.message = "Generated passphrase."
-                return
 
-        state.message = "Unable to generate a unique passphrase (too many already generated)."
-        curses.beep()
+        state.output = username
+        state.message = "Generated username."
 
     except Exception as exc:  # pragma: no cover
         state.message = f"Error: {exc}"
@@ -936,12 +1053,20 @@ def run() -> int:
                     state.char_length = max(generator.MIN_PASSWORD_CHARS, state.char_length - 1)
                 elif focus_id == "word_count":
                     state.word_count = max(generator.MIN_PASSPHRASE_WORDS, state.word_count - 1)
+                elif focus_id == "username_length":
+                    state.username_length = max(generator.MIN_USERNAME_LENGTH, state.username_length - 1)
+                elif focus_id == "username_word_count":
+                    state.username_word_count = max(generator.MIN_USERNAME_WORDS, state.username_word_count - 1)
                 continue
             if key in (curses.KEY_RIGHT, ord("l")):
                 if focus_id == "char_length":
                     state.char_length = min(generator.MAX_PASSWORD_CHARS, state.char_length + 1)
                 elif focus_id == "word_count":
                     state.word_count = min(generator.MAX_PASSPHRASE_WORDS, state.word_count + 1)
+                elif focus_id == "username_length":
+                    state.username_length = min(generator.MAX_USERNAME_LENGTH, state.username_length + 1)
+                elif focus_id == "username_word_count":
+                    state.username_word_count = min(generator.MAX_USERNAME_WORDS, state.username_word_count + 1)
                 continue
 
             activate = key in (curses.KEY_ENTER, 10, 13)
@@ -959,17 +1084,30 @@ def run() -> int:
                 elif focus_id == "mode_words":
                     state.mode = "words"
                     state.message = "Mode: words"
+                elif focus_id == "mode_username":
+                    state.mode = "username"
+                    state.message = "Mode: username"
                 elif focus_id in {"letters", "numbers", "special"}:
                     _toggle_category(state, focus_id)
                 elif focus_id == "add_numbers":
                     state.add_numbers = not state.add_numbers
                 elif focus_id == "add_special":
                     state.add_special = not state.add_special
+                elif focus_id == "username_style":
+                    styles = ["adjective", "random", "words"]
+                    idx = styles.index(state.username_style)
+                    state.username_style = styles[(idx + 1) % len(styles)]
+                    state.message = f"Username style: {state.username_style}"
+                elif focus_id == "username_separator":
+                    state.username_separator = "-" if state.username_separator == "_" else "_"
+                    state.message = f"Separator: {state.username_separator}"
+                elif focus_id == "username_add_numbers":
+                    state.username_add_numbers = not state.username_add_numbers
                 elif focus_id == "generate" and activate:
                     _generate(state, words)
                 else:
                     # Enter on sliders generates as a convenience.
-                    if activate and focus_id in {"char_length", "word_count"}:
+                    if activate and focus_id in {"char_length", "word_count", "username_length", "username_word_count"}:
                         _generate(state, words)
 
                 # Keep focus list consistent after mode changes.
