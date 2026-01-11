@@ -23,12 +23,6 @@ Then run:
 generate-it
 ```
 
-**Windows note:** On Windows, if you want the full-screen TUI, pip will automatically install the curses compatibility layer. If you prefer, you can run the CLI mode instead:
-
-```bash
-generate-it --cli
-```
-
 ### From source (for development)
 
 ```bash
@@ -51,19 +45,15 @@ Then run:
 generate-it
 ```
 
-## Run (without installing)
+## Controls
+
+### Running from source
 
 ```bash
 python3 main.py
 ```
 
-If you prefer a simple prompt-based mode (no curses):
-
-```bash
-python3 main.py --cli
-```
-
-## TUI controls
+### Keyboard controls
 
 - Tab / Shift-Tab or Arrow keys: move focus
 - Space: toggle checkboxes / options
