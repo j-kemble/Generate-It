@@ -551,7 +551,7 @@ def _render_settings_box(
         )
 
         row += 1
-        _addstr_safe(stdscr, row, x + 2, "Categories (select 2-3):"[:inner_w], theme.dim)
+        _addstr_safe(stdscr, row, x + 2, "Categories:"[:inner_w], theme.dim)
         row += 1
 
         items = [
@@ -566,13 +566,10 @@ def _render_settings_box(
             _addstr_safe(stdscr, row, x + 2, f"{mark} {label}"[:inner_w], attr)
             row += 1
 
-        # Validation hint
+        # Show selected count
         row += 1
         count = _selected_category_count(state)
-        if count < 2:
-            _addstr_safe(stdscr, row, x + 2, "Select at least 2 categories."[:inner_w], theme.bad)
-        else:
-            _addstr_safe(stdscr, row, x + 2, f"Selected: {count}"[:inner_w], theme.ok)
+        _addstr_safe(stdscr, row, x + 2, f"Selected: {count}"[:inner_w], theme.ok)
 
     else:
         bar_w = max(10, inner_w - 22)
@@ -739,46 +736,31 @@ def _render_info_box(
 
 
 def _toggle_category(state: AppState, which: str) -> None:
-    # Enforce the "must have at least 2" rule by preventing drops below 2.
-    before = _selected_category_count(state)
+    # Allow user to select any combination of categories, including none.
+    if which == "letters":
+        state.use_letters = not state.use_letters
+    elif which == "numbers":
+        state.use_numbers = not state.use_numbers
+    elif which == "special":
+        state.use_special = not state.use_special
 
-    def _flip() -> None:
-        if which == "letters":
-            state.use_letters = not state.use_letters
-        elif which == "numbers":
-            state.use_numbers = not state.use_numbers
-        elif which == "special":
-            state.use_special = not state.use_special
-
-    _flip()
     after = _selected_category_count(state)
-
-    if after < 2:
-        # Revert and warn.
-        _flip()
-        state.message = "Select at least 2 categories (add another before removing)."
-        curses.beep()
-    elif after > 3:
-        # Shouldn't happen, but keep it safe.
-        state.message = "Select up to 3 categories."
-        curses.beep()
+    state.message = f"Selected: {after}"
 
 
 def _generate(state: AppState, words: list[str]) -> None:
     try:
         if state.mode == "chars":
-            if _selected_category_count(state) < 2:
-                state.message = "Select at least 2 categories to generate."
-                curses.beep()
-                return
-
             state.output = generator.generate_character_password(
                 state.char_length,
                 use_letters=state.use_letters,
                 use_numbers=state.use_numbers,
                 use_special=state.use_special,
             )
-            state.message = "Generated password."
+            if not state.output:
+                state.message = "Generated empty password (no categories selected)."
+            else:
+                state.message = "Generated password."
             return
 
         # Avoid repeating the same passphrase during a single run of the program.

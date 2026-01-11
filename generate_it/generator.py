@@ -142,8 +142,10 @@ def generate_character_password(
         pools.append(SPECIAL_CHARACTERS)
         required.append(secrets.choice(SPECIAL_CHARACTERS))
 
-    if len(pools) < 2:
-        raise ValueError("At least two categories must be selected")
+    # If no categories are selected, return an empty string or a string of the requested length
+    # with characters from an empty pool (which is impossible, so just return empty).
+    if len(pools) == 0:
+        return ""
 
     alphabet = "".join(pools)
     remaining = length - len(required)

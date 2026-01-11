@@ -61,19 +61,23 @@ def _prompt_mode() -> str | None:
 
 
 def _prompt_character_categories() -> tuple[bool, bool, bool] | None:
-    print("\nChoose 2 or 3 categories for your password:")
+    print("\nChoose which categories to include in your password:")
     print("1) Letters (a-z, A-Z)")
     print("2) Numbers (0-9)")
     print("3) Special characters")
 
     while True:
-        raw = input("Enter choices (e.g., 1,3 or 1,2,3) or 'q': ").strip().lower()
+        raw = input("Enter choices (e.g., 1 or 1,2,3), press Enter to skip, or 'q': ").strip().lower()
         if raw in QUIT_WORDS:
             return None
 
+        if raw == "":
+            # Default: use all categories
+            return True, True, True
+
         tokens = _parse_choice_tokens(raw)
-        if len(tokens) not in {2, 3}:
-            print("Please choose 2 or 3 options.")
+        if len(tokens) > 3:
+            print("Please choose up to 3 options (or press Enter for all).")
             continue
 
         if any(t not in {"1", "2", "3"} for t in tokens):
@@ -143,7 +147,10 @@ def run() -> int:
                 use_numbers=use_numbers,
                 use_special=use_special,
             )
-            print(f"\nGenerated password ({length} chars):\n{password}\n")
+            if password:
+                print(f"\nGenerated password ({length} chars):\n{password}\n")
+            else:
+                print(f"\nGenerated empty password (no categories selected).\n")
 
         else:
             word_count = _prompt_int_in_range(
