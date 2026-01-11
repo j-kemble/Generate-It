@@ -1,10 +1,11 @@
 # Generate It
 
-A terminal password generator with a curses-based UI.
+A terminal credential generator with a curses-based UI.
 
-It can generate either:
-- **Random characters** (choose a length and character categories)
-- **Random words** separated by hyphens (a passphrase)
+It can generate:
+- **Random passwords** (choose a length and character categories)
+- **Random passphrases** (random words separated by hyphens)
+- **Random usernames** (adjective+noun, random characters, or word combinations)
 
 ## Install
 
@@ -73,7 +74,7 @@ python3 main.py --cli
 
 ## How it works
 
-### Random characters
+### Random passwords (characters)
 
 - Length options: **8–24** characters
 - Choose **2 or 3** categories from:
@@ -81,7 +82,7 @@ python3 main.py --cli
   - numbers
   - special characters
 
-### Random words (passphrase)
+### Random passphrases (words)
 
 - Word options: **3–10** words
 - Words are joined with hyphens (e.g. `forest-ember-spark`)
@@ -89,6 +90,26 @@ python3 main.py --cli
 - Optional extras:
   - add numbers (randomly inserted into words)
   - add special characters (randomly inserted into words)
+
+### Random usernames
+
+**Three generation styles:**
+
+1. **Adjective + Noun** (e.g. `swift_tiger`, `cosmic_eagle_42`)
+   - Memorable and easy to pronounce
+   - Optionally add 2-3 digit suffix
+   - Separator options: underscore or hyphen
+
+2. **Random Characters** (e.g. `a7k9m2p1`, `ab_3d_ef`)
+   - Maximum security and randomness
+   - Length: **3–25** characters
+   - Separator options: none, underscore, or hyphen
+
+3. **Multiple Words** (e.g. `swift_tiger_eagle`, `forest_ocean_123`)
+   - Memorable yet more unique
+   - Word count: **1–3** words
+   - Optionally add digit suffix
+   - Separator options: underscore or hyphen
 
 ## Custom word list
 
