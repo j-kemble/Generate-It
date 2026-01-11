@@ -1,8 +1,6 @@
-import os
 import sqlite3
 import pytest
-from pathlib import Path
-from generate_it.storage import StorageManager, VaultNotInitializedError, InvalidPasswordError
+from generate_it.storage import StorageManager, InvalidPasswordError
 
 @pytest.fixture
 def temp_storage(tmp_path):

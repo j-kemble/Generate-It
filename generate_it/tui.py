@@ -23,7 +23,7 @@ import textwrap
 import pyperclip
 
 from . import generator
-from .storage import StorageManager, VaultNotInitializedError, InvalidPasswordError, StorageError
+from .storage import StorageManager, InvalidPasswordError
 
 APP_NAME = "Generate It"
 

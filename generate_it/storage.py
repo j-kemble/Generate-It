@@ -2,8 +2,7 @@ import os
 import sqlite3
 import base64
 from pathlib import Path
-from typing import List, Optional, Tuple
-from datetime import datetime
+from typing import List, Optional
 
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
