@@ -5,12 +5,15 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "generate-it"
 version = "0.2.0"
-description = "Terminal password & passphrase generator (TUI + CLI)."
+description = "Terminal credential generator with a curses-based TUI."
 readme = "README.md"
 requires-python = ">=3.10"
+dependencies = [
+  "windows-curses; platform_system == 'Windows'",
+]
 license = { file = "LICENSE" }
 authors = [{ name = "j-kemble" }]
-keywords = ["password", "passphrase", "tui", "cli", "curses"]
+keywords = ["password", "passphrase", "username", "curses"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
@@ -23,9 +26,6 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-# On Windows, the TUI requires a curses implementation. The CLI works without it.
-tui = ["windows-curses; platform_system == 'Windows'"]
-
 # Test suite dependencies (not required to run the app).
 test = ["pytest>=7"]
 
