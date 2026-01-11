@@ -17,6 +17,9 @@ classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
   "Operating System :: OS Independent",
+  "Environment :: Console :: Curses",
+  "Intended Audience :: End Users/Desktop",
+  "Topic :: Utilities",
 ]
 
 [project.optional-dependencies]
@@ -30,7 +33,9 @@ test = ["pytest>=7"]
 generate-it = "generate_it.__main__:main"
 
 [project.urls]
+Homepage = "https://github.com/j-kemble/Generate-It"
 Repository = "https://github.com/j-kemble/Generate-It"
+Issues = "https://github.com/j-kemble/Generate-It/issues"
 
 [tool.setuptools]
 packages = ["generate_it"]

@@ -8,27 +8,13 @@ It can generate either:
 
 ## Install
 
-### From source (recommended for now)
+### From PyPI (recommended)
+
+Requires Python 3.10 or later and pip.
 
 ```bash
-python3 -m venv .venv
-
-# Linux/macOS
-source .venv/bin/activate
-
-# Windows (PowerShell)
-# .\.venv\Scripts\Activate.ps1
-
-pip install -e .
+pip install generate-it
 ```
-
-Windows note: the full-screen TUI uses curses. If you’re on Windows and want the TUI, install with:
-
-```bash
-pip install -e ".[tui]"
-```
-
-(Otherwise you can always run `generate-it --cli`.)
 
 Then run:
 
@@ -36,18 +22,26 @@ Then run:
 generate-it
 ```
 
-### From GitHub
+**Windows note:** On Windows, if you want the full-screen TUI, pip will automatically install the curses compatibility layer. If you prefer, you can run the CLI mode instead:
 
 ```bash
+generate-it --cli
+```
+
+### From source (for development)
+
+```bash
+git clone https://github.com/j-kemble/Generate-It.git
+cd Generate-It
 python3 -m venv .venv
 
 # Linux/macOS
 source .venv/bin/activate
 
 # Windows (PowerShell)
-# .\.venv\Scripts\Activate.ps1
+# .\\venv\\Scripts\\Activate.ps1
 
-pip install git+https://github.com/j-kemble/Generate-It.git
+pip install -e .
 ```
 
 Then run:
