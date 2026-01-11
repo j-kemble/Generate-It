@@ -257,3 +257,152 @@ def test_insert_token_last_word_is_not_appended(monkeypatch: pytest.MonkeyPatch)
     # Implementation detail: when inserting into the last word, the final position
     # is excluded (so randbelow() shouldn't be called with len(word)+1).
     assert calls == [2, len("beta")]
+
+
+def test_generate_username_words_basic() -> None:
+    words = [f"word{i}" for i in range(10)]
+    username = generator.generate_username_words(
+        2,
+        add_numbers=False,
+        separator="_",
+        words=words,
+    )
+
+    assert isinstance(username, str)
+    assert "_" in username
+    parts = username.split("_")
+    assert len(parts) == 2
+    assert all(p in words for p in parts)
+
+
+def test_generate_username_words_with_numbers() -> None:
+    words = [f"w{i}" for i in range(10)]
+    username = generator.generate_username_words(
+        1,
+        add_numbers=True,
+        separator="_",
+        words=words,
+    )
+
+    assert isinstance(username, str)
+    # Should have word + 3 digits
+    assert any(ch.isdigit() for ch in username)
+
+
+@pytest.mark.parametrize(
+    "word_count",
+    [generator.MIN_USERNAME_WORDS - 1, generator.MAX_USERNAME_WORDS + 1],
+)
+def test_generate_username_words_count_out_of_range_raises(word_count: int) -> None:
+    with pytest.raises(ValueError):
+        generator.generate_username_words(
+            word_count,
+            words=[f"w{i}" for i in range(10)],
+        )
+
+
+def test_generate_username_words_invalid_separator_raises() -> None:
+    with pytest.raises(ValueError):
+        generator.generate_username_words(
+            2,
+            separator="@",
+            words=["a", "b", "c"],
+        )
+
+
+def test_generate_username_random_no_separator() -> None:
+    username = generator.generate_username_random(10, separator_style="none")
+
+    assert isinstance(username, str)
+    assert len(username) == 10
+    assert all(ch in generator.USERNAME_ALPHANUMERIC for ch in username)
+    assert "_" not in username
+    assert "-" not in username
+
+
+def test_generate_username_random_with_underscore() -> None:
+    username = generator.generate_username_random(12, separator_style="underscore")
+
+    assert isinstance(username, str)
+    assert len(username) == 12
+    assert "_" in username
+    assert all(ch in generator.USERNAME_ALPHANUMERIC or ch == "_" for ch in username)
+
+
+def test_generate_username_random_with_hyphen() -> None:
+    username = generator.generate_username_random(12, separator_style="hyphen")
+
+    assert isinstance(username, str)
+    assert len(username) == 12
+    assert "-" in username
+    assert all(ch in generator.USERNAME_ALPHANUMERIC or ch == "-" for ch in username)
+
+
+@pytest.mark.parametrize(
+    "length",
+    [generator.MIN_USERNAME_LENGTH - 1, generator.MAX_USERNAME_LENGTH + 1],
+)
+def test_generate_username_random_length_out_of_range_raises(length: int) -> None:
+    with pytest.raises(ValueError):
+        generator.generate_username_random(length)
+
+
+def test_generate_username_random_invalid_separator_style_raises() -> None:
+    with pytest.raises(ValueError):
+        generator.generate_username_random(10, separator_style="invalid")
+
+
+def test_generate_username_adjective_noun_basic() -> None:
+    username = generator.generate_username_adjective_noun(
+        add_numbers=False,
+        separator="_",
+    )
+
+    assert isinstance(username, str)
+    assert "_" in username
+    parts = username.split("_")
+    assert len(parts) == 2
+    assert parts[0] in generator.DEFAULT_ADJECTIVES
+    assert parts[1] in generator.load_wordlist()
+
+
+def test_generate_username_adjective_noun_with_numbers() -> None:
+    username = generator.generate_username_adjective_noun(
+        add_numbers=True,
+        separator="_",
+    )
+
+    assert isinstance(username, str)
+    assert any(ch.isdigit() for ch in username)
+
+
+def test_generate_username_adjective_noun_with_hyphen() -> None:
+    username = generator.generate_username_adjective_noun(
+        add_numbers=False,
+        separator="-",
+    )
+
+    assert isinstance(username, str)
+    assert "-" in username
+    assert "_" not in username
+
+
+def test_generate_username_adjective_noun_invalid_separator_raises() -> None:
+    with pytest.raises(ValueError):
+        generator.generate_username_adjective_noun(separator="@")
+
+
+def test_generate_username_adjective_noun_custom_lists() -> None:
+    custom_adjs = ["fast", "slow", "happy"]
+    custom_nouns = ["cat", "dog", "bird"]
+
+    username = generator.generate_username_adjective_noun(
+        separator="_",
+        adjectives=custom_adjs,
+        nouns=custom_nouns,
+    )
+
+    parts = username.split("_")
+    assert len(parts) == 2
+    assert parts[0] in custom_adjs
+    assert parts[1] in custom_nouns

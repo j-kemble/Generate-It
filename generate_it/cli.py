@@ -42,13 +42,14 @@ def _prompt_int_in_range(prompt: str, min_value: int, max_value: int) -> int | N
 
 
 def _prompt_mode() -> str | None:
-    print("\nWhat kind of password would you like?")
-    print("1) Random characters")
-    print("2) Random words separated by hyphens")
+    print("\nWhat would you like to generate?")
+    print("1) Random password (characters)")
+    print("2) Random passphrase (words)")
+    print("3) Random username")
     print("q) Quit")
 
     while True:
-        raw = input("Choose 1/2 (or 'q'): ").strip().lower()
+        raw = input("Choose 1/2/3 (or 'q'): ").strip().lower()
         if raw in QUIT_WORDS:
             return None
 
@@ -56,8 +57,10 @@ def _prompt_mode() -> str | None:
             return "chars"
         if raw in {"2", "w", "word", "words", "passphrase"}:
             return "words"
+        if raw in {"3", "u", "username"}:
+            return "username"
 
-        print("Please enter 1, 2, or 'q'.")
+        print("Please enter 1, 2, 3, or 'q'.")
 
 
 def _prompt_character_categories() -> tuple[bool, bool, bool] | None:
@@ -113,6 +116,91 @@ def _prompt_passphrase_extras() -> tuple[bool, bool] | None:
         return add_numbers, add_special
 
 
+def _prompt_username_style() -> str | None:
+    print("\nWhich username style?")
+    print("1) Adjective + noun (e.g., swift_tiger)")
+    print("2) Random characters (e.g., a7k9m2p1)")
+    print("3) Multiple words (e.g., swift_tiger_eagle)")
+    print("q) Quit")
+
+    while True:
+        raw = input("Choose 1/2/3 (or 'q'): ").strip().lower()
+        if raw in QUIT_WORDS:
+            return None
+
+        if raw in {"1", "adj", "adjective"}:
+            return "adjective"
+        if raw in {"2", "rand", "random"}:
+            return "random"
+        if raw in {"3", "words", "multi"}:
+            return "words"
+
+        print("Please enter 1, 2, 3, or 'q'.")
+
+
+def _prompt_username_options() -> tuple[str, int, bool] | None:
+    """Prompt for username generation options.
+    
+    Returns: (separator, word_count, add_numbers) or None if quit.
+    """
+    while True:
+        sep = input("\nUse separator? (u=underscore, h=hyphen, n=none) [u]: ").strip().lower()
+        if sep in QUIT_WORDS:
+            return None
+        if sep in {"", "u", "underscore"}:
+            separator = "_"
+            break
+        if sep in {"h", "hyphen"}:
+            separator = "-"
+            break
+        if sep in {"n", "none"}:
+            separator = None
+            break
+        print("Please enter u, h, or n.")
+
+    word_count = _prompt_int_in_range(
+        f"How many words? ({generator.MIN_USERNAME_WORDS}-{generator.MAX_USERNAME_WORDS}, or 'q'): ",
+        generator.MIN_USERNAME_WORDS,
+        generator.MAX_USERNAME_WORDS,
+    )
+    if word_count is None:
+        return None
+
+    add_nums = _prompt_yes_no("Add numbers? [y/N]: ")
+    return separator, word_count, add_nums
+
+
+def _prompt_random_username_options() -> tuple[int, str] | None:
+    """Prompt for random username options.
+    
+    Returns: (length, separator_style) or None if quit.
+    """
+    length = _prompt_int_in_range(
+        f"\nUsername length? ({generator.MIN_USERNAME_LENGTH}-{generator.MAX_USERNAME_LENGTH}, or 'q'): ",
+        generator.MIN_USERNAME_LENGTH,
+        generator.MAX_USERNAME_LENGTH,
+    )
+    if length is None:
+        return None
+
+    while True:
+        sep = input("Use separators? (u=underscore, h=hyphen, n=none) [n]: ").strip().lower()
+        if sep in QUIT_WORDS:
+            return None
+        if sep in {"", "n", "none"}:
+            separator_style = "none"
+            break
+        if sep in {"u", "underscore"}:
+            separator_style = "underscore"
+            break
+        if sep in {"h", "hyphen"}:
+            separator_style = "hyphen"
+            break
+        print("Please enter u, h, or n.")
+
+    return length, separator_style
+
+
 def run() -> int:
     print(APP_NAME)
 
@@ -152,7 +240,7 @@ def run() -> int:
             else:
                 print(f"\nGenerated empty password (no categories selected).\n")
 
-        else:
+        elif mode == "words":
             word_count = _prompt_int_in_range(
                 f"\nHow many words would you like? ({generator.MIN_PASSPHRASE_WORDS}-{generator.MAX_PASSPHRASE_WORDS}, or 'q'): ",
                 generator.MIN_PASSPHRASE_WORDS,
@@ -185,6 +273,48 @@ def run() -> int:
                 )
 
             print(f"\nGenerated passphrase ({word_count} words):\n{passphrase}\n")
+
+        else:  # mode == "username"
+            style = _prompt_username_style()
+            if style is None:
+                print("Bye.")
+                return 0
+
+            if style == "adjective":
+                add_nums = _prompt_yes_no("\nAdd numbers? [y/N]: ")
+                sep = input("Separator? (u=underscore, h=hyphen) [u]: ").strip().lower()
+                separator = "_" if sep in {"", "u", "underscore"} else "-"
+                username = generator.generate_username_adjective_noun(
+                    add_numbers=add_nums,
+                    separator=separator,
+                )
+                print(f"\nGenerated username:\n{username}\n")
+
+            elif style == "random":
+                opts = _prompt_random_username_options()
+                if opts is None:
+                    print("Bye.")
+                    return 0
+                length, sep_style = opts
+                username = generator.generate_username_random(
+                    length,
+                    separator_style=sep_style,
+                )
+                print(f"\nGenerated username ({length} chars):\n{username}\n")
+
+            else:  # style == "words"
+                opts = _prompt_username_options()
+                if opts is None:
+                    print("Bye.")
+                    return 0
+                separator, word_count, add_nums = opts
+                username = generator.generate_username_words(
+                    word_count,
+                    add_numbers=add_nums,
+                    separator=separator,
+                    words=words,
+                )
+                print(f"\nGenerated username:\n{username}\n")
 
         if not _prompt_yes_no("Generate another? [y/N]: "):
             print("Bye.")
