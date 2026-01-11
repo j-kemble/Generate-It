@@ -242,13 +242,13 @@ def _init_theme() -> Theme:
         pass
 
     # Pair IDs
-    PAIR_CYAN = 1
-    PAIR_BLUE = 2
-    PAIR_MAGENTA = 3
-    PAIR_RED = 4
+    PAIR_RED = 1
+    PAIR_WHITE = 2
+    PAIR_BLUE = 3
+    PAIR_MAGENTA = 4
     PAIR_GREEN = 5
     PAIR_YELLOW = 6
-    PAIR_WHITE = 7
+    PAIR_CYAN = 7
 
     def _pair(pair_id: int) -> int:
         try:
@@ -266,13 +266,13 @@ def _init_theme() -> Theme:
             except curses.error:
                 return
 
-    _init_pair(PAIR_CYAN, curses.COLOR_CYAN)
+    _init_pair(PAIR_RED, curses.COLOR_RED)
+    _init_pair(PAIR_WHITE, curses.COLOR_WHITE)
     _init_pair(PAIR_BLUE, curses.COLOR_BLUE)
     _init_pair(PAIR_MAGENTA, curses.COLOR_MAGENTA)
-    _init_pair(PAIR_RED, curses.COLOR_RED)
     _init_pair(PAIR_GREEN, curses.COLOR_GREEN)
     _init_pair(PAIR_YELLOW, curses.COLOR_YELLOW)
-    _init_pair(PAIR_WHITE, curses.COLOR_WHITE)
+    _init_pair(PAIR_CYAN, curses.COLOR_CYAN)
 
     border = _pair(PAIR_CYAN)
     title = _pair(PAIR_WHITE) | curses.A_BOLD
@@ -282,7 +282,15 @@ def _init_theme() -> Theme:
     bad = _pair(PAIR_RED) | curses.A_BOLD
     accent = _pair(PAIR_MAGENTA) | curses.A_BOLD
     focus = curses.A_REVERSE
-    gradient = (_pair(PAIR_CYAN), _pair(PAIR_BLUE), _pair(PAIR_MAGENTA), _pair(PAIR_RED))
+    # Smooth gradient: red -> white -> blue (duplicated for smooth transitions)
+    gradient = (
+        _pair(PAIR_RED),
+        _pair(PAIR_RED),
+        _pair(PAIR_WHITE),
+        _pair(PAIR_WHITE),
+        _pair(PAIR_BLUE),
+        _pair(PAIR_BLUE),
+    )
 
     return Theme(border, title, dim, ok, warn, bad, accent, focus, gradient)
 
@@ -379,17 +387,14 @@ def _focus_items(state: AppState) -> list[str]:
     elif state.mode == "words":
         items += ["word_count", "add_numbers", "add_special", "generate"]
     else:  # username
-        items += ["username_style", "generate"]
+        items += ["username_style"]
         if state.username_style == "adjective":
-            items.insert(-1, "username_add_numbers")
-            items.insert(-1, "username_separator")
+            items += ["username_separator", "username_add_numbers"]
         elif state.username_style == "random":
-            items.insert(-1, "username_length")
-            items.insert(-1, "username_separator")
+            items += ["username_length"]
         else:  # words
-            items.insert(-1, "username_word_count")
-            items.insert(-1, "username_add_numbers")
-            items.insert(-1, "username_separator")
+            items += ["username_word_count", "username_separator", "username_add_numbers"]
+        items += ["generate"]
     return items
 
 
@@ -1081,12 +1086,21 @@ def run() -> int:
                 if focus_id == "mode_chars":
                     state.mode = "chars"
                     state.message = "Mode: characters"
+                    # Keep focus list consistent after mode changes.
+                    focus_items = _focus_items(state)
+                    state.focus_index = max(0, min(state.focus_index, len(focus_items) - 1))
                 elif focus_id == "mode_words":
                     state.mode = "words"
                     state.message = "Mode: words"
+                    # Keep focus list consistent after mode changes.
+                    focus_items = _focus_items(state)
+                    state.focus_index = max(0, min(state.focus_index, len(focus_items) - 1))
                 elif focus_id == "mode_username":
                     state.mode = "username"
                     state.message = "Mode: username"
+                    # Keep focus list consistent after mode changes.
+                    focus_items = _focus_items(state)
+                    state.focus_index = max(0, min(state.focus_index, len(focus_items) - 1))
                 elif focus_id in {"letters", "numbers", "special"}:
                     _toggle_category(state, focus_id)
                 elif focus_id == "add_numbers":
@@ -1098,6 +1112,9 @@ def run() -> int:
                     idx = styles.index(state.username_style)
                     state.username_style = styles[(idx + 1) % len(styles)]
                     state.message = f"Username style: {state.username_style}"
+                    # Keep focus list consistent after style changes.
+                    focus_items = _focus_items(state)
+                    state.focus_index = max(0, min(state.focus_index, len(focus_items) - 1))
                 elif focus_id == "username_separator":
                     state.username_separator = "-" if state.username_separator == "_" else "_"
                     state.message = f"Separator: {state.username_separator}"
@@ -1109,10 +1126,6 @@ def run() -> int:
                     # Enter on sliders generates as a convenience.
                     if activate and focus_id in {"char_length", "word_count", "username_length", "username_word_count"}:
                         _generate(state, words)
-
-                # Keep focus list consistent after mode changes.
-                focus_items = _focus_items(state)
-                state.focus_index = max(0, min(state.focus_index, len(focus_items) - 1))
 
         return 0
 
