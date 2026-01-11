@@ -66,14 +66,27 @@ def test_generate_character_password_length_out_of_range_raises(length: int) -> 
         )
 
 
-def test_generate_character_password_requires_two_categories() -> None:
-    with pytest.raises(ValueError):
-        generator.generate_character_password(
-            generator.MIN_PASSWORD_CHARS,
-            use_letters=True,
-            use_numbers=False,
-            use_special=False,
-        )
+def test_generate_character_password_allows_single_category() -> None:
+    # Single category should now be allowed
+    pw = generator.generate_character_password(
+        12,
+        use_letters=True,
+        use_numbers=False,
+        use_special=False,
+    )
+    assert isinstance(pw, str) and len(pw) == 12
+    assert all(ch in generator.LETTERS for ch in pw)
+
+
+def test_generate_character_password_allows_no_categories() -> None:
+    # Zero categories should return empty string
+    pw = generator.generate_character_password(
+        12,
+        use_letters=False,
+        use_numbers=False,
+        use_special=False,
+    )
+    assert pw == ""
 
 
 def test_load_wordlist_missing_path_falls_back_to_default(tmp_path: Path) -> None:
