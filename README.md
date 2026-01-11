@@ -78,7 +78,7 @@ Generate It includes an encrypted local vault to store your generated credential
 - `Esc`: Close vault
 
 ### Saving Credentials
-When you generate a credential you like:
+When you generate a credential you will:
 1. Select **[ Save ]** (or navigate to it).
 2. Enter a **Service Name** (e.g., "GitHub").
 3. Enter a **Username** or **Password** (whichever wasn't generated).
@@ -88,7 +88,7 @@ When you generate a credential you like:
 
 ### Random passwords (characters)
 
-- Length options: **8–24** characters
+- Length options: **8–64** characters
 - Choose **2 or 3** categories from:
   - letters
   - numbers
