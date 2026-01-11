@@ -3,11 +3,12 @@
 This file provides guidance to WARP (warp.dev) when working with code in this repository.
 
 ## Project summary
-Generate It is a terminal password/passphrase generator with two frontends:
-- **Curses TUI** (default when running in an interactive terminal)
-- **Prompt-based CLI** (fallback when curses isn’t available, or when `--cli` is provided)
+Generate It is a terminal credential generator featuring a curses-based TUI for generating:
+- **Random passwords** (configurable length and character categories)
+- **Random passphrases** (configurable word count with optional number/special char insertion)
+- **Random usernames** (three styles: adjective+noun, random characters, or multiple words)
 
-Core generation logic lives in `generate_it/generator.py` and is used by both UIs.
+Core generation logic lives in `generate_it/generator.py`, and the curses TUI in `generate_it/tui.py` is the only user-facing interface.
 
 ## Common commands
 ### Setup (editable install)
@@ -17,29 +18,22 @@ source .venv/bin/activate
 pip install -e .
 ```
 
-Windows note: the full-screen TUI uses curses. If you’re on Windows and want the TUI, install with:
-
-```bash
-pip install -e ".[tui]"
-```
+Note: `windows-curses` is automatically installed as a dependency on Windows to support the TUI.
 
 ### Run
 After installing:
 ```bash
 generate-it
-generate-it --cli
 ```
 
 From a source checkout (no install):
 ```bash
 python3 main.py
-python3 main.py --cli
 ```
 
 Module entrypoint (equivalent to the console script):
 ```bash
 python -m generate_it
-python -m generate_it --cli
 ```
 
 ### Tests
@@ -71,14 +65,16 @@ No dedicated lint/typecheck tooling is configured in this repo yet.
 ### Entrypoints
 - `main.py`: convenience runner for source checkouts; delegates to `generate_it.__main__.main()`.
 - `generate_it/__main__.py`: installable entrypoint (`python -m generate_it` and the `generate-it` console script).
-  - `--cli` forces the prompt-based UI (`generate_it/cli.py`).
-  - If stdin/stdout aren’t TTYs, it auto-falls back to the CLI (curses doesn’t work well non-interactively).
-  - If importing curses fails (notably on Windows), it prints a hint about the `[tui]` extra and falls back to the CLI.
+  - Directly launches the TUI (`generate_it/tui.py`).
+  - On Windows, `windows-curses` is automatically installed as a dependency.
 
 ### Core generation (UI-agnostic)
-`generate_it/generator.py` contains the logic shared by both frontends:
+`generate_it/generator.py` contains the core generation logic used by the TUI:
 - `generate_character_password(...)`: validates length (8–24), requires 2–3 selected categories, and guarantees at least one character from each selected category.
 - `generate_passphrase(...)`: selects words **without replacement** and optionally inserts digits/special characters into random words.
+- `generate_username_adjective_noun(...)`: combines random adjective + noun with optional number suffix.
+- `generate_username_random(...)`: generates random alphanumeric usernames (3–25 chars) with optional separators.
+- `generate_username_words(...)`: combines 1–3 random words with optional numbers and separators.
 - `load_wordlist(...)`: wordlist lookup priority:
   1) explicit `path` argument
   2) `$GENERATE_IT_WORDLIST`
@@ -86,15 +82,16 @@ No dedicated lint/typecheck tooling is configured in this repo yet.
   4) packaged default `generate_it/wordlist.txt`
   Falls back to a small built-in list if the file is missing or too small.
 
-### Prompt-based CLI
-- `generate_it/cli.py`: interactive prompts for mode/options.
-  - Keeps a `seen_passphrases` set to avoid repeating the same passphrase during a single run.
-
 ### Curses TUI
-- `generate_it/tui.py`: dashboard-style curses app.
-  - `AppState` holds the current mode, options, output, and focus.
-  - Rendering is split into panel renderers (MODE / SETTINGS / ACTIONS / OUTPUT / INFO).
-  - Calls `generator.*` and enforces the “select at least 2 categories” rule at the UI layer as well.
+- `generate_it/tui.py`: dashboard-style curses application.
+  - `AppState` holds current mode (chars/words/username), options, output, and focus.
+  - Three generation modes:
+    1. **Characters**: password generation with category selection
+    2. **Words**: passphrase generation with optional number/special char insertion
+    3. **Username**: three username styles (adjective+noun, random chars, multiple words)
+  - Rendering split into panel renderers (MODE / SETTINGS / ACTIONS / OUTPUT / INFO).
+  - Dynamic focus system adapts available options based on selected mode and style.
+  - Calls `generator.*` functions for credential generation.
 
 ## Wordlist customization
 The env var used to point at a custom word list is `GENERATE_IT_WORDLIST`. See the “Custom word list” section in `README.md` and the implementation in `generate_it/generator.py` for exact precedence and fallback behavior.
