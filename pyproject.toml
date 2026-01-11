@@ -10,6 +10,9 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
   "windows-curses; platform_system == 'Windows'",
+  "platformdirs>=3.0.0",
+  "cryptography>=41.0.0",
+  "pyperclip>=1.8.0",
 ]
 license = { file = "LICENSE" }
 authors = [{ name = "j-kemble" }]

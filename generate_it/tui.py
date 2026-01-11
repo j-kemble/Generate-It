@@ -20,8 +20,10 @@ import datetime as _dt
 import locale
 import math
 import textwrap
+import pyperclip
 
 from . import generator
+from .storage import StorageManager, VaultNotInitializedError, InvalidPasswordError, StorageError
 
 APP_NAME = "Generate It"
 
@@ -29,6 +31,70 @@ APP_NAME = "Generate It"
 class QuitApp(Exception):
     """Raised when the user requests to quit from anywhere in the TUI."""
 
+
+def _run_modal(
+    stdscr: "curses._CursesWindow",
+    theme: Theme,
+    title: str,
+    prompt: str,
+    is_password: bool = False,
+    generator_func: callable | None = None,
+) -> str | None:
+    """Runs a blocking modal dialog for text input. Returns the string or None if cancelled."""
+    h, w = stdscr.getmaxyx()
+    box_h, box_w = 8, 60
+    y, x = (h - box_h) // 2, (w - box_w) // 2
+    
+    # Create a new window for the modal
+    win = curses.newwin(box_h, box_w, y, x)
+    win.keypad(True)
+    
+    input_str = ""
+    
+    while True:
+        win.erase()
+        win.box()
+        
+        # Title
+        title_text = f" {title} "
+        win.addstr(0, 2, title_text, theme.title)
+        
+        # Prompt
+        win.addstr(2, 2, prompt, theme.accent)
+        
+        # Input field
+        field_attr = curses.A_REVERSE | theme.dim
+        display_str = "*" * len(input_str) if is_password else input_str
+        # Cursor simulation
+        display_str += " " 
+        
+        win.addstr(4, 2, display_str[:box_w-4], field_attr)
+        
+        # Help
+        help_txt = "Enter: Confirm • Esc: Cancel"
+        if generator_func:
+            help_txt += " • Tab: Generate"
+        win.addstr(6, 2, help_txt, theme.dim)
+        
+        win.refresh()
+        
+        key = win.getch()
+        
+        if key == 27: # ESC
+            return None
+        elif key in (curses.KEY_ENTER, 10, 13):
+            return input_str
+        elif key in (curses.KEY_BACKSPACE, 127, 8):
+            input_str = input_str[:-1]
+        elif key == 9 and generator_func: # Tab
+            try:
+                # Generate and replace current input
+                input_str = generator_func()
+            except Exception:
+                pass
+        elif 32 <= key <= 126:
+            if len(input_str) < 50: # Arbitrary limit
+                input_str += chr(key)
 
 # --- Header art -------------------------------------------------------------
 
@@ -378,10 +444,18 @@ class AppState:
 
     message: str = "Press Enter (or g) to generate."
     focus_index: int = 0
+    
+    # Vault / Storage
+    storage: StorageManager | None = None
+    vault_unlocked: bool = False
+    vault_credentials: list[dict] = field(default_factory=list)
+    vault_scroll_y: int = 0
+    vault_selected_idx: int = 0
 
 
 def _focus_items(state: AppState) -> list[str]:
     items = ["mode_chars", "mode_words", "mode_username"]
+
     if state.mode == "chars":
         items += ["char_length", "letters", "numbers", "special", "generate"]
     elif state.mode == "words":
@@ -395,6 +469,11 @@ def _focus_items(state: AppState) -> list[str]:
         else:  # words
             items += ["username_word_count", "username_separator", "username_add_numbers"]
         items += ["generate"]
+    
+    # Add Save button if there is output
+    if state.output and state.vault_unlocked:
+        items.append("save")
+        
     return items
 
 
@@ -550,6 +629,12 @@ def _render_settings_box(
     state: AppState,
     focus_id: str,
 ) -> None:
+    if state.mode == "vault":
+        # Vault mode renders its own full-height panel, so settings box might be unused or reused.
+        # We will handle this in the main loop by hiding settings/actions/output/info 
+        # and showing a big vault box instead.
+        return
+
     if state.mode == "chars":
         title = "SETTINGS • characters"
     elif state.mode == "words":
@@ -727,7 +812,86 @@ def _render_actions_box(
     _addstr_safe(stdscr, row, x + 2, btn[:inner_w], attr)
     row += 2
 
-    _addstr_safe(stdscr, row, x + 2, "Hotkeys: g generate • q quit"[:inner_w], theme.dim)
+    if state.output and state.vault_unlocked:
+        btn_save = "[ Save ]"
+        attr_save = theme.focus if focus_id == "save" else theme.ok
+        _addstr_safe(stdscr, row, x + 2, btn_save[:inner_w], attr_save)
+        row += 2
+
+    _addstr_safe(stdscr, row, x + 2, "Hotkeys: g generate • v vault • q quit"[:inner_w], theme.dim)
+
+
+def _render_vault_box(
+    stdscr: "curses._CursesWindow",
+    theme: Theme,
+    *,
+    y: int,
+    x: int,
+    h: int,
+    w: int,
+    state: AppState,
+    focus_id: str,
+) -> None:
+    """Renders the full-screen vault list."""
+    _draw_box(stdscr, y, x, h, w, title="VAULT", border_attr=theme.border, title_attr=theme.title)
+    
+    if not state.vault_unlocked:
+        msg = "Vault is locked."
+        _addstr_safe(stdscr, y + h//2, x + (w-len(msg))//2, msg, theme.warn)
+        return
+
+    inner_w = max(0, w - 4)
+    inner_h = max(0, h - 2)
+    list_x = x + 2
+    list_y = y + 1
+    
+    # Headers
+    headers = f"{'Service':<20} {'Username':<20} {'Password'}"
+    _addstr_safe(stdscr, list_y, list_x, headers[:inner_w], theme.dim | curses.A_UNDERLINE)
+    list_y += 1
+    inner_h -= 1
+    
+    if not state.vault_credentials:
+        _addstr_safe(stdscr, list_y + 1, list_x, "No credentials saved yet.", theme.dim)
+        return
+
+    # Scrolling logic
+    visible_count = inner_h
+    total_count = len(state.vault_credentials)
+    
+    # Ensure selection is visible
+    if state.vault_selected_idx < state.vault_scroll_y:
+        state.vault_scroll_y = state.vault_selected_idx
+    elif state.vault_selected_idx >= state.vault_scroll_y + visible_count:
+        state.vault_scroll_y = state.vault_selected_idx - visible_count + 1
+        
+    start_idx = state.vault_scroll_y
+    end_idx = min(total_count, start_idx + visible_count)
+    
+    for i in range(start_idx, end_idx):
+        cred = state.vault_credentials[i]
+        is_selected = (i == state.vault_selected_idx) and (focus_id == "vault_list")
+        
+        attr = theme.focus if is_selected else 0
+        
+        # Format row
+        s_serv = cred['service']
+        s_user = cred['username']
+        # Mask password partially for display safety? Or just show it? 
+        # Usually password managers hide it until requested, but here we can just show it 
+        # or maybe mask it. Let's show it for now as per requirements "list and retrieve".
+        s_pass = cred['password']
+        
+        row_str = f"{s_serv:<20} {s_user:<20} {s_pass}"
+        _addstr_safe(stdscr, list_y + (i - start_idx), list_x, row_str[:inner_w], attr)
+
+    # Scrollbar hint if needed
+    if total_count > visible_count:
+        bar_h = max(1, int((visible_count / total_count) * inner_h))
+        bar_y = int((start_idx / total_count) * inner_h)
+        for i in range(bar_h):
+             _addstr_safe(stdscr, y + 1 + bar_y + i, x + w - 1, "█", theme.dim)
+
 
 
 def _render_output_box(
@@ -907,6 +1071,216 @@ def _generate(state: AppState, words: list[str]) -> None:
         curses.beep()
 
 
+def _run_details_modal(stdscr: "curses._CursesWindow", theme: Theme, credential: dict) -> None:
+    """Runs a modal to show credential details and allow copying."""
+    h, w = stdscr.getmaxyx()
+    box_h, box_w = 12, 60
+    y, x = (h - box_h) // 2, (w - box_w) // 2
+    
+    win = curses.newwin(box_h, box_w, y, x)
+    win.keypad(True)
+    
+    while True:
+        win.erase()
+        win.box()
+        
+        # Title
+        win.addstr(0, 2, " CREDENTIAL DETAILS ", theme.title)
+        
+        # Content
+        # We use safe addstr to avoid crashing if strings are too long
+        row = 2
+        
+        label_attr = theme.dim
+        val_attr = curses.A_BOLD
+        
+        win.addstr(row, 2, "Service:", label_attr)
+        win.addstr(row, 12, credential['service'][:box_w-14], val_attr)
+        row += 2
+        
+        win.addstr(row, 2, "Username:", label_attr)
+        win.addstr(row, 12, credential['username'][:box_w-14], val_attr)
+        row += 2
+        
+        win.addstr(row, 2, "Password:", label_attr)
+        win.addstr(row, 12, credential['password'][:box_w-14], val_attr)
+        row += 2
+        
+        win.addstr(row, 2, "Created:", label_attr)
+        win.addstr(row, 12, str(credential['created_at'])[:box_w-14])
+        
+        # Footer
+        footer = "c: Copy Pass • u: Copy User • Esc: Close"
+        win.addstr(box_h - 2, 2, footer, theme.dim)
+        
+        win.refresh()
+        
+        key = win.getch()
+        
+        if key in (27, ord('q'), ord('Q')): # Esc/q
+            return
+            
+        elif key in (ord('c'), ord('C')):
+            try:
+                pyperclip.copy(credential['password'])
+                # Quick feedback overlay
+                win.addstr(box_h - 2, 2, "       COPIED PASSWORD!       ", theme.ok)
+                win.refresh()
+                curses.napms(500)
+            except Exception:
+                pass
+
+        elif key in (ord('u'), ord('U')):
+            try:
+                pyperclip.copy(credential['username'])
+                win.addstr(box_h - 2, 2, "       COPIED USERNAME!       ", theme.ok)
+                win.refresh()
+                curses.napms(500)
+            except Exception:
+                pass
+
+
+def _run_vault_modal(stdscr: "curses._CursesWindow", theme: Theme, state: AppState) -> None:
+    """Runs a modal vault manager."""
+    if not state.vault_unlocked or not state.storage:
+        _run_modal(stdscr, theme, "ERROR", "Vault locked or unavailable.")
+        return
+        
+    # Reload credentials
+    state.vault_credentials = state.storage.list_credentials()
+    
+    while True:
+        h, w = stdscr.getmaxyx()
+        
+        # Calculate box dimensions (80% of screen)
+        box_h = max(10, int(h * 0.8))
+        box_w = max(40, int(w * 0.8))
+        y = (h - box_h) // 2
+        x = (w - box_w) // 2
+        
+        # Draw background shadow/dimming?
+        # Standard curses doesn't support transparency easily, so just draw the box.
+        
+        # We need to clear the area or redraw the whole screen behind it? 
+        # Easier to just draw a solid box on top.
+        win = curses.newwin(box_h, box_w, y, x)
+        win.keypad(True)
+        win.erase()
+        win.box()
+        
+        # Title
+        title = " VAULT EXPLORER "
+        try:
+            win.addstr(0, 2, title, theme.title)
+        except curses.error:
+            pass
+            
+        inner_h = box_h - 2
+        inner_w = box_w - 4
+        list_y = 1
+        
+        # Header
+        headers = f"{'Service':<20} {'Username':<20}"
+        try:
+            win.addstr(list_y, 2, headers[:inner_w], theme.dim | curses.A_UNDERLINE)
+        except curses.error:
+            pass
+            
+        list_y += 2
+        content_h = inner_h - 3 # Reserve space for footer
+        
+        if not state.vault_credentials:
+            try:
+                win.addstr(list_y, 2, "No credentials found.", theme.dim)
+            except curses.error:
+                pass
+        else:
+            total = len(state.vault_credentials)
+            
+            # Scrolling
+            if state.vault_selected_idx < state.vault_scroll_y:
+                state.vault_scroll_y = state.vault_selected_idx
+            elif state.vault_selected_idx >= state.vault_scroll_y + content_h:
+                state.vault_scroll_y = state.vault_selected_idx - content_h + 1
+            
+            # Clamp scroll
+            state.vault_scroll_y = max(0, min(state.vault_scroll_y, total - 1))
+            
+            start = state.vault_scroll_y
+            end = min(total, start + content_h)
+            
+            for i in range(start, end):
+                cred = state.vault_credentials[i]
+                is_selected = (i == state.vault_selected_idx)
+                
+                attr = theme.focus if is_selected else 0
+                s_serv = cred['service']
+                s_user = cred['username']
+                
+                line = f"{s_serv:<20} {s_user:<20}"
+                try:
+                    win.addstr(list_y + (i - start), 2, line[:inner_w], attr)
+                except curses.error:
+                    pass
+
+        # Footer
+        footer = "Enter: Details • c: Copy Pass • u: Copy User • d: Delete • Esc/v: Close"
+        try:
+            win.addstr(box_h - 2, 2, footer[:inner_w], theme.dim)
+        except curses.error:
+            pass
+            
+        win.refresh()
+        
+        key = win.getch()
+        
+        if key in (27, ord('v'), ord('V'), ord('q'), ord('Q')): # Esc/v/q
+            return
+            
+        if key in (curses.KEY_UP, ord('k')):
+            if state.vault_credentials:
+                state.vault_selected_idx = max(0, state.vault_selected_idx - 1)
+        elif key in (curses.KEY_DOWN, ord('j')):
+            if state.vault_credentials:
+                state.vault_selected_idx = min(len(state.vault_credentials) - 1, state.vault_selected_idx + 1)
+        
+        elif key in (ord('c'), ord('C')):
+            if state.vault_credentials:
+                cred = state.vault_credentials[state.vault_selected_idx]
+                try:
+                    pyperclip.copy(cred['password'])
+                    _run_modal(stdscr, theme, "SUCCESS", "Password copied to clipboard.")
+                except Exception as e:
+                    _run_modal(stdscr, theme, "ERROR", f"Copy failed: {e}")
+
+        elif key in (ord('u'), ord('U')):
+            if state.vault_credentials:
+                cred = state.vault_credentials[state.vault_selected_idx]
+                try:
+                    pyperclip.copy(cred['username'])
+                    _run_modal(stdscr, theme, "SUCCESS", "Username copied to clipboard.")
+                except Exception as e:
+                    _run_modal(stdscr, theme, "ERROR", f"Copy failed: {e}")
+
+        elif key in (curses.KEY_ENTER, 10, 13):
+            if state.vault_credentials:
+                cred = state.vault_credentials[state.vault_selected_idx]
+                _run_details_modal(stdscr, theme, cred)
+        
+        elif key in (ord('d'), ord('D')):
+            if state.vault_credentials:
+                cred = state.vault_credentials[state.vault_selected_idx]
+                confirm = _run_modal(stdscr, theme, "CONFIRM", f"Delete {cred['service']}? (type 'yes'):")
+                if confirm and confirm.lower() == 'yes':
+                    try:
+                        state.storage.delete_credential(cred['id'])
+                        state.vault_credentials = state.storage.list_credentials()
+                        if state.vault_selected_idx >= len(state.vault_credentials):
+                            state.vault_selected_idx = max(0, len(state.vault_credentials) - 1)
+                    except Exception as e:
+                        _run_modal(stdscr, theme, "ERROR", f"Delete failed: {e}")
+
+
 # --- Main loop --------------------------------------------------------------
 
 
@@ -930,6 +1304,71 @@ def run() -> int:
 
         words = generator.load_wordlist()
         state = AppState()
+        
+        # --- Storage Initialization ---
+        try:
+            state.storage = StorageManager()
+        except Exception as e:
+            # If we can't create the storage manager (e.g. permission error on folder),
+            # we should display it and exit or fallback.
+            # Since we are in curses, we can show a modal.
+            while True:
+                stdscr.erase()
+                _render_header(stdscr, theme)
+                msg = f"Storage Error: {e}"
+                _draw_box(stdscr, 10, 5, 5, 70, title="CRITICAL ERROR", border_attr=theme.bad, title_attr=theme.bad)
+                _addstr_safe(stdscr, 12, 7, msg, theme.dim)
+                _addstr_safe(stdscr, 13, 7, "Press q to quit", theme.dim)
+                stdscr.refresh()
+                if stdscr.getch() in (ord('q'), ord('Q')):
+                    return 1
+
+        if not state.storage.vault_exists():
+            # First time setup
+            while True:
+                stdscr.erase()
+                _render_header(stdscr, theme)
+                pwd = _run_modal(stdscr, theme, "SETUP", "Create Master Password:", is_password=True)
+                if pwd is None: # Cancelled
+                    return 0
+                if len(pwd) < 4:
+                    _run_modal(stdscr, theme, "ERROR", "Password too short (min 4 chars). Press Enter.")
+                    continue
+                
+                # Confirm password
+                pwd2 = _run_modal(stdscr, theme, "SETUP", "Confirm Master Password:", is_password=True)
+                if pwd2 is None: # Cancelled
+                    continue
+
+                if pwd == pwd2:
+                    try:
+                        state.storage.initialize_vault(pwd)
+                        state.vault_unlocked = True
+                        break
+                    except Exception as e:
+                        _run_modal(stdscr, theme, "ERROR", f"Init failed: {e}. Press Enter.")
+                else:
+                    _run_modal(stdscr, theme, "ERROR", "Passwords do not match. Press Enter.")
+        else:
+            # Unlock existing vault
+            while True:
+                stdscr.erase()
+                _render_header(stdscr, theme)
+                pwd = _run_modal(stdscr, theme, "LOGIN", "Enter Master Password:", is_password=True)
+                if pwd is None: # Cancelled
+                    return 0
+                
+                try:
+                    state.storage.unlock_vault(pwd)
+                    state.vault_unlocked = True
+                    break
+                except InvalidPasswordError:
+                    # Visual feedback loop
+                    continue
+
+        # Load initial credentials
+        if state.vault_unlocked and state.storage:
+             state.vault_credentials = state.storage.list_credentials()
 
         # Generate something immediately so the dashboard isn't empty.
         _generate(state, words)
@@ -959,9 +1398,9 @@ def run() -> int:
             right_x = left_w + gap
             right_w = max(1, w - right_x)
 
-            # Left column: MODE + SETTINGS + ACTIONS
+            # Standard layout heights
             mode_h = 6
-            actions_h = 5
+            actions_h = 7 # Increased for Save button
             settings_h = max(6, body_h - mode_h - actions_h - 2 * gap)
 
             # Right column: OUTPUT + INFO
@@ -973,7 +1412,9 @@ def run() -> int:
             state.focus_index = max(0, min(state.focus_index, len(focus_items) - 1))
             focus_id = focus_items[state.focus_index]
 
-            # Draw panels
+            # --- Rendering ---
+            
+            # Mode box is always visible
             _render_mode_box(
                 stdscr,
                 theme,
@@ -984,6 +1425,8 @@ def run() -> int:
                 state=state,
                 focus_id=focus_id,
             )
+
+            # Standard Generator Layout
             _render_settings_box(
                 stdscr,
                 theme,
@@ -1042,12 +1485,15 @@ def run() -> int:
             if key == curses.KEY_BTAB:  # Shift-Tab
                 state.focus_index = (state.focus_index - 1) % len(focus_items)
                 continue
+            
+            # Up/Down navigation (Standard)
             if key in (curses.KEY_UP, ord("k")):
                 state.focus_index = (state.focus_index - 1) % len(focus_items)
                 continue
             if key in (curses.KEY_DOWN, ord("j")):
                 state.focus_index = (state.focus_index + 1) % len(focus_items)
                 continue
+
             if key in (ord("b"), ord("B")):
                 state.focus_index = 0
                 continue
@@ -1077,6 +1523,13 @@ def run() -> int:
             activate = key in (curses.KEY_ENTER, 10, 13)
             toggle = key == ord(" ")
             generate_now = key in (ord("g"), ord("G"))
+            open_vault = key in (ord("v"), ord("V"))
+
+            if open_vault:
+                _run_vault_modal(stdscr, theme, state)
+                # Force full redraw after modal closes
+                stdscr.clear() 
+                continue
 
             if generate_now:
                 _generate(state, words)
@@ -1086,19 +1539,16 @@ def run() -> int:
                 if focus_id == "mode_chars":
                     state.mode = "chars"
                     state.message = "Mode: characters"
-                    # Keep focus list consistent after mode changes.
                     focus_items = _focus_items(state)
                     state.focus_index = max(0, min(state.focus_index, len(focus_items) - 1))
                 elif focus_id == "mode_words":
                     state.mode = "words"
                     state.message = "Mode: words"
-                    # Keep focus list consistent after mode changes.
                     focus_items = _focus_items(state)
                     state.focus_index = max(0, min(state.focus_index, len(focus_items) - 1))
                 elif focus_id == "mode_username":
                     state.mode = "username"
                     state.message = "Mode: username"
-                    # Keep focus list consistent after mode changes.
                     focus_items = _focus_items(state)
                     state.focus_index = max(0, min(state.focus_index, len(focus_items) - 1))
                 elif focus_id in {"letters", "numbers", "special"}:
@@ -1112,7 +1562,6 @@ def run() -> int:
                     idx = styles.index(state.username_style)
                     state.username_style = styles[(idx + 1) % len(styles)]
                     state.message = f"Username style: {state.username_style}"
-                    # Keep focus list consistent after style changes.
                     focus_items = _focus_items(state)
                     state.focus_index = max(0, min(state.focus_index, len(focus_items) - 1))
                 elif focus_id == "username_separator":
@@ -1122,6 +1571,52 @@ def run() -> int:
                     state.username_add_numbers = not state.username_add_numbers
                 elif focus_id == "generate" and activate:
                     _generate(state, words)
+                elif focus_id == "save" and activate:
+                    # SAVE FLOW
+                    service = _run_modal(stdscr, theme, "SAVE", "Enter Service/Website Name:")
+                    if service and state.storage and state.output:
+                        try:
+                            final_username = ""
+                            final_password = ""
+
+                            if state.mode == "username":
+                                # We generated a username, so we need a password.
+                                final_username = state.output
+                                
+                                def _gen_pwd():
+                                    return generator.generate_character_password(16, use_letters=True, use_numbers=True, use_special=True)
+                                
+                                final_password = _run_modal(
+                                    stdscr, 
+                                    theme, 
+                                    "SAVE", 
+                                    f"Enter Password for {final_username}:",
+                                    is_password=False, # Show it so they can see what they generated? Or hide it? Usually show during creation.
+                                    generator_func=_gen_pwd
+                                )
+                            else:
+                                # We generated a password, so we need a username.
+                                final_password = state.output
+                                
+                                def _gen_user():
+                                    return generator.generate_username_adjective_noun(add_numbers=True)
+                                    
+                                final_username = _run_modal(
+                                    stdscr, 
+                                    theme, 
+                                    "SAVE", 
+                                    "Enter Username:",
+                                    generator_func=_gen_user
+                                )
+
+                            if final_username and final_password:
+                                state.storage.save_credential(service, final_username, final_password)
+                                state.message = f"Saved credential for {service}."
+                            else:
+                                state.message = "Save cancelled."
+
+                        except Exception as e:
+                            state.message = f"Error saving: {e}"
                 else:
                     # Enter on sliders generates as a convenience.
                     if activate and focus_id in {"char_length", "word_count", "username_length", "username_word_count"}:

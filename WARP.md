@@ -3,12 +3,13 @@
 This file provides guidance to WARP (warp.dev) when working with code in this repository.
 
 ## Project summary
-Generate It is a terminal credential generator featuring a curses-based TUI for generating:
-- **Random passwords** (configurable length and character categories)
-- **Random passphrases** (configurable word count with optional number/special char insertion)
-- **Random usernames** (three styles: adjective+noun, random characters, or multiple words)
+Generate It is a terminal credential generator and local manager featuring a curses-based TUI for:
+- **Generating Random Passwords**: configurable length and categories.
+- **Generating Random Passphrases**: configurable word count with optional insertion.
+- **Generating Random Usernames**: three styles (adjective+noun, random chars, or multiple words).
+- **Secure Local Storage**: AES-encrypted vault for storing and managing generated credentials.
 
-Core generation logic lives in `generate_it/generator.py`, and the curses TUI in `generate_it/tui.py` is the only user-facing interface.
+Core logic lives in `generate_it/generator.py` and `generate_it/storage.py`. The curses TUI in `generate_it/tui.py` is the primary interface.
 
 ## Common commands
 ### Setup (editable install)
@@ -17,81 +18,48 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
 ```
-
-Note: `windows-curses` is automatically installed as a dependency on Windows to support the TUI.
+New dependencies: `platformdirs`, `cryptography`, `pyperclip`.
 
 ### Run
-After installing:
 ```bash
 generate-it
 ```
-
-From a source checkout (no install):
-```bash
-python3 main.py
-```
-
-Module entrypoint (equivalent to the console script):
-```bash
-python -m generate_it
-```
+On first run, you will be prompted to create a **Master Password**. Subsequent runs require this password to unlock the encrypted vault.
 
 ### Tests
-CI runs a smoke test script and a small pytest suite:
-
 ```bash
-python scripts/smoke_test.py
 python -m pytest
 ```
-
-Run a single test:
-
-```bash
-python -m pytest tests/test_generator.py::test_generate_character_password_invariants
-```
-
-### Build (sdist/wheel)
-Packaging is defined in `pyproject.toml` (setuptools backend). To build locally:
-
-```bash
-python -m pip install build
-python -m build
-```
-
-### Lint / typecheck
-No dedicated lint/typecheck tooling is configured in this repo yet.
+Tests cover generation invariants (`tests/test_generator.py`) and secure storage/encryption logic (`tests/test_storage.py`).
 
 ## Architecture / code map
 ### Entrypoints
-- `main.py`: convenience runner for source checkouts; delegates to `generate_it.__main__.main()`.
-- `generate_it/__main__.py`: installable entrypoint (`python -m generate_it` and the `generate-it` console script).
-  - Directly launches the TUI (`generate_it/tui.py`).
-  - On Windows, `windows-curses` is automatically installed as a dependency.
+- `generate_it/__main__.py`: Initializer. Handles the startup sequence:
+  1. Checks if vault exists (via `StorageManager`).
+  2. Triggers **Setup** (first run) or **Login** (unlock) modals.
+  3. Launches the main TUI loop once unlocked.
 
-### Core generation (UI-agnostic)
-`generate_it/generator.py` contains the core generation logic used by the TUI:
-- `generate_character_password(...)`: validates length (8–24), requires 2–3 selected categories, and guarantees at least one character from each selected category.
-- `generate_passphrase(...)`: selects words **without replacement** and optionally inserts digits/special characters into random words.
-- `generate_username_adjective_noun(...)`: combines random adjective + noun with optional number suffix.
-- `generate_username_random(...)`: generates random alphanumeric usernames (3–25 chars) with optional separators.
-- `generate_username_words(...)`: combines 1–3 random words with optional numbers and separators.
-- `load_wordlist(...)`: wordlist lookup priority:
-  1) explicit `path` argument
-  2) `$GENERATE_IT_WORDLIST`
-  3) `./wordlist.txt` in the current working directory
-  4) packaged default `generate_it/wordlist.txt`
-  Falls back to a small built-in list if the file is missing or too small.
+### Storage & Security
+`generate_it/storage.py` handles the local SQLite database and encryption:
+- **Location**: Uses `platformdirs` to store `vault.db` in standard user data paths (e.g., `~/.local/share/generate-it/`).
+- **Encryption**: Uses `cryptography.fernet`. The key is derived from the Master Password + a unique salt using **PBKDF2HMAC** (100k iterations).
+- **Data**: Credentials (service, username, password) are stored as encrypted blobs.
 
 ### Curses TUI
-- `generate_it/tui.py`: dashboard-style curses application.
-  - `AppState` holds current mode (chars/words/username), options, output, and focus.
-  - Three generation modes:
-    1. **Characters**: password generation with category selection
-    2. **Words**: passphrase generation with optional number/special char insertion
-    3. **Username**: three username styles (adjective+noun, random chars, multiple words)
-  - Rendering split into panel renderers (MODE / SETTINGS / ACTIONS / OUTPUT / INFO).
-  - Dynamic focus system adapts available options based on selected mode and style.
-  - Calls `generator.*` functions for credential generation.
+`generate_it/tui.py` contains the dashboard and modal systems:
+- **Global Hotkeys**:
+  - `g`: Generate new credential.
+  - `v`: Open **Vault Explorer** modal.
+  - `q`: Quit.
+- **Save Flow**:
+  - In Generator modes, clicking **[ Save ]** prompts for Service and Username/Password.
+  - **Tab**: In any save-dialog input field, press Tab to generate a random value (username or password) on the fly.
+- **Vault Explorer (`v`)**:
+  - File-browser style navigation (`↑/↓`).
+  - `Enter`: View full details.
+  - `c`: Copy Password to clipboard (`pyperclip`).
+  - `u`: Copy Username to clipboard.
+  - `d`: Delete entry (requires "yes" confirmation).
 
 ## Wordlist customization
-The env var used to point at a custom word list is `GENERATE_IT_WORDLIST`. See the “Custom word list” section in `README.md` and the implementation in `generate_it/generator.py` for exact precedence and fallback behavior.
+The env var used to point at a custom word list is `GENERATE_IT_WORDLIST`.

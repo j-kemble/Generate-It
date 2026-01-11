@@ -1,11 +1,13 @@
 # Generate It
 
-A terminal credential generator with a curses-based UI.
+A terminal credential generator and local manager with a curses-based UI.
 
 It can generate:
 - **Random passwords** (choose a length and character categories)
 - **Random passphrases** (random words separated by hyphens)
 - **Random usernames** (adjective+noun, random characters, or word combinations)
+
+**New:** Now features a **secure local vault** to save and manage your credentials directly from the TUI.
 
 ## Install
 
@@ -34,7 +36,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 
 # Windows (PowerShell)
-# .\\venv\\Scripts\\Activate.ps1
+# .\venv\Scripts\Activate.ps1
 
 pip install -e .
 ```
@@ -45,22 +47,42 @@ Then run:
 generate-it
 ```
 
-## Controls
+## Features
 
-### Running from source
+### Secure Vault
+Generate It includes an encrypted local vault to store your generated credentials.
+- **Encryption**: Uses AES-256 (via `cryptography`) to secure your data locally.
+- **Master Password**: You create a master password on first run. This key is never stored; it unlocks your vault each session.
+- **Offline**: Your data stays on your machine (`~/.local/share/generate-it/` on Linux).
+- **Clipboard**: Quickly copy passwords or usernames with hotkeys.
 
-```bash
-python3 main.py
-```
+### Controls
 
-### Keyboard controls
+- **General Navigation**:
+  - `Tab` / `Shift-Tab` or `Arrow keys`: move focus
+  - `Space`: toggle checkboxes / options
+  - `Left`/`Right`: adjust numeric values
+  - `Enter`: confirm action
+  - `q` (or `ESC`): quit
 
-- Tab / Shift-Tab or Arrow keys: move focus
-- Space: toggle checkboxes / options
-- Left/Right: adjust numeric values (length / word count)
-- Enter or `g`: generate
-- `b`: jump focus to Mode
-- `q` (or ESC): quit
+- **Hotkeys**:
+  - `g`: Generate new credential
+  - `v`: Open **Vault Explorer**
+
+### Vault Explorer (`v`)
+- `↑/↓`: Navigate your saved credentials
+- `Enter`: View credential details
+- `c`: Copy Password to clipboard
+- `u`: Copy Username to clipboard
+- `d`: Delete credential (requires confirmation)
+- `Esc`: Close vault
+
+### Saving Credentials
+When you generate a credential you like:
+1. Select **[ Save ]** (or navigate to it).
+2. Enter a **Service Name** (e.g., "GitHub").
+3. Enter a **Username** or **Password** (whichever wasn't generated).
+   - **Pro Tip**: Press **`Tab`** in these fields to instantly generate a random username or password on the fly!
 
 ## How it works
 
