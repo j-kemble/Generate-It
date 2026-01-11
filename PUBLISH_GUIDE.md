@@ -108,12 +108,40 @@ generate-it
 - You can also publish to TestPyPI first to test the workflow: https://test.pypi.org
 - To use TestPyPI, add the extra index in setup: `twine upload --repository testpypi dist/*`
 
-## GitHub Actions (Optional)
+## GitHub Actions (Already Set Up)
 
-To automate releases, you can set up GitHub Actions to build and publish when you create a tag:
+Automated workflows are configured in `.github/workflows/`:
 
-1. Create `.github/workflows/publish.yml`
-2. Add your PyPI API token as a GitHub secret named `PYPI_API_TOKEN`
-3. Workflow will trigger on new version tags and publish automatically
+**test.yml**: Runs tests on Python 3.10-3.12 across Linux, macOS, and Windows whenever you push to main or create a pull request.
 
-Let me know if you'd like help setting this up!
+**publish.yml**: Automatically builds and publishes to PyPI when you push a version tag (e.g., `git push origin v0.1.1`).
+
+### Setting Up Automated Publishing
+
+1. Go to your GitHub repository Settings → Secrets and variables → Actions
+2. Create a new secret named `PYPI_API_TOKEN` with your PyPI API token value
+3. Now whenever you create a version tag, the workflow will automatically build and publish to PyPI
+
+### Usage
+
+```bash
+# Update version in pyproject.toml
+# e.g., change version = "0.1.0" to version = "0.1.1"
+
+git add pyproject.toml
+git commit -m "Bump version to 0.1.1
+
+Co-Authored-By: Warp <agent@warp.dev>"
+
+git tag v0.1.1
+git push origin main
+git push origin v0.1.1
+```
+
+The GitHub Actions workflow will automatically:
+1. Run tests across all platforms
+2. Build the distribution packages
+3. Validate the package
+4. Upload to PyPI
+
+You can monitor progress in the "Actions" tab on GitHub.
