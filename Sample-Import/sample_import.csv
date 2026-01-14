@@ -1,0 +1,4 @@
+name,url,username,password,note
+GitHub,https://github.com,devuser,ExamplePass123!,personal account
+Google,https://accounts.google.com,user@gmail.com,ExamplePass456!,2FA enabled
+Bank,https://bank.example.com,jane_doe,ExamplePass789!,demo only

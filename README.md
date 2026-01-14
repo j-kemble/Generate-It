@@ -68,6 +68,8 @@ Generate It includes an encrypted local vault to store your generated credential
 - **Hotkeys**:
   - `g`: Generate new credential
   - `v`: Open **Vault Explorer**
+  - `i`: Import credentials from CSV
+  - `e`: Export credentials to CSV
 
 ### Vault Explorer (`v`)
 - `↑/↓`: Navigate your saved credentials
@@ -83,6 +85,16 @@ When you generate a credential you will:
 2. Enter a **Service Name** (e.g., "GitHub").
 3. Enter a **Username** or **Password** (whichever wasn't generated).
    - **Pro Tip**: Press **`Tab`** in these fields to instantly generate a random username or password on the fly!
+
+### CSV Import/Export
+- **Export**: Press `e` and enter a file path. If the file already exists, you must confirm overwrite.
+  - If any credentials fail to decrypt during export, you'll see a list of skipped entries.
+- **Import**: Press `i` and enter a CSV file path.
+  - The importer detects duplicates (case-insensitive match on **service name + username**) and asks whether to **merge (overwrite)** or **ignore** them.
+  - Rows missing required fields are skipped.
+- **Export format** (browser-style): `name,url,username,password,note`
+  - `url` and `note` are exported as empty fields (not stored in the vault yet).
+  - Import accepts common header variants: `name/service/title`, `username/login/user`, `password/pass`, plus optional `url/uri` and `note/notes`.
 
 ## How it works
 

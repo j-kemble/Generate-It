@@ -9,6 +9,9 @@ Controls (default):
 - Space: toggle
 - ←/→: adjust numeric values
 - Enter / g: generate
+- v: vault explorer
+- i: import CSV
+- e: export CSV
 - b: jump focus to mode
 """
 
@@ -39,6 +42,7 @@ def _run_modal(
     prompt: str,
     is_password: bool = False,
     generator_func: callable | None = None,
+    max_length: int = 50,
 ) -> str | None:
     """Runs a blocking modal dialog for text input. Returns the string or None if cancelled."""
     h, w = stdscr.getmaxyx()
@@ -93,8 +97,63 @@ def _run_modal(
             except Exception:
                 pass
         elif 32 <= key <= 126:
-            if len(input_str) < 50: # Arbitrary limit
+            if len(input_str) < max_length:
                 input_str += chr(key)
+
+def _run_scrollable_modal(
+    stdscr: "curses._CursesWindow",
+    theme: Theme,
+    title: str,
+    lines: list[str],
+) -> None:
+    """Runs a blocking modal with scrollable multi-line text."""
+    h, w = stdscr.getmaxyx()
+    box_h = min(20, h - 4)
+    box_w = min(70, w - 4)
+    y, x = (h - box_h) // 2, (w - box_w) // 2
+    
+    win = curses.newwin(box_h, box_w, y, x)
+    win.keypad(True)
+    
+    scroll_pos = 0
+    content_h = box_h - 4  # Reserve space for title, border, and footer
+    
+    while True:
+        win.erase()
+        win.box()
+        
+        # Title
+        title_text = f" {title} "
+        win.addstr(0, 2, title_text[:box_w-4], theme.title)
+        
+        # Content with scrolling
+        visible_lines = lines[scroll_pos:scroll_pos + content_h]
+        for i, line in enumerate(visible_lines):
+            try:
+                win.addstr(2 + i, 2, line[:box_w-4])
+            except curses.error:
+                pass
+        
+        # Footer with scroll indicator
+        if len(lines) > content_h:
+            footer = f"↑/↓: Scroll • Esc: Close ({scroll_pos+1}-{min(scroll_pos+content_h, len(lines))} of {len(lines)})"
+        else:
+            footer = "Esc: Close"
+        try:
+            win.addstr(box_h - 2, 2, footer[:box_w-4], theme.dim)
+        except curses.error:
+            pass
+        
+        win.refresh()
+        
+        key = win.getch()
+        
+        if key in (27, ord('q'), ord('Q')):  # ESC/q
+            return
+        elif key in (curses.KEY_UP, ord('k')):
+            scroll_pos = max(0, scroll_pos - 1)
+        elif key in (curses.KEY_DOWN, ord('j')):
+            scroll_pos = min(max(0, len(lines) - content_h), scroll_pos + 1)
 
 # --- Header art -------------------------------------------------------------
 
@@ -577,7 +636,7 @@ def _render_footer(stdscr: "curses._CursesWindow", theme: Theme, message: str) -
     h, w = stdscr.getmaxyx()
 
     msg = message[: max(0, w - 1)]
-    help_line = "Tab/↑/↓ move • Space toggle • ←/→ adjust • Enter/g generate • q quit"
+    help_line = "Tab/↑/↓ move • Space toggle • ←/→ adjust • Enter/g generate • i import • e export • v vault • q quit"
 
     _addstr_safe(stdscr, h - 2, 0, " " * max(0, w - 1), theme.dim)
     _addstr_safe(stdscr, h - 2, 1, msg, theme.accent)
@@ -818,7 +877,13 @@ def _render_actions_box(
         _addstr_safe(stdscr, row, x + 2, btn_save[:inner_w], attr_save)
         row += 2
 
-    _addstr_safe(stdscr, row, x + 2, "Hotkeys: g generate • v vault • q quit"[:inner_w], theme.dim)
+    _addstr_safe(
+        stdscr,
+        row,
+        x + 2,
+        "Hotkeys: g generate • v vault • i import • e export • q quit"[:inner_w],
+        theme.dim,
+    )
 
 
 def _render_vault_box(
@@ -1524,6 +1589,8 @@ def run() -> int:
             toggle = key == ord(" ")
             generate_now = key in (ord("g"), ord("G"))
             open_vault = key in (ord("v"), ord("V"))
+            import_csv = key in (ord("i"), ord("I"))
+            export_csv = key in (ord("e"), ord("E"))
 
             if open_vault:
                 _run_vault_modal(stdscr, theme, state)
@@ -1533,6 +1600,115 @@ def run() -> int:
 
             if generate_now:
                 _generate(state, words)
+                continue
+
+            # CSV Export
+            if export_csv:
+                if not state.vault_unlocked or not state.storage:
+                    _run_modal(stdscr, theme, "ERROR", "Vault is locked or unavailable.")
+                    stdscr.clear()
+                    continue
+                
+                file_path = _run_modal(stdscr, theme, "EXPORT CSV", "Enter file path:", max_length=200)
+                if file_path:
+                    from pathlib import Path
+                    csv_path = Path(file_path).expanduser()
+                    
+                    # Check if file exists and confirm overwrite
+                    if csv_path.exists():
+                        confirm = _run_modal(stdscr, theme, "CONFIRM", f"File exists. Overwrite? (type 'yes'):")
+                        if not confirm or confirm.lower() != 'yes':
+                            state.message = "Export cancelled."
+                            stdscr.clear()
+                            continue
+                    
+                    try:
+                        exported, skipped = state.storage.export_to_csv(csv_path)
+                        
+                        if skipped:
+                            skip_lines = [f"The following {len(skipped)} credential(s) failed to export:", ""]
+                            for item in skipped:
+                                skip_lines.append(f"- {item['service']} / {item['username']}: {item['error']}")
+                            _run_scrollable_modal(stdscr, theme, "EXPORT WARNING", skip_lines)
+                        
+                        state.message = f"Exported {exported} credential(s) to {csv_path}."
+                        if skipped:
+                            state.message += f" ({len(skipped)} skipped)"
+                    except Exception as e:
+                        _run_modal(stdscr, theme, "ERROR", f"Export failed: {e}")
+                        state.message = "Export failed."
+                
+                stdscr.clear()
+                continue
+
+            # CSV Import
+            if import_csv:
+                if not state.vault_unlocked or not state.storage:
+                    _run_modal(stdscr, theme, "ERROR", "Vault is locked or unavailable.")
+                    stdscr.clear()
+                    continue
+                
+                file_path = _run_modal(stdscr, theme, "IMPORT CSV", "Enter file path:", max_length=200)
+                if file_path:
+                    from pathlib import Path
+                    csv_path = Path(file_path).expanduser()
+                    
+                    if not csv_path.exists():
+                        _run_modal(stdscr, theme, "ERROR", f"File not found: {csv_path}")
+                        stdscr.clear()
+                        continue
+                    
+                    try:
+                        # Preview pass: detect duplicates without importing
+                        _, _, preview_issues = state.storage.import_from_csv(
+                            csv_path, merge_duplicates=False, dry_run=True
+                        )
+                        
+                        merge = False
+                        dup_count = len([d for d in preview_issues if 'Duplicate' in d['reason']])
+                        if dup_count > 0:
+                            # Show duplicate summary and ask user
+                            dup_lines = [f"Found {dup_count} duplicate(s):", ""]
+                            for item in preview_issues:
+                                if 'Duplicate' in item['reason']:
+                                    dup_lines.append(f"- {item['service']} / {item['username']}")
+                            dup_lines.append("")
+                            dup_lines.append("Do you want to merge (overwrite) duplicates?")
+                            _run_scrollable_modal(stdscr, theme, "DUPLICATES FOUND", dup_lines)
+                            
+                            merge_confirm = _run_modal(stdscr, theme, "MERGE?", "Type 'yes' to merge/overwrite:")
+                            if merge_confirm and merge_confirm.lower() == 'yes':
+                                merge = True
+                        
+                        # Import with merge decision
+                        imported, skipped, duplicates = state.storage.import_from_csv(
+                            csv_path, merge_duplicates=merge, dry_run=False
+                        )
+                        
+                        # Show results
+                        if duplicates:
+                            result_lines = [f"Import complete:", ""]
+                            result_lines.append(f"Imported: {imported}")
+                            result_lines.append(f"Skipped: {skipped}")
+                            if duplicates:
+                                result_lines.append("")
+                                result_lines.append("Issues:")
+                                for item in duplicates:
+                                    result_lines.append(f"- {item['service']} / {item['username']}: {item['reason']}")
+                            _run_scrollable_modal(stdscr, theme, "IMPORT RESULTS", result_lines)
+                        else:
+                            _run_modal(stdscr, theme, "SUCCESS", f"Imported {imported} credential(s).")
+                        
+                        state.message = f"Imported {imported} credential(s). ({skipped} skipped)"
+                        
+                        # Refresh vault list
+                        state.vault_credentials = state.storage.list_credentials()
+                        
+                    except Exception as e:
+                        _run_modal(stdscr, theme, "ERROR", f"Import failed: {e}")
+                        state.message = "Import failed."
+                
+                stdscr.clear()
                 continue
 
             if activate or toggle:

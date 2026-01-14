@@ -1,8 +1,9 @@
 import os
 import sqlite3
 import base64
+import csv
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Dict, Tuple
 
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
@@ -194,3 +195,173 @@ class StorageManager:
         cursor = conn.cursor()
         cursor.execute("DELETE FROM credentials WHERE id = ?", (credential_id,))
         conn.commit()
+
+    def export_to_csv(self, csv_path: Path) -> Tuple[int, List[Dict[str, str]]]:
+        """Export credentials to CSV file in browser-style format.
+        
+        Returns:
+            Tuple of (exported_count, skipped_rows)
+            skipped_rows is a list of dicts with 'service', 'username', 'error' keys
+        """
+        if not self._fernet:
+            raise StorageError("Vault is locked.")
+
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, service, username, encrypted_password, created_at FROM credentials ORDER BY service")
+        
+        exported = 0
+        skipped = []
+        
+        with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            # Browser-style format: name, url, username, password, note
+            writer.writerow(['name', 'url', 'username', 'password', 'note'])
+            
+            for row in cursor.fetchall():
+                try:
+                    password = self._fernet.decrypt(row["encrypted_password"]).decode()
+                    # We don't store url or note, so leave them empty
+                    writer.writerow([row["service"], '', row["username"], password, ''])
+                    exported += 1
+                except Exception as e:
+                    skipped.append({
+                        'service': row["service"],
+                        'username': row["username"],
+                        'error': str(e)
+                    })
+        
+        return exported, skipped
+
+    def import_from_csv(
+        self,
+        csv_path: Path,
+        merge_duplicates: bool = False,
+        dry_run: bool = False,
+    ) -> Tuple[int, int, List[Dict[str, str]]]:
+        """Import credentials from CSV file.
+        
+        Accepts flexible column names:
+        - Service: name, service, title (case-insensitive)
+        - Username: username, login, user
+        - Password: password, pass
+        - Optional: url, uri, note, notes
+        
+        Detects duplicates by case-insensitive (service, username) match.
+        
+        Args:
+            csv_path: Path to CSV file
+            merge_duplicates: If True, overwrite existing duplicates. If False, skip them.
+            dry_run: If True, do not modify the database; just report counts/issues.
+        
+        Returns:
+            Tuple of (imported_count, skipped_count, duplicate_list)
+            duplicate_list contains dicts with 'service', 'username', 'reason' keys
+        """
+        if not self._fernet:
+            raise StorageError("Vault is locked.")
+
+        # Load existing credentials for duplicate detection (no decryption needed)
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, service, username FROM credentials")
+        existing_keys = set()
+        existing_map = {}  # Maps (service.lower(), username.lower()) -> credential id
+        for row in cursor.fetchall():
+            key = (row["service"].lower(), row["username"].lower())
+            existing_keys.add(key)
+            existing_map[key] = row["id"]
+
+        imported = 0
+        skipped = 0
+        duplicates = []
+        
+        with open(csv_path, 'r', newline='', encoding='utf-8-sig') as f:
+            reader = csv.DictReader(f)
+            
+            if not reader.fieldnames:
+                raise StorageError("CSV file has no headers.")
+            
+            # Normalize header names (lowercase)
+            headers_lower = {h.lower(): h for h in reader.fieldnames}
+            
+            # Map flexible column names to our fields
+            service_col = None
+            username_col = None
+            password_col = None
+            
+            for name_variant in ['name', 'service', 'title']:
+                if name_variant in headers_lower:
+                    service_col = headers_lower[name_variant]
+                    break
+            
+            for user_variant in ['username', 'login', 'user']:
+                if user_variant in headers_lower:
+                    username_col = headers_lower[user_variant]
+                    break
+            
+            for pass_variant in ['password', 'pass']:
+                if pass_variant in headers_lower:
+                    password_col = headers_lower[pass_variant]
+                    break
+            
+            if not service_col or not username_col or not password_col:
+                missing = []
+                if not service_col:
+                    missing.append('name/service/title')
+                if not username_col:
+                    missing.append('username/login/user')
+                if not password_col:
+                    missing.append('password/pass')
+                raise StorageError(f"CSV missing required columns: {', '.join(missing)}")
+            
+            for row_num, row in enumerate(reader, start=2):  # Start at 2 (header is row 1)
+                service = (row.get(service_col) or '').strip()
+                username = (row.get(username_col) or '').strip()
+                password = (row.get(password_col) or '').strip()
+                
+                # Skip blank rows
+                if not service or not username or not password:
+                    skipped += 1
+                    duplicates.append({
+                        'service': service or '(empty)',
+                        'username': username or '(empty)',
+                        'reason': f'Row {row_num}: Missing required field(s)'
+                    })
+                    continue
+                
+                # Check for duplicates
+                key = (service.lower(), username.lower())
+                if key in existing_keys:
+                    if merge_duplicates and not dry_run:
+                        # Update existing credential
+                        cred_id = existing_map[key]
+                        encrypted_password = self._fernet.encrypt(password.encode())
+                        cursor.execute(
+                            "UPDATE credentials SET encrypted_password = ? WHERE id = ?",
+                            (encrypted_password, cred_id)
+                        )
+                        conn.commit()
+                        imported += 1
+                    else:
+                        skipped += 1
+                        duplicates.append({
+                            'service': service,
+                            'username': username,
+                            'reason': 'Duplicate (not merged)'
+                        })
+                else:
+                    # Insert new credential
+                    if not dry_run:
+                        encrypted_password = self._fernet.encrypt(password.encode())
+                        cursor.execute(
+                            "INSERT INTO credentials (service, username, encrypted_password) VALUES (?, ?, ?)",
+                            (service, username, encrypted_password)
+                        )
+                        conn.commit()
+                        existing_map[key] = cursor.lastrowid
+                    imported += 1
+                    # Add to existing keys to avoid duplicate inserts in the same import
+                    existing_keys.add(key)
+        
+        return imported, skipped, duplicates
