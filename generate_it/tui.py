@@ -12,6 +12,8 @@ Controls (default):
 - v: vault explorer
 - i: import CSV
 - e: export CSV
+- a: add credential manually
+- ?: hotkey legend
 - b: jump focus to mode
 """
 
@@ -532,6 +534,9 @@ def _focus_items(state: AppState) -> list[str]:
     # Add Save button if there is output
     if state.output and state.vault_unlocked:
         items.append("save")
+    # Manual add is always available when vault is unlocked
+    if state.vault_unlocked:
+        items.append("manual_add")
         
     return items
 
@@ -636,7 +641,7 @@ def _render_footer(stdscr: "curses._CursesWindow", theme: Theme, message: str) -
     h, w = stdscr.getmaxyx()
 
     msg = message[: max(0, w - 1)]
-    help_line = "Tab/↑/↓ move • Space toggle • ←/→ adjust • Enter/g generate • i import • e export • v vault • q quit"
+    help_line = "Tab/↑/↓ move • Space toggle • Enter/g gen • a add • v vault • ? help • q quit"
 
     _addstr_safe(stdscr, h - 2, 0, " " * max(0, w - 1), theme.dim)
     _addstr_safe(stdscr, h - 2, 1, msg, theme.accent)
@@ -871,6 +876,12 @@ def _render_actions_box(
     _addstr_safe(stdscr, row, x + 2, btn[:inner_w], attr)
     row += 2
 
+    if state.vault_unlocked:
+        btn_add = "[ Add manually ]"
+        attr_add = theme.focus if focus_id == "manual_add" else theme.ok
+        _addstr_safe(stdscr, row, x + 2, btn_add[:inner_w], attr_add)
+        row += 2
+
     if state.output and state.vault_unlocked:
         btn_save = "[ Save ]"
         attr_save = theme.focus if focus_id == "save" else theme.ok
@@ -881,7 +892,7 @@ def _render_actions_box(
         stdscr,
         row,
         x + 2,
-        "Hotkeys: g generate • v vault • i import • e export • q quit"[:inner_w],
+        "Hotkeys: g generate • v vault • a add • ? help • q quit"[:inner_w],
         theme.dim,
     )
 
@@ -1591,6 +1602,96 @@ def run() -> int:
             open_vault = key in (ord("v"), ord("V"))
             import_csv = key in (ord("i"), ord("I"))
             export_csv = key in (ord("e"), ord("E"))
+            manual_add = key in (ord("a"), ord("A"))
+            show_help = key == ord("?")
+
+            if show_help:
+                help_lines = [
+                    "GLOBAL HOTKEYS",
+                    "g       : Generate new credential",
+                    "v       : Open Vault Explorer",
+                    "i       : Import credentials from CSV",
+                    "e       : Export credentials to CSV",
+                    "?       : Show this help",
+                    "q / Esc : Quit application",
+                    "",
+                    "NAVIGATION & EDITING",
+                    "Tab     : Move focus forward",
+                    "S-Tab   : Move focus backward",
+                    "↑ / ↓   : Move focus up/down",
+                    "b       : Jump focus to Mode selection",
+                    "Space   : Toggle checkboxes / radio buttons",
+                    "← / →   : Adjust numeric values",
+                    "Enter   : Confirm / Generate",
+                    "",
+                    "VAULT EXPLORER (inside 'v')",
+                    "↑ / ↓   : Navigate list",
+                    "Enter   : View details",
+                    "c       : Copy Password",
+                    "u       : Copy Username",
+                    "d       : Delete entry",
+                    "Esc     : Close vault",
+                ]
+                _run_scrollable_modal(stdscr, theme, "HOTKEY LEGEND", help_lines)
+                stdscr.clear()
+                continue
+
+            # Manual add (hotkey)
+            if manual_add:
+                if not state.vault_unlocked or not state.storage:
+                    _run_modal(stdscr, theme, "ERROR", "Vault is locked or unavailable.")
+                    stdscr.clear()
+                    continue
+                try:
+                    service = _run_modal(stdscr, theme, "ADD", "Service name:", max_length=120)
+                    if not service:
+                        state.message = "Add cancelled."
+                        stdscr.clear()
+                        continue
+
+                    def _gen_user():
+                        return generator.generate_username_adjective_noun(add_numbers=True)
+
+                    username = _run_modal(
+                        stdscr,
+                        theme,
+                        "ADD",
+                        "Username:",
+                        generator_func=_gen_user,
+                        max_length=120,
+                    )
+                    if not username:
+                        state.message = "Add cancelled."
+                        stdscr.clear()
+                        continue
+
+                    def _gen_pwd():
+                        return generator.generate_character_password(
+                            16, use_letters=True, use_numbers=True, use_special=True
+                        )
+
+                    password = _run_modal(
+                        stdscr,
+                        theme,
+                        "ADD",
+                        "Password:",
+                        is_password=True,
+                        generator_func=_gen_pwd,
+                        max_length=200,
+                    )
+                    if not password:
+                        state.message = "Add cancelled."
+                        stdscr.clear()
+                        continue
+
+                    state.storage.save_credential(service, username, password)
+                    state.vault_credentials = state.storage.list_credentials()
+                    state.message = f"Added credential for {service}."
+                except Exception as e:
+                    _run_modal(stdscr, theme, "ERROR", f"Add failed: {e}")
+                    state.message = "Add failed."
+                stdscr.clear()
+                continue
 
             if open_vault:
                 _run_vault_modal(stdscr, theme, state)
@@ -1747,6 +1848,11 @@ def run() -> int:
                     state.username_add_numbers = not state.username_add_numbers
                 elif focus_id == "generate" and activate:
                     _generate(state, words)
+                elif focus_id == "manual_add" and activate:
+                    manual_add = True
+                    # reuse hotkey path
+                    key = ord("a")
+                    continue
                 elif focus_id == "save" and activate:
                     # SAVE FLOW
                     service = _run_modal(stdscr, theme, "SAVE", "Enter Service/Website Name:")
