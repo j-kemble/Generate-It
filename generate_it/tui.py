@@ -531,12 +531,12 @@ def _focus_items(state: AppState) -> list[str]:
             items += ["username_word_count", "username_separator", "username_add_numbers"]
         items += ["generate"]
     
-    # Add Save button if there is output
-    if state.output and state.vault_unlocked:
-        items.append("save")
     # Manual add is always available when vault is unlocked
     if state.vault_unlocked:
         items.append("manual_add")
+    # Add Save button if there is output
+    if state.output and state.vault_unlocked:
+        items.append("save")
         
     return items
 
