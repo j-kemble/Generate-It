@@ -874,19 +874,19 @@ def _render_actions_box(
     btn = "[ Generate ]"
     attr = theme.focus if focus_id == "generate" else theme.accent
     _addstr_safe(stdscr, row, x + 2, btn[:inner_w], attr)
-    row += 2
+    row += 1
 
     if state.vault_unlocked:
         btn_add = "[ Add manually ]"
         attr_add = theme.focus if focus_id == "manual_add" else theme.ok
         _addstr_safe(stdscr, row, x + 2, btn_add[:inner_w], attr_add)
-        row += 2
+        row += 1
 
     if state.output and state.vault_unlocked:
         btn_save = "[ Save ]"
         attr_save = theme.focus if focus_id == "save" else theme.ok
         _addstr_safe(stdscr, row, x + 2, btn_save[:inner_w], attr_save)
-        row += 2
+        row += 1
 
     _addstr_safe(
         stdscr,
