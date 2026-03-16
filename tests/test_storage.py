@@ -1,3 +1,4 @@
+import csv
 import sqlite3
 import pytest
 from generate_it.storage import StorageManager, InvalidPasswordError, StorageError
@@ -139,3 +140,179 @@ def test_csv_import_duplicate_detection_and_merge(temp_storage, tmp_path):
     assert creds[0]["service"] == "GitHub"
     assert creds[0]["username"] == "DevUser"
     assert creds[0]["password"] == "NEWPASS"
+
+
+def test_csv_import_bitwarden_auto_detect_and_skip_non_login(temp_storage, tmp_path):
+    temp_storage.initialize_vault("secret")
+
+    csv_path = tmp_path / "bitwarden.csv"
+    csv_path.write_text(
+        "folder,favorite,type,name,notes,fields,reprompt,login_uri,login_username,login_password,login_totp\n"
+        ",0,login,GitHub,,,0,https://github.com,dev,gh_pass,\n"
+        ",0,card,Visa,,,0,,,ignored,\n",
+        encoding="utf-8",
+    )
+
+    imported, skipped, issues = temp_storage.import_from_csv(csv_path, import_format="auto")
+    assert imported == 1
+    assert skipped == 1
+    assert any("Unsupported item type" in issue["reason"] for issue in issues)
+    assert issues[0]["service"] == "Visa"
+
+    creds = temp_storage.list_credentials()
+    assert len(creds) == 1
+    assert creds[0]["service"] == "GitHub"
+    assert creds[0]["username"] == "dev"
+    assert creds[0]["password"] == "gh_pass"
+
+
+def test_csv_import_apple_format(temp_storage, tmp_path):
+    temp_storage.initialize_vault("secret")
+
+    csv_path = tmp_path / "apple.csv"
+    csv_path.write_text(
+        "Title,URL,Username,Password,Notes,OTPAuth\n"
+        "iCloud,https://icloud.com,apple-user,apple-pass,,\n",
+        encoding="utf-8",
+    )
+
+    imported, skipped, issues = temp_storage.import_from_csv(csv_path, import_format="apple")
+    assert imported == 1
+    assert skipped == 0
+    assert issues == []
+
+    creds = temp_storage.list_credentials()
+    assert len(creds) == 1
+    assert creds[0]["service"] == "iCloud"
+    assert creds[0]["username"] == "apple-user"
+    assert creds[0]["password"] == "apple-pass"
+
+
+def test_csv_import_nordpass_template_format(temp_storage, tmp_path):
+    temp_storage.initialize_vault("secret")
+
+    csv_path = tmp_path / "nordpass.csv"
+    csv_path.write_text(
+        "name,url,username,password,note,cardholdername,cardnumber,cvc,expirydate,zipcode,folder,full_name,phone_number,email,address1,address2,city,country,state,type,custom_fields\n"
+        "GitLab,https://gitlab.com,git-user,git-pass,,,,,,,,,,,,,,,password,\n"
+        "Secure Note Example,,,,This row should be skipped,,,,,,,,,,,,,,,secure_note,\n",
+        encoding="utf-8",
+    )
+
+    imported, skipped, issues = temp_storage.import_from_csv(csv_path, import_format="nordpass")
+    assert imported == 1
+    assert skipped == 1
+    assert len(issues) == 1
+    assert "Unsupported item type" in issues[0]["reason"]
+    assert issues[0]["service"] == "Secure Note Example"
+
+    creds = temp_storage.list_credentials()
+    assert len(creds) == 1
+    assert creds[0]["service"] == "GitLab"
+    assert creds[0]["username"] == "git-user"
+    assert creds[0]["password"] == "git-pass"
+
+
+def test_csv_export_bitwarden_format_headers_and_row_mapping(temp_storage, tmp_path):
+    temp_storage.initialize_vault("secret")
+    temp_storage.save_credential("GitHub", "dev", "gh_pass")
+
+    csv_path = tmp_path / "export_bitwarden.csv"
+    exported, skipped = temp_storage.export_to_csv(csv_path, export_format="bitwarden")
+    assert exported == 1
+    assert skipped == []
+
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        rows = list(csv.reader(f))
+
+    assert rows[0] == [
+        "folder",
+        "favorite",
+        "type",
+        "name",
+        "notes",
+        "fields",
+        "reprompt",
+        "login_uri",
+        "login_username",
+        "login_password",
+        "login_totp",
+    ]
+    assert rows[1][2] == "login"
+    assert rows[1][3] == "GitHub"
+    assert rows[1][8] == "dev"
+    assert rows[1][9] == "gh_pass"
+
+
+def test_csv_export_apple_format_headers_and_row_mapping(temp_storage, tmp_path):
+    temp_storage.initialize_vault("secret")
+    temp_storage.save_credential("iCloud", "apple-user", "apple-pass")
+
+    csv_path = tmp_path / "export_apple.csv"
+    exported, skipped = temp_storage.export_to_csv(csv_path, export_format="apple")
+    assert exported == 1
+    assert skipped == []
+
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        rows = list(csv.reader(f))
+
+    assert rows[0] == ["Title", "URL", "Username", "Password", "Notes", "OTPAuth"]
+    assert rows[1] == ["iCloud", "", "apple-user", "apple-pass", "", ""]
+
+
+def test_csv_export_nordpass_format_headers_and_row_mapping(temp_storage, tmp_path):
+    temp_storage.initialize_vault("secret")
+    temp_storage.save_credential("NordAccount", "nord-user", "nord-pass")
+
+    csv_path = tmp_path / "export_nordpass.csv"
+    exported, skipped = temp_storage.export_to_csv(csv_path, export_format="nordpass")
+    assert exported == 1
+    assert skipped == []
+
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        rows = list(csv.reader(f))
+
+    assert rows[0] == [
+        "name",
+        "url",
+        "username",
+        "password",
+        "note",
+        "cardholdername",
+        "cardnumber",
+        "cvc",
+        "expirydate",
+        "zipcode",
+        "folder",
+        "full_name",
+        "phone_number",
+        "email",
+        "address1",
+        "address2",
+        "city",
+        "country",
+        "state",
+        "type",
+        "custom_fields",
+    ]
+    assert rows[1][0] == "NordAccount"
+    assert rows[1][2] == "nord-user"
+    assert rows[1][3] == "nord-pass"
+    assert rows[1][19] == "password"
+
+
+def test_csv_import_invalid_format_raises(temp_storage, tmp_path):
+    temp_storage.initialize_vault("secret")
+    csv_path = tmp_path / "sample.csv"
+    csv_path.write_text("name,username,password\nGitHub,dev,pass\n", encoding="utf-8")
+
+    with pytest.raises(StorageError, match="Unsupported import format"):
+        temp_storage.import_from_csv(csv_path, import_format="unknown-format")
+
+
+def test_csv_export_invalid_format_raises(temp_storage, tmp_path):
+    temp_storage.initialize_vault("secret")
+    csv_path = tmp_path / "sample.csv"
+
+    with pytest.raises(StorageError, match="Unsupported export format"):
+        temp_storage.export_to_csv(csv_path, export_format="unknown-format")

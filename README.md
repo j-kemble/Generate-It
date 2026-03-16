@@ -87,14 +87,19 @@ When you generate a credential you will:
    - **Pro Tip**: Press **`Tab`** in these fields to instantly generate a random username or password on the fly!
 
 ### CSV Import/Export
-- **Export**: Press `e` and enter a file path. If the file already exists, you must confirm overwrite.
+- **Export**: Press `e`, choose an export format, then enter a file path. If the file already exists, you must confirm overwrite.
   - If any credentials fail to decrypt during export, you'll see a list of skipped entries.
-- **Import**: Press `i` and enter a CSV file path.
+- **Import**: Press `i`, choose an import format (or `auto`), then enter a CSV file path.
   - The importer detects duplicates (case-insensitive match on **service name + username**) and asks whether to **merge (overwrite)** or **ignore** them.
-  - Rows missing required fields are skipped.
-- **Export format** (browser-style): `name,url,username,password,note`
-  - `url` and `note` are exported as empty fields (not stored in the vault yet).
-  - Import accepts common header variants: `name/service/title`, `username/login/user`, `password/pass`, plus optional `url/uri` and `note/notes`.
+  - Rows with missing required fields or unsupported record types are skipped with an issue report.
+- **Supported formats**:
+  - `generic` (browser-style): `name,url,username,password,note`
+  - `bitwarden`: supports login CSV fields (`name`, `login_username`, `login_password`, `type`, etc.). Non-login item types are skipped.
+  - `apple`: supports Apple-style title/url/username/password exports (with optional notes/OTP columns).
+  - `nordpass`: supports NordPass CSV template columns.
+- **Data model note**: The vault currently stores only `service`, `username`, and `password`.
+  - During export, unsupported provider fields (folder, notes, TOTP, cards, custom fields, etc.) are emitted as empty/default values.
+  - During import, unsupported/non-credential rows are ignored with a reason.
 
 ## How it works
 

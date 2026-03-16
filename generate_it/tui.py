@@ -22,12 +22,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import curses
 import datetime as _dt
+import os
 import locale
 import math
+from pathlib import Path
 import textwrap
 import pyperclip
 
 from . import generator
+from . import csv_formats
 from .storage import StorageManager, InvalidPasswordError
 
 APP_NAME = "Generate It"
@@ -47,45 +50,74 @@ def _run_modal(
     max_length: int = 50,
 ) -> str | None:
     """Runs a blocking modal dialog for text input. Returns the string or None if cancelled."""
-    h, w = stdscr.getmaxyx()
-    box_h, box_w = 8, 60
-    y, x = (h - box_h) // 2, (w - box_w) // 2
-    
-    # Create a new window for the modal
-    win = curses.newwin(box_h, box_w, y, x)
-    win.keypad(True)
-    
     input_str = ""
-    
     while True:
+        h, w = stdscr.getmaxyx()
+        min_w = 46
+        max_w = max(min_w, w - 4)
+        preferred_w = max(60, len(prompt) + 8)
+        box_w = min(max_w, preferred_w)
+        inner_w = max(10, box_w - 4)
+
+        prompt_lines = textwrap.wrap(
+            prompt,
+            width=inner_w,
+            break_long_words=True,
+            break_on_hyphens=False,
+        ) or [""]
+
+        help_txt = "Enter: Confirm • Esc: Cancel"
+        if generator_func:
+            help_txt += " • Tab: Generate"
+
+        input_row = 2 + len(prompt_lines) + 1
+        help_row = input_row + 2
+        box_h = max(8, help_row + 2)
+        box_h = min(max(8, h - 2), box_h)
+
+        max_prompt_lines = max(1, box_h - 6)
+        if len(prompt_lines) > max_prompt_lines:
+            prompt_lines = prompt_lines[: max_prompt_lines - 1] + ["..."]
+            input_row = 2 + len(prompt_lines) + 1
+            help_row = input_row + 2
+
+        y, x = (h - box_h) // 2, (w - box_w) // 2
+        win = curses.newwin(box_h, box_w, y, x)
+        win.keypad(True)
         win.erase()
         win.box()
-        
         # Title
         title_text = f" {title} "
-        win.addstr(0, 2, title_text, theme.title)
-        
-        # Prompt
-        win.addstr(2, 2, prompt, theme.accent)
-        
+        try:
+            win.addstr(0, 2, title_text[: max(0, box_w - 4)], theme.title)
+        except curses.error:
+            pass
+
+        # Prompt (wrapped)
+        for i, line in enumerate(prompt_lines):
+            try:
+                win.addstr(2 + i, 2, line[:inner_w], theme.accent)
+            except curses.error:
+                pass
         # Input field
         field_attr = curses.A_REVERSE | theme.dim
         display_str = "*" * len(input_str) if is_password else input_str
         # Cursor simulation
-        display_str += " " 
-        
-        win.addstr(4, 2, display_str[:box_w-4], field_attr)
-        
+        display_str += " "
+        if len(display_str) > inner_w:
+            display_str = display_str[-inner_w:]
+        try:
+            win.addstr(input_row, 2, display_str[:inner_w], field_attr)
+        except curses.error:
+            pass
+
         # Help
-        help_txt = "Enter: Confirm • Esc: Cancel"
-        if generator_func:
-            help_txt += " • Tab: Generate"
-        win.addstr(6, 2, help_txt, theme.dim)
-        
+        try:
+            win.addstr(help_row, 2, help_txt[:inner_w], theme.dim)
+        except curses.error:
+            pass
         win.refresh()
-        
         key = win.getch()
-        
         if key == 27: # ESC
             return None
         elif key in (curses.KEY_ENTER, 10, 13):
@@ -156,6 +188,467 @@ def _run_scrollable_modal(
             scroll_pos = max(0, scroll_pos - 1)
         elif key in (curses.KEY_DOWN, ord('j')):
             scroll_pos = min(max(0, len(lines) - content_h), scroll_pos + 1)
+
+def _truncate_middle(text: str, max_len: int) -> str:
+    if len(text) <= max_len:
+        return text
+    if max_len <= 3:
+        return text[:max_len]
+    keep_left = (max_len - 3) // 2
+    keep_right = max_len - 3 - keep_left
+    return f"{text[:keep_left]}...{text[-keep_right:]}"
+
+
+def _resolve_start_dir(path_text: str) -> Path:
+    if not path_text.strip():
+        return Path.cwd()
+    candidate = Path(path_text).expanduser()
+    if candidate.exists():
+        return candidate if candidate.is_dir() else candidate.parent
+
+    parent = candidate.parent
+    while parent != parent.parent and not parent.exists():
+        parent = parent.parent
+    if parent.exists() and parent.is_dir():
+        return parent
+    return Path.cwd()
+
+
+def _collect_files_for_fuzzy(root_dir: Path, max_files: int = 5000, max_depth: int = 8) -> list[Path]:
+    files: list[Path] = []
+    root = root_dir.expanduser()
+    if not root.exists() or not root.is_dir():
+        return files
+
+    root_depth = len(root.parts)
+    for dirpath, dirnames, filenames in os.walk(root):
+        dir_path = Path(dirpath)
+        depth = len(dir_path.parts) - root_depth
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        if depth >= max_depth:
+            dirnames[:] = []
+
+        for filename in filenames:
+            if filename.startswith("."):
+                continue
+            files.append(dir_path / filename)
+            if len(files) >= max_files:
+                return files
+    return files
+
+
+def _fuzzy_score(query: str, text: str) -> int | None:
+    q = query.strip().lower()
+    if not q:
+        return 0
+    t = text.lower()
+
+    if q in t:
+        return t.index(q) * 2 + (len(t) - len(q))
+
+    q_idx = 0
+    gap_penalty = 0
+    last_match = -1
+    for i, ch in enumerate(t):
+        if q_idx >= len(q):
+            break
+        if ch == q[q_idx]:
+            if last_match != -1:
+                gap_penalty += i - last_match - 1
+            last_match = i
+            q_idx += 1
+    if q_idx != len(q):
+        return None
+
+    return 1000 + gap_penalty + len(t)
+
+
+def _run_fuzzy_file_picker(
+    stdscr: "curses._CursesWindow",
+    theme: Theme,
+    root_dir: Path,
+) -> str | None:
+    files = _collect_files_for_fuzzy(root_dir)
+    if not files:
+        _run_modal(stdscr, theme, "NO FILES", f"No files found under {root_dir}.")
+        return None
+
+    query = ""
+    selected_idx = 0
+    scroll_pos = 0
+
+    while True:
+        h, w = stdscr.getmaxyx()
+        box_h = min(max(14, int(h * 0.8)), max(12, h - 2))
+        box_w = min(max(70, int(w * 0.9)), max(44, w - 2))
+        y, x = (h - box_h) // 2, (w - box_w) // 2
+
+        win = curses.newwin(box_h, box_w, y, x)
+        win.keypad(True)
+        win.erase()
+        win.box()
+
+        inner_w = max(10, box_w - 4)
+        root_display = _truncate_middle(str(root_dir), max(8, inner_w - 7))
+        try:
+            win.addstr(0, 2, " FUZZY FILE PICKER ", theme.title)
+            win.addstr(1, 2, f"Root: {root_display}"[:inner_w], theme.dim)
+        except curses.error:
+            pass
+
+        query_display = f"Query: {query}"
+        query_display += " "
+        if len(query_display) > inner_w:
+            query_display = query_display[-inner_w:]
+        try:
+            win.addstr(2, 2, query_display[:inner_w], curses.A_REVERSE | theme.dim)
+        except curses.error:
+            pass
+
+        scored: list[tuple[int, str, Path]] = []
+        for p in files:
+            rel = str(p.relative_to(root_dir))
+            score = _fuzzy_score(query, rel)
+            if score is None:
+                continue
+            scored.append((score, rel, p))
+        scored.sort(key=lambda item: (item[0], len(item[1]), item[1]))
+        matches = scored[:500]
+
+        content_y = 4
+        content_h = max(1, box_h - 7)
+        selected_idx = max(0, min(selected_idx, max(0, len(matches) - 1)))
+        if selected_idx < scroll_pos:
+            scroll_pos = selected_idx
+        elif selected_idx >= scroll_pos + content_h:
+            scroll_pos = selected_idx - content_h + 1
+        scroll_pos = max(0, min(scroll_pos, max(0, len(matches) - content_h)))
+
+        if not matches:
+            try:
+                win.addstr(content_y, 2, "No matches. Keep typing or press Esc.", theme.dim)
+            except curses.error:
+                pass
+        else:
+            visible = matches[scroll_pos:scroll_pos + content_h]
+            for i, (_, rel, _) in enumerate(visible):
+                attr = theme.focus if (scroll_pos + i) == selected_idx else 0
+                line = _truncate_middle(rel, inner_w)
+                try:
+                    win.addstr(content_y + i, 2, line[:inner_w], attr)
+                except curses.error:
+                    pass
+
+        footer = "Type to search • ↑/↓ select • Enter choose • Backspace edit • Esc cancel"
+        try:
+            win.addstr(box_h - 2, 2, footer[:inner_w], theme.dim)
+        except curses.error:
+            pass
+
+        win.refresh()
+        key = win.getch()
+
+        if key in (27, ord('q'), ord('Q')):
+            return None
+        if key in (curses.KEY_UP, ord('k')):
+            selected_idx = max(0, selected_idx - 1)
+            continue
+        if key in (curses.KEY_DOWN, ord('j')):
+            selected_idx = min(max(0, len(matches) - 1), selected_idx + 1)
+            continue
+        if key in (curses.KEY_ENTER, 10, 13):
+            if matches:
+                return str(matches[selected_idx][2])
+            continue
+        if key in (curses.KEY_BACKSPACE, 127, 8):
+            query = query[:-1]
+            selected_idx = 0
+            scroll_pos = 0
+            continue
+        if key == 12:  # Ctrl+L clears query
+            query = ""
+            selected_idx = 0
+            scroll_pos = 0
+            continue
+        if 32 <= key <= 126:
+            query += chr(key)
+            selected_idx = 0
+            scroll_pos = 0
+
+
+def _run_file_browser_modal(
+    stdscr: "curses._CursesWindow",
+    theme: Theme,
+    start_dir: Path,
+) -> str | None:
+    current_dir = start_dir.expanduser()
+    if not current_dir.exists() or not current_dir.is_dir():
+        current_dir = Path.cwd()
+
+    filter_query = ""
+    selected_idx = 0
+    scroll_pos = 0
+
+    while True:
+        h, w = stdscr.getmaxyx()
+        box_h = min(max(14, int(h * 0.8)), max(12, h - 2))
+        box_w = min(max(70, int(w * 0.9)), max(44, w - 2))
+        y, x = (h - box_h) // 2, (w - box_w) // 2
+
+        win = curses.newwin(box_h, box_w, y, x)
+        win.keypad(True)
+        win.erase()
+        win.box()
+
+        inner_w = max(10, box_w - 4)
+        try:
+            win.addstr(0, 2, " FILE BROWSER ", theme.title)
+            win.addstr(1, 2, _truncate_middle(str(current_dir), inner_w), theme.dim)
+        except curses.error:
+            pass
+
+        query_line = f"Filter: {filter_query or '(none)'}"
+        try:
+            win.addstr(2, 2, _truncate_middle(query_line, inner_w), theme.dim)
+        except curses.error:
+            pass
+
+        try:
+            raw_entries = list(current_dir.iterdir())
+        except Exception:
+            raw_entries = []
+
+        dirs: list[Path] = []
+        files: list[Path] = []
+        for entry in raw_entries:
+            try:
+                if entry.is_dir():
+                    dirs.append(entry)
+                else:
+                    files.append(entry)
+            except Exception:
+                continue
+
+        dirs.sort(key=lambda p: p.name.lower())
+        files.sort(key=lambda p: p.name.lower())
+
+        children = dirs + files
+        if filter_query.strip():
+            q = filter_query.strip().lower()
+            children = [p for p in children if q in p.name.lower()]
+
+        items: list[tuple[str, Path, bool]] = []
+        if current_dir != current_dir.parent:
+            items.append(("[↑] ..", current_dir.parent, True))
+        for entry in children:
+            if entry.is_dir():
+                items.append((f"[D] {entry.name}/", entry, True))
+            else:
+                items.append((f"[F] {entry.name}", entry, False))
+
+        content_y = 4
+        content_h = max(1, box_h - 7)
+
+        selected_idx = max(0, min(selected_idx, max(0, len(items) - 1)))
+        if selected_idx < scroll_pos:
+            scroll_pos = selected_idx
+        elif selected_idx >= scroll_pos + content_h:
+            scroll_pos = selected_idx - content_h + 1
+        scroll_pos = max(0, min(scroll_pos, max(0, len(items) - content_h)))
+
+        if not items:
+            try:
+                win.addstr(content_y, 2, "No entries found.", theme.dim)
+            except curses.error:
+                pass
+        else:
+            visible = items[scroll_pos:scroll_pos + content_h]
+            for i, (label, _, _) in enumerate(visible):
+                attr = theme.focus if (scroll_pos + i) == selected_idx else 0
+                try:
+                    win.addstr(content_y + i, 2, _truncate_middle(label, inner_w), attr)
+                except curses.error:
+                    pass
+
+        footer = "Enter open/select • s choose dir • Backspace up • / filter • Ctrl+F fuzzy • Esc cancel"
+        try:
+            win.addstr(box_h - 2, 2, footer[:inner_w], theme.dim)
+        except curses.error:
+            pass
+
+        win.refresh()
+        key = win.getch()
+
+        if key in (27, ord('q'), ord('Q')):
+            return None
+        if key in (curses.KEY_UP, ord('k')):
+            selected_idx = max(0, selected_idx - 1)
+            continue
+        if key in (curses.KEY_DOWN, ord('j')):
+            selected_idx = min(max(0, len(items) - 1), selected_idx + 1)
+            continue
+        if key in (curses.KEY_BACKSPACE, 127, 8, curses.KEY_LEFT):
+            current_dir = current_dir.parent
+            selected_idx = 0
+            scroll_pos = 0
+            continue
+        if key in (ord('s'), ord('S')):
+            return str(current_dir)
+        if key == ord('/'):
+            filter_input = _run_modal(
+                stdscr,
+                theme,
+                "FILTER",
+                "Filter entries (substring, blank to clear):",
+                max_length=120,
+            )
+            if filter_input is not None:
+                filter_query = filter_input.strip()
+                selected_idx = 0
+                scroll_pos = 0
+            continue
+        if key in (6, ord('f'), ord('F')):  # Ctrl+F / f
+            chosen = _run_fuzzy_file_picker(stdscr, theme, current_dir)
+            if chosen:
+                return chosen
+            continue
+        if key in (curses.KEY_ENTER, 10, 13):
+            if not items:
+                continue
+            _, target, is_dir = items[selected_idx]
+            if is_dir:
+                current_dir = target
+                selected_idx = 0
+                scroll_pos = 0
+            else:
+                return str(target)
+
+
+def _run_path_modal(
+    stdscr: "curses._CursesWindow",
+    theme: Theme,
+    title: str,
+    prompt: str,
+    *,
+    max_length: int = 300,
+) -> str | None:
+    input_str = ""
+
+    while True:
+        h, w = stdscr.getmaxyx()
+        min_w = 60
+        max_w = max(min_w, w - 4)
+        preferred_w = max(74, len(prompt) + 10)
+        box_w = min(max_w, preferred_w)
+        inner_w = max(10, box_w - 4)
+
+        prompt_lines = textwrap.wrap(
+            prompt,
+            width=inner_w,
+            break_long_words=True,
+            break_on_hyphens=False,
+        ) or [""]
+
+        input_row = 2 + len(prompt_lines) + 1
+        help_row = input_row + 2
+        box_h = max(9, help_row + 2)
+        box_h = min(max(9, h - 2), box_h)
+
+        max_prompt_lines = max(1, box_h - 7)
+        if len(prompt_lines) > max_prompt_lines:
+            prompt_lines = prompt_lines[: max_prompt_lines - 1] + ["..."]
+            input_row = 2 + len(prompt_lines) + 1
+            help_row = input_row + 2
+
+        y, x = (h - box_h) // 2, (w - box_w) // 2
+        win = curses.newwin(box_h, box_w, y, x)
+        win.keypad(True)
+        win.erase()
+        win.box()
+
+        try:
+            win.addstr(0, 2, f" {title} "[: max(0, box_w - 4)], theme.title)
+        except curses.error:
+            pass
+
+        for i, line in enumerate(prompt_lines):
+            try:
+                win.addstr(2 + i, 2, line[:inner_w], theme.accent)
+            except curses.error:
+                pass
+
+        display = input_str + " "
+        if len(display) > inner_w:
+            display = display[-inner_w:]
+        try:
+            win.addstr(input_row, 2, display[:inner_w], curses.A_REVERSE | theme.dim)
+        except curses.error:
+            pass
+
+        help_line = "Enter confirm • Esc cancel • Ctrl+O browse • Ctrl+F fuzzy"
+        try:
+            win.addstr(help_row, 2, help_line[:inner_w], theme.dim)
+        except curses.error:
+            pass
+
+        win.refresh()
+        key = win.getch()
+
+        if key == 27:
+            return None
+        if key in (curses.KEY_ENTER, 10, 13):
+            return input_str.strip()
+        if key in (curses.KEY_BACKSPACE, 127, 8):
+            input_str = input_str[:-1]
+            continue
+        if key in (15, curses.KEY_F2):  # Ctrl+O / F2
+            chosen = _run_file_browser_modal(stdscr, theme, _resolve_start_dir(input_str))
+            if chosen:
+                input_str = chosen
+            continue
+        if key in (6, curses.KEY_F3):  # Ctrl+F / F3
+            chosen = _run_fuzzy_file_picker(stdscr, theme, _resolve_start_dir(input_str))
+            if chosen:
+                input_str = chosen
+            continue
+        if 32 <= key <= 126:
+            if len(input_str) < max_length:
+                input_str += chr(key)
+
+
+def _prompt_csv_format(
+    stdscr: "curses._CursesWindow",
+    theme: Theme,
+    *,
+    mode: str,
+) -> str | None:
+    if mode == "import":
+        prompt = "Format (auto/generic/bitwarden/apple/nordpass):"
+        title = "IMPORT FORMAT"
+        normalizer = csv_formats.normalize_import_format
+        default_value = "auto"
+    else:
+        prompt = "Format (generic/bitwarden/apple/nordpass):"
+        title = "EXPORT FORMAT"
+        normalizer = csv_formats.normalize_export_format
+        default_value = "generic"
+
+    while True:
+        chosen = _run_modal(
+            stdscr,
+            theme,
+            title,
+            f"{prompt} [default: {default_value}]",
+            max_length=40,
+        )
+        if chosen is None:
+            return None
+
+        candidate = chosen.strip() or default_value
+        try:
+            return normalizer(candidate)
+        except ValueError as e:
+            _run_modal(stdscr, theme, "ERROR", str(e))
 
 # --- Header art -------------------------------------------------------------
 
@@ -641,7 +1134,7 @@ def _render_footer(stdscr: "curses._CursesWindow", theme: Theme, message: str) -
     h, w = stdscr.getmaxyx()
 
     msg = message[: max(0, w - 1)]
-    help_line = "Tab/↑/↓ move • Space toggle • Enter/g gen • a add • v vault • ? help • q quit"
+    help_line = "Tab/↑/↓ move • Enter/g gen • i import • e export • v vault • q quit"
 
     _addstr_safe(stdscr, h - 2, 0, " " * max(0, w - 1), theme.dim)
     _addstr_safe(stdscr, h - 2, 1, msg, theme.accent)
@@ -1610,8 +2103,8 @@ def run() -> int:
                     "GLOBAL HOTKEYS",
                     "g       : Generate new credential",
                     "v       : Open Vault Explorer",
-                    "i       : Import credentials from CSV",
-                    "e       : Export credentials to CSV",
+                    "i       : Import credentials from CSV (choose format)",
+                    "e       : Export credentials to CSV (choose format)",
                     "?       : Show this help",
                     "q / Esc : Quit application",
                     "",
@@ -1623,6 +2116,12 @@ def run() -> int:
                     "Space   : Toggle checkboxes / radio buttons",
                     "← / →   : Adjust numeric values",
                     "Enter   : Confirm / Generate",
+                    "",
+                    "FILE PICKER (during import/export path prompt)",
+                    "Ctrl+O  : Open file browser",
+                    "Ctrl+F  : Open fuzzy file finder",
+                    "F2/F3   : Browser/fuzzy alternatives",
+                    "s       : Select current directory (browser mode)",
                     "",
                     "VAULT EXPLORER (inside 'v')",
                     "↑ / ↓   : Navigate list",
@@ -1710,10 +2209,60 @@ def run() -> int:
                     stdscr.clear()
                     continue
                 
-                file_path = _run_modal(stdscr, theme, "EXPORT CSV", "Enter file path:", max_length=200)
+                selected_export_format = _prompt_csv_format(stdscr, theme, mode="export")
+                if selected_export_format is None:
+                    state.message = "Export cancelled."
+                    stdscr.clear()
+                    continue
+                file_path = _run_path_modal(
+                    stdscr,
+                    theme,
+                    "EXPORT CSV",
+                    "Enter export path (file or directory):",
+                    max_length=300,
+                )
                 if file_path:
-                    from pathlib import Path
-                    csv_path = Path(file_path).expanduser()
+                    raw_path = Path(file_path).expanduser()
+                    csv_path = raw_path
+                    if raw_path.exists() and raw_path.is_dir():
+                        default_name = (
+                            f"generate-it-{selected_export_format}-"
+                            f"{_dt.datetime.now().strftime('%Y%m%d-%H%M%S')}.csv"
+                        )
+                        filename = _run_modal(
+                            stdscr,
+                            theme,
+                            "EXPORT FILENAME",
+                            f"Directory selected. Enter file name: [default: {default_name}]",
+                            max_length=160,
+                        )
+                        if filename is None:
+                            state.message = "Export cancelled."
+                            stdscr.clear()
+                            continue
+
+                        filename = filename.strip() or default_name
+                        if "/" in filename or "\\" in filename:
+                            _run_modal(
+                                stdscr,
+                                theme,
+                                "ERROR",
+                                "Use a file name only (no directory separators).",
+                            )
+                            state.message = "Export cancelled."
+                            stdscr.clear()
+                            continue
+
+                        if not filename.lower().endswith(".csv"):
+                            filename += ".csv"
+                        csv_path = raw_path / filename
+
+                    parent_dir = csv_path.parent
+                    if not parent_dir.exists() or not parent_dir.is_dir():
+                        _run_modal(stdscr, theme, "ERROR", f"Directory not found: {parent_dir}")
+                        state.message = "Export cancelled."
+                        stdscr.clear()
+                        continue
                     
                     # Check if file exists and confirm overwrite
                     if csv_path.exists():
@@ -1724,7 +2273,10 @@ def run() -> int:
                             continue
                     
                     try:
-                        exported, skipped = state.storage.export_to_csv(csv_path)
+                        exported, skipped = state.storage.export_to_csv(
+                            csv_path,
+                            export_format=selected_export_format,
+                        )
                         
                         if skipped:
                             skip_lines = [f"The following {len(skipped)} credential(s) failed to export:", ""]
@@ -1732,7 +2284,11 @@ def run() -> int:
                                 skip_lines.append(f"- {item['service']} / {item['username']}: {item['error']}")
                             _run_scrollable_modal(stdscr, theme, "EXPORT WARNING", skip_lines)
                         
-                        state.message = f"Exported {exported} credential(s) to {csv_path}."
+                        format_label = csv_formats.EXPORT_FORMAT_LABELS.get(
+                            selected_export_format,
+                            selected_export_format,
+                        )
+                        state.message = f"Exported {exported} credential(s) as {format_label} to {csv_path}."
                         if skipped:
                             state.message += f" ({len(skipped)} skipped)"
                     except Exception as e:
@@ -1749,9 +2305,19 @@ def run() -> int:
                     stdscr.clear()
                     continue
                 
-                file_path = _run_modal(stdscr, theme, "IMPORT CSV", "Enter file path:", max_length=200)
+                selected_import_format = _prompt_csv_format(stdscr, theme, mode="import")
+                if selected_import_format is None:
+                    state.message = "Import cancelled."
+                    stdscr.clear()
+                    continue
+                file_path = _run_path_modal(
+                    stdscr,
+                    theme,
+                    "IMPORT CSV",
+                    "Enter import file path:",
+                    max_length=300,
+                )
                 if file_path:
-                    from pathlib import Path
                     csv_path = Path(file_path).expanduser()
                     
                     if not csv_path.exists():
@@ -1762,7 +2328,10 @@ def run() -> int:
                     try:
                         # Preview pass: detect duplicates without importing
                         _, _, preview_issues = state.storage.import_from_csv(
-                            csv_path, merge_duplicates=False, dry_run=True
+                            csv_path,
+                            merge_duplicates=False,
+                            dry_run=True,
+                            import_format=selected_import_format,
                         )
                         
                         merge = False
@@ -1783,7 +2352,10 @@ def run() -> int:
                         
                         # Import with merge decision
                         imported, skipped, duplicates = state.storage.import_from_csv(
-                            csv_path, merge_duplicates=merge, dry_run=False
+                            csv_path,
+                            merge_duplicates=merge,
+                            dry_run=False,
+                            import_format=selected_import_format,
                         )
                         
                         # Show results
@@ -1800,7 +2372,11 @@ def run() -> int:
                         else:
                             _run_modal(stdscr, theme, "SUCCESS", f"Imported {imported} credential(s).")
                         
-                        state.message = f"Imported {imported} credential(s). ({skipped} skipped)"
+                        format_label = csv_formats.IMPORT_FORMAT_LABELS.get(
+                            selected_import_format,
+                            selected_import_format,
+                        )
+                        state.message = f"Imported {imported} credential(s) via {format_label}. ({skipped} skipped)"
                         
                         # Refresh vault list
                         state.vault_credentials = state.storage.list_credentials()
