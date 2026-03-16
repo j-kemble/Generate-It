@@ -48,7 +48,7 @@ def test_collect_files_for_fuzzy_filters_hidden_and_depth(tmp_path: Path) -> Non
     (tmp_path / ".hidden_dir" / "secret.txt").write_text("s", encoding="utf-8")
 
     files = tui._collect_files_for_fuzzy(tmp_path, max_files=100, max_depth=4)
-    paths = {str(p.relative_to(tmp_path)) for p in files}
+    paths = {str(p.relative_to(tmp_path)).replace("\\", "/") for p in files}
 
     assert "visible/a.txt" in paths
     assert ".hidden_file.txt" not in paths
