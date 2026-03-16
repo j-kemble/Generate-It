@@ -34,15 +34,18 @@ def test_vault_unlock(temp_storage):
     temp_storage.close()
     
     storage2 = StorageManager(db_path=temp_storage.db_path)
-    assert storage2.vault_exists()
-    
-    # Wrong password
-    with pytest.raises(InvalidPasswordError):
-        storage2.unlock_vault("wrong")
+    try:
+        assert storage2.vault_exists()
         
-    # Correct password
-    storage2.unlock_vault("secret")
-    assert storage2._fernet is not None
+        # Wrong password
+        with pytest.raises(InvalidPasswordError):
+            storage2.unlock_vault("wrong")
+            
+        # Correct password
+        storage2.unlock_vault("secret")
+        assert storage2._fernet is not None
+    finally:
+        storage2.close()
 
 def test_credential_ops(temp_storage):
     temp_storage.initialize_vault("secret")
