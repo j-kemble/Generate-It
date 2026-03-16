@@ -49,3 +49,6 @@ Thumbs.db
 .env.local
 *.pem
 *.key
+
+# Manual test exports
+Sample-Import/generate-it-*.csv

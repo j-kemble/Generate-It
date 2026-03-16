@@ -35,20 +35,20 @@ Edit `pyproject.toml` and bump the version:
 
 ```toml
 [project]
-version = "0.1.1"  # Change this
+version = "0.2.1"  # Change this
 ```
 
 ### 2. Commit and Tag
 
 ```bash
 git add pyproject.toml
-git commit -m "Bump version to 0.1.1
+git commit -m "Bump version to 0.2.1 for release
 
-Co-Authored-By: Warp <agent@warp.dev>"
+Co-Authored-By: Oz <oz-agent@warp.dev>"
 
-git tag v0.1.1
+git tag v0.2.1
 git push origin main
-git push origin v0.1.1
+git push origin v0.2.1
 ```
 
 ### 3. Build Distribution Files
@@ -58,15 +58,15 @@ python -m build
 ```
 
 This creates:
-- `dist/generate_it-0.1.1.tar.gz` (source distribution)
-- `dist/generate_it-0.1.1-py3-none-any.whl` (wheel distribution)
+- `dist/generate_it-0.2.1.tar.gz` (source distribution)
+- `dist/generate_it-0.2.1-py3-none-any.whl` (wheel distribution)
 
 ### 4. Upload to PyPI
 
 Using your API token (replace `YOUR_TOKEN_HERE`):
 
 ```bash
-python -m twine upload dist/generate_it-0.1.1.tar.gz dist/generate_it-0.1.1-py3-none-any.whl \
+python -m twine upload dist/generate_it-0.2.1.tar.gz dist/generate_it-0.2.1-py3-none-any.whl \
   --username __token__ \
   --password YOUR_TOKEN_HERE
 ```
@@ -107,14 +107,17 @@ generate-it
 - Test in a fresh virtual environment before publishing to ensure all dependencies are correct
 - You can also publish to TestPyPI first to test the workflow: https://test.pypi.org
 - To use TestPyPI, add the extra index in setup: `twine upload --repository testpypi dist/*`
+- For stronger security, consider migrating to PyPI trusted publishing (OIDC) instead of long-lived API tokens.
 
 ## GitHub Actions (Already Set Up)
 
 Automated workflows are configured in `.github/workflows/`:
 
-**test.yml**: Runs tests on Python 3.10-3.12 across Linux, macOS, and Windows whenever you push to main or create a pull request.
+**ci.yml**: Runs cross-platform tests on Python 3.10/3.12 across Linux, macOS, and Windows on pushes and pull requests.
 
-**publish.yml**: Automatically builds and publishes to PyPI when you push a version tag (e.g., `git push origin v0.1.1`).
+**test.yml**: Runs a focused main-branch package validation (pytest + sdist/wheel build + `twine check`) on pushes/PRs targeting main.
+
+**publish.yml**: Automatically builds and publishes to PyPI when you push a version tag (e.g., `git push origin v0.2.1`).
 
 ### Setting Up Automated Publishing
 
@@ -126,16 +129,16 @@ Automated workflows are configured in `.github/workflows/`:
 
 ```bash
 # Update version in pyproject.toml
-# e.g., change version = "0.1.0" to version = "0.1.1"
+# e.g., change version = "0.2.0" to version = "0.2.1"
 
 git add pyproject.toml
-git commit -m "Bump version to 0.1.1
+git commit -m "Bump version to 0.2.1 for release
 
-Co-Authored-By: Warp <agent@warp.dev>"
+Co-Authored-By: Oz <oz-agent@warp.dev>"
 
-git tag v0.1.1
+git tag v0.2.1
 git push origin main
-git push origin v0.1.1
+git push origin v0.2.1
 ```
 
 The GitHub Actions workflow will automatically:
