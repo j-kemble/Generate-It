@@ -1,6 +1,12 @@
+![Generate It Banner](https://raw.githubusercontent.com/j-kemble/Generate-It/development/assets/banner.png)
+
 # Generate It
 
 A terminal credential generator and local manager with a curses-based UI.
+
+[![Security & Quality](https://github.com/j-kemble/Generate-It/actions/workflows/security.yml/badge.svg)](https://github.com/j-kemble/Generate-It/actions/workflows/security.yml)
+[![Python Versions](https://img.shields.io/badge/python-3.10%20%7C%203.12%20%7C%203.13-blue)](https://pypi.org/project/generate-it/)
+[![License: AGPL-3.0-or-later](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 
 It can generate:
 - **Random passwords** (choose a length and character categories)
@@ -164,9 +170,23 @@ When you generate a credential you will:
    - Optionally add digit suffix
    - Separator options: underscore or hyphen
 
+## Security
+
+Generate It includes a comprehensive security suite to ensure credential generation is cryptographically sound:
+
+- **Bandit**: Static security analysis to catch common Python security issues
+- **pip-audit**: Automated dependency vulnerability scanning
+- **mypy**: Static type checking for code quality
+- **TruffleHog**: Secrets detection in commits
+- **Dependabot**: Automated dependency updates
+- **Entropy tests**: Automated validation that passwords meet minimum entropy thresholds
+- **Reproducible builds**: Build artifacts are reproducible for verification
+
+All security checks run automatically on every commit via GitHub Actions.
+
 ## Custom word list
 
-The included word list contains **1000** lowercase words.
+The included word list contains **~7,700** lowercase words from the [EFF long wordlist](https://www.eff.org/deeplinks/2016/07/new-wordlists-random-passphrases) (sourced for high security).
 
 Override the word list in one of these ways (highest priority first):
 
@@ -174,6 +194,54 @@ Override the word list in one of these ways (highest priority first):
 2) Put a `wordlist.txt` in your current working directory
 
 Otherwise, Generate It uses the bundled default word list.
+
+## Development
+
+### Setup
+
+```bash
+git clone https://github.com/j-kemble/Generate-It.git
+cd Generate-It
+python3 -m venv .venv
+source .venv/bin/activate  # or .\venv\Scripts\activate on Windows
+pip install -e ".[dev]"
+```
+
+### Pre-commit hooks
+
+Install pre-commit hooks for automated security and quality checks:
+
+```bash
+pre-commit install
+```
+
+This will run Bandit (security), mypy (types), Black (formatting), and TruffleHog (secrets detection) before each commit.
+
+### Running tests
+
+```bash
+# Run all tests
+pytest
+
+# Run with coverage
+pytest --cov=generate_it --cov-report=html
+
+# Run security tests specifically
+pytest tests/test_security.py -v
+```
+
+### Security tools
+
+```bash
+# Run Bandit security scanner
+bandit -r generate_it
+
+# Run pip-audit for vulnerable dependencies
+pip-audit
+
+# Run mypy type checker
+mypy generate_it
+```
 
 ## License
 
