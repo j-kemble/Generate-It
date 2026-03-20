@@ -169,8 +169,12 @@ class StorageManager:
             decrypted_verification = fernet.decrypt(verification_token)
             if decrypted_verification != b"VERIFICATION_TOKEN":
                 raise InvalidPasswordError("Invalid master password.")
-        except Exception:
-             raise InvalidPasswordError("Invalid master password.")
+        except InvalidPasswordError:
+            raise
+        except Exception as e:
+            # Re-raise as storage error if it's not a password validation issue
+            # (e.g., database corruption, connection issues)
+            raise StorageError(f"Failed to decrypt vault verification: {e}") from e
         
         self._fernet = fernet
 

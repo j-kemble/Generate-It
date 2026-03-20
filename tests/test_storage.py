@@ -423,6 +423,26 @@ def test_vault_unlock_invalid_password_raises(temp_storage):
         storage2.unlock_vault("wrong_password")
 
 
+def test_vault_unlock_after_close_reconnects(temp_storage):
+    """Verify that unlock works after closing and reopening the vault (auto-lock scenario)."""
+    temp_storage.initialize_vault("secret")
+    
+    # Save a credential while unlocked
+    temp_storage.save_credential("test_service", "test_user", "test_pass")
+    creds = temp_storage.list_credentials()
+    assert len(creds) == 1
+    
+    # Close the vault (simulates auto-lock)
+    temp_storage.close()
+    
+    # Unlock should reconnect and work properly
+    temp_storage.unlock_vault("secret")
+    creds = temp_storage.list_credentials()
+    assert len(creds) == 1
+    assert creds[0]["service"] == "test_service"
+    assert creds[0]["password"] == "test_pass"
+
+
 def test_list_credentials_empty_vault(temp_storage):
     temp_storage.initialize_vault("secret")
     
