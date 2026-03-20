@@ -63,7 +63,7 @@ Generate It includes an encrypted local vault to store your generated credential
   - `Space`: toggle checkboxes / options
   - `Left`/`Right`: adjust numeric values
   - `Enter`: confirm action
-  - `q` (or `ESC`): quit
+  - `Esc` (press twice): quit
 
 - **Hotkeys**:
   - `g`: Generate new credential

@@ -101,3 +101,45 @@ def test_filter_vault_credentials_supports_subsequence_match() -> None:
 
     filtered = tui._filter_vault_credentials(creds, "azr")
     assert [c["id"] for c in filtered] == [1]
+
+
+def test_handle_double_esc_quit_requires_two_presses_within_window() -> None:
+    should_quit, last_esc = tui._handle_double_esc_quit(
+        key=27,
+        last_esc_at=None,
+        now=100.0,
+        window_seconds=1.0,
+    )
+    assert should_quit is False
+    assert last_esc == 100.0
+
+    should_quit, last_esc = tui._handle_double_esc_quit(
+        key=27,
+        last_esc_at=last_esc,
+        now=100.8,
+        window_seconds=1.0,
+    )
+    assert should_quit is True
+    assert last_esc is None
+
+
+def test_handle_double_esc_quit_expires_after_window() -> None:
+    should_quit, last_esc = tui._handle_double_esc_quit(
+        key=27,
+        last_esc_at=10.0,
+        now=11.5,
+        window_seconds=1.0,
+    )
+    assert should_quit is False
+    assert last_esc == 11.5
+
+
+def test_handle_double_esc_quit_non_esc_clears_state() -> None:
+    should_quit, last_esc = tui._handle_double_esc_quit(
+        key=ord("a"),
+        last_esc_at=50.0,
+        now=50.1,
+        window_seconds=1.0,
+    )
+    assert should_quit is False
+    assert last_esc is None

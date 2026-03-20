@@ -4,7 +4,7 @@ Design goal: a btop-inspired dashboard layout (boxes/panels/bars) plus a
 header graphic.
 
 Controls (default):
-- q / ESC: quit
+- Esc twice: quit
 - Tab / Shift-Tab, ↑/↓: move focus
 - Space: toggle
 - ←/→: adjust numeric values
@@ -26,6 +26,7 @@ import datetime as _dt
 import os
 import locale
 import math
+import time
 from pathlib import Path
 import textwrap
 import pyperclip
@@ -35,6 +36,7 @@ from . import csv_formats
 from .storage import StorageManager, InvalidPasswordError
 
 APP_NAME = "Generate It"
+ESC_QUIT_WINDOW_SECONDS = 1.0
 
 
 class QuitApp(Exception):
@@ -182,12 +184,6 @@ def _run_scrollable_modal(
         win.refresh()
         
         key = win.getch()
-
-        if key == 27:  # ESC
-            if search_mode:
-                search_mode = False
-                continue
-            return
         
         if key in (27, ord('q'), ord('Q')):  # ESC/q
             return
@@ -297,6 +293,23 @@ def _fuzzy_score(query: str, text: str) -> int | None:
         return None
 
     return 1000 + gap_penalty + len(t)
+
+
+def _handle_double_esc_quit(
+    *,
+    key: int,
+    last_esc_at: float | None,
+    now: float | None = None,
+    window_seconds: float = ESC_QUIT_WINDOW_SECONDS,
+) -> tuple[bool, float | None]:
+    """Return (should_quit, new_last_esc_at) for double-Esc app exit logic."""
+    if key != 27:
+        return False, None
+
+    current = time.monotonic() if now is None else now
+    if last_esc_at is not None and (current - last_esc_at) <= window_seconds:
+        return True, None
+    return False, current
 
 
 def _run_fuzzy_file_picker(
@@ -1162,7 +1175,7 @@ def _render_header(stdscr: "curses._CursesWindow", theme: Theme) -> int:
 
 def _render_resize_hint(stdscr: "curses._CursesWindow", theme: Theme) -> None:
     h, w = stdscr.getmaxyx()
-    msg = "Resize terminal for dashboard view (recommended: 80x24). Press q to quit."
+    msg = "Resize terminal for dashboard view (recommended: 80x24). Press Esc twice to quit."
     _addstr_safe(stdscr, h // 2, _center_x(stdscr, msg), msg, theme.title)
 
 
@@ -1170,7 +1183,7 @@ def _render_footer(stdscr: "curses._CursesWindow", theme: Theme, message: str) -
     h, w = stdscr.getmaxyx()
 
     msg = message[: max(0, w - 1)]
-    help_line = "Tab/↑/↓ move • Enter/g gen • s save • / vault search • i/e csv • q quit"
+    help_line = "Tab/↑/↓ move • Enter/g gen • s save • / vault search • i/e csv • Esc×2 quit"
 
     _addstr_safe(stdscr, h - 2, 0, " " * max(0, w - 1), theme.dim)
     _addstr_safe(stdscr, h - 2, 1, msg, theme.accent)
@@ -1421,7 +1434,7 @@ def _render_actions_box(
         stdscr,
         row,
         x + 2,
-        "Hotkeys: g gen • s save • / search • v vault • a add • ? help • q quit"[:inner_w],
+        "Hotkeys: g gen • s save • / search • v vault • a add • ? help • Esc×2 quit"[:inner_w],
         theme.dim,
     )
 
@@ -2105,16 +2118,23 @@ def run() -> int:
             # If we can't create the storage manager (e.g. permission error on folder),
             # we should display it and exit or fallback.
             # Since we are in curses, we can show a modal.
+            critical_last_esc_at: float | None = None
             while True:
                 stdscr.erase()
                 _render_header(stdscr, theme)
                 msg = f"Storage Error: {e}"
                 _draw_box(stdscr, 10, 5, 5, 70, title="CRITICAL ERROR", border_attr=theme.bad, title_attr=theme.bad)
                 _addstr_safe(stdscr, 12, 7, msg, theme.dim)
-                _addstr_safe(stdscr, 13, 7, "Press q to quit", theme.dim)
+                _addstr_safe(stdscr, 13, 7, "Press Esc twice to quit", theme.dim)
                 stdscr.refresh()
-                if stdscr.getch() in (ord('q'), ord('Q')):
+                key = stdscr.getch()
+                should_quit, critical_last_esc_at = _handle_double_esc_quit(
+                    key=key, last_esc_at=critical_last_esc_at
+                )
+                if should_quit:
                     return 1
+                if key != 27:
+                    critical_last_esc_at = None
 
         if not state.storage.vault_exists():
             # First time setup
@@ -2165,6 +2185,7 @@ def run() -> int:
 
         # Generate something immediately so the dashboard isn't empty.
         _generate(state, words)
+        last_esc_quit_at: float | None = None
 
         while True:
             stdscr.erase()
@@ -2177,8 +2198,17 @@ def run() -> int:
                 _render_footer(stdscr, theme, state.message)
                 stdscr.refresh()
                 key = stdscr.getch()
-                if key in (ord("q"), ord("Q"), 27):
-                    return 0
+                if key == 27:
+                    should_quit, last_esc_quit_at = _handle_double_esc_quit(
+                        key=key, last_esc_at=last_esc_quit_at
+                    )
+                    if should_quit:
+                        return 0
+                    state.message = "Press Esc again to quit."
+                    continue
+                last_esc_quit_at = None
+                if key in (ord("q"), ord("Q")):
+                    state.message = "Press Esc twice to quit."
                 continue
 
             footer_h = 2
@@ -2265,8 +2295,18 @@ def run() -> int:
             stdscr.refresh()
 
             key = stdscr.getch()
-
-            if key in (ord("q"), ord("Q"), 27):
+            if key == 27:
+                should_quit, last_esc_quit_at = _handle_double_esc_quit(
+                    key=key, last_esc_at=last_esc_quit_at
+                )
+                if should_quit:
+                    return 0
+                state.message = "Press Esc again to quit."
+                continue
+            last_esc_quit_at = None
+            if key in (ord("q"), ord("Q")):
+                state.message = "Press Esc twice to quit."
+                continue
                 return 0
             if key == curses.KEY_RESIZE:
                 continue
@@ -2334,7 +2374,7 @@ def run() -> int:
                     "i       : Import credentials from CSV (choose format)",
                     "e       : Export credentials to CSV (choose format)",
                     "?       : Show this help",
-                    "q / Esc : Quit application",
+                    "Esc x2  : Quit application",
                     "",
                     "NAVIGATION & EDITING",
                     "Tab     : Move focus forward",
