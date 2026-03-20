@@ -1,4 +1,4 @@
-![Generate It Banner](https://raw.githubusercontent.com/j-kemble/Generate-It/development/assets/banner.png)
+![Generate It Banner](https://raw.githubusercontent.com/j-kemble/Generate-It/development/assets/generate-it-banner.png)
 
 # Generate It
 
