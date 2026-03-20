@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from generate_it import tui
 
@@ -101,6 +102,174 @@ def test_filter_vault_credentials_supports_subsequence_match() -> None:
 
     filtered = tui._filter_vault_credentials(creds, "azr")
     assert [c["id"] for c in filtered] == [1]
+
+
+def test_find_duplicate_credential_is_case_insensitive_and_trimmed() -> None:
+    creds = [
+        {"id": 10, "service": "GitHub", "username": "DevUser"},
+        {"id": 11, "service": "Gmail", "username": "alice@example.com"},
+    ]
+    found = tui._find_duplicate_credential(creds, " github ", " devuser ")
+    assert found is not None
+    assert found["id"] == 10
+
+
+def test_find_duplicate_credential_supports_excluding_id() -> None:
+    creds = [{"id": 5, "service": "GitHub", "username": "dev"}]
+    found = tui._find_duplicate_credential(creds, "github", "dev", exclude_id=5)
+    assert found is None
+
+
+def test_save_credential_duplicate_safe_saves_when_no_duplicate(monkeypatch) -> None:
+    class FakeStorage:
+        def __init__(self) -> None:
+            self.saved = []
+            self.updated = []
+
+        def list_credentials(self):
+            creds = [{"id": 1, "service": "GitHub", "username": "dev", "password": "old"}]
+            for i, item in enumerate(self.saved, start=2):
+                creds.append({"id": i, "service": item[0], "username": item[1], "password": item[2]})
+            return creds
+
+        def save_credential(self, service: str, username: str, password: str) -> int:
+            self.saved.append((service, username, password))
+            return 99
+
+        def update_credential(self, credential_id: int, service: str, username: str, password: str) -> None:
+            self.updated.append((credential_id, service, username, password))
+
+    storage = FakeStorage()
+    state = SimpleNamespace(storage=storage, vault_credentials=[])
+    theme = object()
+    stdscr = object()
+
+    monkeypatch.setattr(tui, "_run_modal", lambda *args, **kwargs: None)
+
+    result = tui._save_credential_duplicate_safe(
+        stdscr,
+        theme,
+        state,
+        service="GitLab",
+        username="dev",
+        password="new-pass",
+    )
+
+    assert result == "saved"
+    assert storage.saved == [("GitLab", "dev", "new-pass")]
+    assert storage.updated == []
+    assert any(c["service"] == "GitLab" for c in state.vault_credentials)
+
+
+def test_save_credential_duplicate_safe_allows_same_service_different_username(monkeypatch) -> None:
+    class FakeStorage:
+        def __init__(self) -> None:
+            self.saved = []
+            self.updated = []
+
+        def list_credentials(self):
+            creds = [{"id": 1, "service": "GitHub", "username": "dev", "password": "old"}]
+            for i, item in enumerate(self.saved, start=2):
+                creds.append({"id": i, "service": item[0], "username": item[1], "password": item[2]})
+            return creds
+
+        def save_credential(self, service: str, username: str, password: str) -> int:
+            self.saved.append((service, username, password))
+            return 99
+
+        def update_credential(self, credential_id: int, service: str, username: str, password: str) -> None:
+            self.updated.append((credential_id, service, username, password))
+
+    storage = FakeStorage()
+    state = SimpleNamespace(storage=storage, vault_credentials=[])
+    theme = object()
+    stdscr = object()
+
+    monkeypatch.setattr(tui, "_run_modal", lambda *args, **kwargs: None)
+
+    result = tui._save_credential_duplicate_safe(
+        stdscr,
+        theme,
+        state,
+        service="GitHub",
+        username="work-account",
+        password="new-pass",
+    )
+
+    assert result == "saved"
+    assert storage.saved == [("GitHub", "work-account", "new-pass")]
+    assert storage.updated == []
+
+
+def test_save_credential_duplicate_safe_overwrites_on_confirmation(monkeypatch) -> None:
+    class FakeStorage:
+        def __init__(self) -> None:
+            self.updated = []
+
+        def list_credentials(self):
+            return [{"id": 42, "service": "GitHub", "username": "dev", "password": "old"}]
+
+        def save_credential(self, service: str, username: str, password: str) -> int:
+            raise AssertionError("save_credential should not be called for duplicates")
+
+        def update_credential(self, credential_id: int, service: str, username: str, password: str) -> None:
+            self.updated.append((credential_id, service, username, password))
+
+    storage = FakeStorage()
+    state = SimpleNamespace(storage=storage, vault_credentials=[])
+    theme = object()
+    stdscr = object()
+
+    monkeypatch.setattr(tui, "_run_modal", lambda *args, **kwargs: "overwrite")
+
+    result = tui._save_credential_duplicate_safe(
+        stdscr,
+        theme,
+        state,
+        service="github",
+        username="DEV",
+        password="new-pass",
+    )
+
+    assert result == "overwritten"
+    assert storage.updated == [(42, "github", "DEV", "new-pass")]
+
+
+def test_save_credential_duplicate_safe_cancels_without_overwrite(monkeypatch) -> None:
+    class FakeStorage:
+        def __init__(self) -> None:
+            self.saved = []
+            self.updated = []
+
+        def list_credentials(self):
+            return [{"id": 42, "service": "GitHub", "username": "dev", "password": "old"}]
+
+        def save_credential(self, service: str, username: str, password: str) -> int:
+            self.saved.append((service, username, password))
+            return 1
+
+        def update_credential(self, credential_id: int, service: str, username: str, password: str) -> None:
+            self.updated.append((credential_id, service, username, password))
+
+    storage = FakeStorage()
+    state = SimpleNamespace(storage=storage, vault_credentials=[])
+    theme = object()
+    stdscr = object()
+
+    monkeypatch.setattr(tui, "_run_modal", lambda *args, **kwargs: "cancel")
+
+    result = tui._save_credential_duplicate_safe(
+        stdscr,
+        theme,
+        state,
+        service="GitHub",
+        username="dev",
+        password="new-pass",
+    )
+
+    assert result == "cancelled"
+    assert storage.saved == []
+    assert storage.updated == []
 
 
 def test_handle_double_esc_quit_requires_two_presses_within_window() -> None:

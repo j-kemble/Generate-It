@@ -91,6 +91,7 @@ When you generate a credential you will:
 2. Enter a **Service Name** (e.g., "GitHub").
 3. Enter a **Username** or **Password** (whichever wasn't generated).
    - **Pro Tip**: Press **`Tab`** in these fields to instantly generate a random username or password on the fly!
+4. If a credential with the same **service + username** already exists (case-insensitive), you'll be prompted to **overwrite** or **cancel**.
 
 ### CSV Import/Export
 - **Export**: Press `e`, choose an export format, then enter a file path. If the file already exists, you must confirm overwrite.

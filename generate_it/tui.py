@@ -231,6 +231,68 @@ def _filter_vault_credentials(credentials: list[dict], query: str) -> list[dict]
     return [item[3] for item in ranked]
 
 
+def _find_duplicate_credential(
+    credentials: list[dict],
+    service: str,
+    username: str,
+    *,
+    exclude_id: int | None = None,
+) -> dict | None:
+    service_key = service.strip().lower()
+    username_key = username.strip().lower()
+    if not service_key or not username_key:
+        return None
+
+    for cred in credentials:
+        cred_id = cred.get("id")
+        if exclude_id is not None and cred_id == exclude_id:
+            continue
+        cred_service = str(cred.get("service", "")).strip().lower()
+        cred_username = str(cred.get("username", "")).strip().lower()
+        if cred_service == service_key and cred_username == username_key:
+            return cred
+
+    return None
+
+
+def _save_credential_duplicate_safe(
+    stdscr: "curses._CursesWindow",
+    theme: Theme,
+    state: AppState,
+    *,
+    service: str,
+    username: str,
+    password: str,
+) -> str:
+    """Save credential; prompt to overwrite if a duplicate exists."""
+    if not state.storage:
+        raise RuntimeError("Vault is unavailable.")
+
+    existing = _find_duplicate_credential(
+        state.storage.list_credentials(),
+        service,
+        username,
+    )
+    if existing is not None:
+        confirm = _run_modal(
+            stdscr,
+            theme,
+            "DUPLICATE FOUND",
+            f"{service} / {username} already exists. Type 'overwrite' to replace or Esc to cancel:",
+            max_length=20,
+        )
+        if not confirm or confirm.strip().lower() != "overwrite":
+            return "cancelled"
+
+        state.storage.update_credential(existing["id"], service, username, password)
+        state.vault_credentials = state.storage.list_credentials()
+        return "overwritten"
+
+    state.storage.save_credential(service, username, password)
+    state.vault_credentials = state.storage.list_credentials()
+    return "saved"
+
+
 def _resolve_start_dir(path_text: str) -> Path:
     if not path_text.strip():
         return Path.cwd()
@@ -1752,9 +1814,25 @@ def _run_save_generated_flow(
             )
 
         if final_username and final_password:
-            state.storage.save_credential(service, final_username, final_password)
-            state.vault_credentials = state.storage.list_credentials()
-            state.message = f"Saved credential for {service}."
+            final_username = final_username.strip()
+            if not final_username:
+                state.message = "Save cancelled."
+                return
+
+            result = _save_credential_duplicate_safe(
+                stdscr,
+                theme,
+                state,
+                service=service,
+                username=final_username,
+                password=final_password,
+            )
+            if result == "saved":
+                state.message = f"Saved credential for {service}."
+            elif result == "overwritten":
+                state.message = f"Overwrote credential for {service}."
+            else:
+                state.message = "Save cancelled."
         else:
             state.message = "Save cancelled."
 
@@ -2427,6 +2505,11 @@ def run() -> int:
                         state.message = "Add cancelled."
                         stdscr.clear()
                         continue
+                    service = service.strip()
+                    if not service:
+                        state.message = "Add cancelled."
+                        stdscr.clear()
+                        continue
 
                     def _gen_user():
                         return generator.generate_username_adjective_noun(add_numbers=True)
@@ -2439,6 +2522,11 @@ def run() -> int:
                         generator_func=_gen_user,
                         max_length=120,
                     )
+                    if not username:
+                        state.message = "Add cancelled."
+                        stdscr.clear()
+                        continue
+                    username = username.strip()
                     if not username:
                         state.message = "Add cancelled."
                         stdscr.clear()
@@ -2462,10 +2550,20 @@ def run() -> int:
                         state.message = "Add cancelled."
                         stdscr.clear()
                         continue
-
-                    state.storage.save_credential(service, username, password)
-                    state.vault_credentials = state.storage.list_credentials()
-                    state.message = f"Added credential for {service}."
+                    result = _save_credential_duplicate_safe(
+                        stdscr,
+                        theme,
+                        state,
+                        service=service,
+                        username=username,
+                        password=password,
+                    )
+                    if result == "saved":
+                        state.message = f"Added credential for {service}."
+                    elif result == "overwritten":
+                        state.message = f"Overwrote credential for {service}."
+                    else:
+                        state.message = "Add cancelled."
                 except Exception as e:
                     _run_modal(stdscr, theme, "ERROR", f"Add failed: {e}")
                     state.message = "Add failed."
