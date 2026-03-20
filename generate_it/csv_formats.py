@@ -55,22 +55,26 @@ _IMPORT_FIELD_ALIASES: Dict[str, Dict[str, Sequence[str]]] = {
         "service": ("name", "service", "title", "full_name"),
         "username": ("username", "login", "user", "email", "login_username"),
         "password": ("password", "pass", "login_password"),
+        "note": ("note", "notes"),
     },
     "bitwarden": {
         "service": ("name", "title", "service"),
         "username": ("login_username", "username", "login", "user"),
         "password": ("login_password", "password", "pass"),
+        "note": ("notes", "note"),
         "type": ("type",),
     },
     "apple": {
         "service": ("title", "name", "service"),
         "username": ("username", "login", "user", "email"),
         "password": ("password", "pass"),
+        "note": ("notes", "note"),
     },
     "nordpass": {
         "service": ("name", "title", "service"),
         "username": ("username", "login", "user", "email"),
         "password": ("password", "pass"),
+        "note": ("note", "notes"),
         "type": ("type",),
     },
 }
@@ -199,11 +203,12 @@ def build_export_row(
     service: str,
     username: str,
     password: str,
+    note: str = "",
 ) -> list[str]:
     normalized = normalize_export_format(export_format)
 
     if normalized == "generic":
-        return [service, "", username, password, ""]
+        return [service, "", username, password, note]
 
     if normalized == "bitwarden":
         return [
@@ -211,7 +216,7 @@ def build_export_row(
             "0",  # favorite
             "login",  # type
             service,  # name
-            "",  # notes
+            note,  # notes
             "",  # fields
             "0",  # reprompt
             "",  # login_uri
@@ -226,7 +231,7 @@ def build_export_row(
             "",  # URL
             username,  # Username
             password,  # Password
-            "",  # Notes
+            note,  # Notes
             "",  # OTPAuth
         ]
 
@@ -236,7 +241,7 @@ def build_export_row(
         "",  # url
         username,  # username
         password,  # password
-        "",  # note
+        note,  # note
         "",  # cardholdername
         "",  # cardnumber
         "",  # cvc
@@ -285,6 +290,7 @@ def parse_import_row(
     service = _first_present(normalized_row, aliases["service"])
     username = _first_present(normalized_row, aliases["username"])
     password = _first_present(normalized_row, aliases["password"])
+    note = _first_present(normalized_row, aliases.get("note", ("note", "notes")))
 
     missing = []
     if not service:
@@ -297,7 +303,7 @@ def parse_import_row(
     if missing:
         return None, f"Row {row_num}: Missing required field(s): {', '.join(missing)}"
 
-    return {"service": service, "username": username, "password": password}, None
+    return {"service": service, "username": username, "password": password, "note": note}, None
 
 def extract_row_identity(
     row: Mapping[str, str | None],

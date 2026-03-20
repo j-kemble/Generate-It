@@ -287,6 +287,7 @@ def _save_credential_duplicate_safe(
     service: str,
     username: str,
     password: str,
+    note: str = "",
 ) -> str:
     """Save credential; prompt to overwrite if a duplicate exists."""
     if not state.storage:
@@ -308,11 +309,11 @@ def _save_credential_duplicate_safe(
         if not confirm or confirm.strip().lower() != "overwrite":
             return "cancelled"
 
-        state.storage.update_credential(existing["id"], service, username, password)
+        state.storage.update_credential(existing["id"], service, username, password, note)
         state.vault_credentials = state.storage.list_credentials()
         return "overwritten"
 
-    state.storage.save_credential(service, username, password)
+    state.storage.save_credential(service, username, password, note)
     state.vault_credentials = state.storage.list_credentials()
     return "saved"
 
@@ -2197,6 +2198,18 @@ def _run_details_modal(
         win.addstr(row, 12, credential['username'][:box_w-14], val_attr)
         row += 2
         
+        # Note
+        note_text = credential.get('note', '')
+        if note_text:
+            win.addstr(row, 2, "Note:", label_attr)
+            row += 1
+            # Wrap note to fit
+            import textwrap
+            wrapped_note = textwrap.wrap(note_text, width=box_w-14)
+            for line in wrapped_note:
+                win.addstr(row, 2, line[:box_w-14], val_attr)
+                row += 1
+        
         win.addstr(row, 2, "Password:", label_attr)
         win.addstr(row, 12, credential['password'][:box_w-14], val_attr)
         row += 2
@@ -2451,7 +2464,10 @@ def _run_vault_modal(
                     continue
 
                 try:
-                    state.storage.update_credential(cred["id"], service, username, password)
+                    # Get existing note for the credential
+                    existing_note = cred.get("note", "")
+                    note = _run_modal(stdscr, theme, "EDIT", "Note (optional):", max_length=500, initial_value=existing_note)
+                    state.storage.update_credential(cred["id"], service, username, password, note)
                     state.vault_credentials = state.storage.list_credentials()
 
                     refreshed_filtered = _filter_vault_credentials(state.vault_credentials, vault_filter)

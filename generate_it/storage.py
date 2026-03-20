@@ -112,6 +112,7 @@ class StorageManager:
                 service TEXT NOT NULL,
                 username TEXT NOT NULL,
                 encrypted_password BLOB NOT NULL,
+                encrypted_note BLOB,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -173,39 +174,42 @@ class StorageManager:
             self._db_connection = None
         self._fernet = None
 
-    def save_credential(self, service: str, username: str, password: str) -> int:
+    def save_credential(self, service: str, username: str, password: str, note: str = "") -> int:
         if not self._fernet:
             raise StorageError("Vault is locked.")
 
         encrypted_password = self._fernet.encrypt(password.encode())
+        encrypted_note = self._fernet.encrypt(note.encode()) if note else None
         
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO credentials (service, username, encrypted_password) VALUES (?, ?, ?)",
-            (service, username, encrypted_password)
+            "INSERT INTO credentials (service, username, encrypted_password, encrypted_note) VALUES (?, ?, ?, ?)",
+            (service, username, encrypted_password, encrypted_note)
         )
         conn.commit()
         return cursor.lastrowid
 
     def list_credentials(self) -> List[dict]:
-        """Returns a list of credentials with decrypted passwords."""
+        """Returns a list of credentials with decrypted passwords and notes."""
         if not self._fernet:
             raise StorageError("Vault is locked.")
 
         conn = self._get_conn()
         cursor = conn.cursor()
-        cursor.execute("SELECT id, service, username, encrypted_password, created_at FROM credentials ORDER BY service")
+        cursor.execute("SELECT id, service, username, encrypted_password, encrypted_note, created_at FROM credentials ORDER BY service")
         
         results = []
         for row in cursor.fetchall():
             try:
                 password = self._fernet.decrypt(row["encrypted_password"]).decode()
+                note = self._fernet.decrypt(row["encrypted_note"]).decode() if row["encrypted_note"] else ""
                 results.append({
                     "id": row["id"],
                     "service": row["service"],
                     "username": row["username"],
                     "password": password,
+                    "note": note,
                     "created_at": row["created_at"]
                 })
             except Exception:
@@ -215,6 +219,7 @@ class StorageManager:
                     "service": row["service"],
                     "username": row["username"],
                     "password": "<DECRYPTION_ERROR>",
+                    "note": "<DECRYPTION_ERROR>",
                     "created_at": row["created_at"]
                 })
         
@@ -229,18 +234,19 @@ class StorageManager:
         cursor.execute("DELETE FROM credentials WHERE id = ?", (credential_id,))
         conn.commit()
 
-    def update_credential(self, credential_id: int, service: str, username: str, password: str) -> None:
+    def update_credential(self, credential_id: int, service: str, username: str, password: str, note: str = "") -> None:
         """Update an existing credential by id."""
         if not self._fernet:
             raise StorageError("Vault is locked.")
 
         encrypted_password = self._fernet.encrypt(password.encode())
+        encrypted_note = self._fernet.encrypt(note.encode()) if note else None
 
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute(
-            "UPDATE credentials SET service = ?, username = ?, encrypted_password = ? WHERE id = ?",
-            (service, username, encrypted_password, credential_id),
+            "UPDATE credentials SET service = ?, username = ?, encrypted_password = ?, encrypted_note = ? WHERE id = ?",
+            (service, username, encrypted_password, encrypted_note, credential_id),
         )
         if cursor.rowcount == 0:
             raise StorageError(f"Credential with id {credential_id} not found.")
@@ -266,7 +272,7 @@ class StorageManager:
 
         conn = self._get_conn()
         cursor = conn.cursor()
-        cursor.execute("SELECT id, service, username, encrypted_password, created_at FROM credentials ORDER BY service")
+        cursor.execute("SELECT id, service, username, encrypted_password, encrypted_note, created_at FROM credentials ORDER BY service")
         
         exported = 0
         skipped = []
@@ -284,6 +290,7 @@ class StorageManager:
                             service=row["service"],
                             username=row["username"],
                             password=password,
+                            note=(self._fernet.decrypt(row["encrypted_note"]).decode() if row["encrypted_note"] else ""),
                         )
                     )
                     exported += 1
@@ -380,6 +387,8 @@ class StorageManager:
                 service = parsed["service"]
                 username = parsed["username"]
                 password = parsed["password"]
+                note = parsed.get("note", "")
+                
                 # Check for duplicates
                 key = (service.lower(), username.lower())
                 if key in existing_keys:
@@ -387,9 +396,10 @@ class StorageManager:
                         # Update existing credential
                         cred_id = existing_map[key]
                         encrypted_password = self._fernet.encrypt(password.encode())
+                        encrypted_note = self._fernet.encrypt(note.encode()) if note else None
                         cursor.execute(
-                            "UPDATE credentials SET encrypted_password = ? WHERE id = ?",
-                            (encrypted_password, cred_id)
+                            "UPDATE credentials SET encrypted_password = ?, encrypted_note = ? WHERE id = ?",
+                            (encrypted_password, encrypted_note, cred_id)
                         )
                         conn.commit()
                         imported += 1
@@ -404,9 +414,10 @@ class StorageManager:
                     # Insert new credential
                     if not dry_run:
                         encrypted_password = self._fernet.encrypt(password.encode())
+                        encrypted_note = self._fernet.encrypt(note.encode()) if note else None
                         cursor.execute(
-                            "INSERT INTO credentials (service, username, encrypted_password) VALUES (?, ?, ?)",
-                            (service, username, encrypted_password)
+                            "INSERT INTO credentials (service, username, encrypted_password, encrypted_note) VALUES (?, ?, ?, ?)",
+                            (service, username, encrypted_password, encrypted_note)
                         )
                         conn.commit()
                         existing_map[key] = cursor.lastrowid
