@@ -9,6 +9,7 @@ Generate It is a terminal credential generator and local manager featuring a cur
 - **Generating Random Usernames**: three styles (adjective+noun, random chars, or multiple words).
 - **Secure Local Storage**: AES-encrypted vault for storing and managing generated credentials.
 - **Credential Management**: add/edit/delete/search/copy credentials from an encrypted local vault.
+- **Note Support**: Add and view notes for each credential to store additional information.
 - **CSV I/O**: import/export across multiple provider formats.
 - **Security UX**: configurable clipboard auto-clear and vault auto-lock policies.
 
@@ -44,7 +45,7 @@ Tests cover generation invariants (`tests/test_generator.py`), storage/encryptio
 `generate_it/storage.py` handles the local SQLite database and encryption:
 - **Location**: Uses `platformdirs` to store `vault.db` in standard user data paths.
 - **Encryption**: Uses `cryptography.fernet`. The key is derived from the Master Password + a unique salt using **PBKDF2HMAC** (100k iterations).
-- **Data**: Credentials (service, username, password) are stored as encrypted blobs.
+- **Data**: Credentials (service, username, password, note) are stored as encrypted blobs.
 - **App settings**: non-sensitive preferences are persisted in the `config` table via keys prefixed `app_setting:`.
 
 ### TUI behavior (current)
@@ -66,11 +67,13 @@ Tests cover generation invariants (`tests/test_generator.py`), storage/encryptio
 - Save and manual add both use duplicate-safe behavior:
   - duplicates are detected by **(service, username)** (case-insensitive, trimmed)
   - user is prompted to type `overwrite` or cancel.
+- Both save and add operations now include optional note field for additional information.
 
 #### Vault explorer
 - Live fuzzy search while typing.
 - `Enter` details, `e` edit, `c/u` copy, `d` delete.
 - Copy actions can trigger clipboard auto-clear policy.
+- Details view now shows notes if they exist.
 
 #### Security settings
 Configured in-app via `t`:
