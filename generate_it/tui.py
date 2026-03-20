@@ -288,6 +288,7 @@ def _save_credential_duplicate_safe(
     username: str,
     password: str,
     note: str = "",
+    note_is_hidden: bool = False,
 ) -> str:
     """Save credential; prompt to overwrite if a duplicate exists."""
     if not state.storage:
@@ -309,11 +310,11 @@ def _save_credential_duplicate_safe(
         if not confirm or confirm.strip().lower() != "overwrite":
             return "cancelled"
 
-        state.storage.update_credential(existing["id"], service, username, password, note)
+        state.storage.update_credential(existing["id"], service, username, password, note, note_is_hidden)
         state.vault_credentials = state.storage.list_credentials()
         return "overwritten"
 
-    state.storage.save_credential(service, username, password, note)
+    state.storage.save_credential(service, username, password, note, note_is_hidden)
     state.vault_credentials = state.storage.list_credentials()
     return "saved"
 
@@ -2133,6 +2134,12 @@ def _run_save_generated_flow(
                 state.message = "Save cancelled."
                 return
 
+            note = _run_modal(stdscr, theme, "SAVE", "Note (optional, Enter to skip):", max_length=500)
+            note_is_hidden = False
+            if note:
+                hide_note = _run_modal(stdscr, theme, "SAVE", "Hide note? (y/n) [n]:", max_length=1, initial_value="n")
+                note_is_hidden = hide_note and hide_note.lower() == "y"
+
             result = _save_credential_duplicate_safe(
                 stdscr,
                 theme,
@@ -2140,6 +2147,8 @@ def _run_save_generated_flow(
                 service=service,
                 username=final_username,
                 password=final_password,
+                note=note or "",
+                note_is_hidden=note_is_hidden,
             )
             if result == "saved":
                 state.message = f"Saved credential for {service}."
@@ -2200,12 +2209,14 @@ def _run_details_modal(
         
         # Note
         note_text = credential.get('note', '')
-        if note_text:
+        note_is_hidden = credential.get('note_is_hidden', False)
+        display_note = "*" * len(note_text) if note_is_hidden and note_text else note_text
+        if display_note:
             win.addstr(row, 2, "Note:", label_attr)
             row += 1
             # Wrap note to fit
             import textwrap
-            wrapped_note = textwrap.wrap(note_text, width=box_w-14)
+            wrapped_note = textwrap.wrap(display_note, width=box_w-14)
             for line in wrapped_note:
                 win.addstr(row, 2, line[:box_w-14], val_attr)
                 row += 1
@@ -2218,7 +2229,9 @@ def _run_details_modal(
         win.addstr(row, 12, str(credential['created_at'])[:box_w-14])
         
         # Footer
-        footer = "c: Copy Pass • u: Copy User • Esc: Close"
+        note_footer = " • n: Copy Note" if note_text else ""
+        hide_footer = " • h: Show/Hide Note" if note_text else ""
+        footer = f"c: Copy Pass • u: Copy User{note_footer}{hide_footer} • Esc: Close"
         win.addstr(box_h - 2, 2, footer, theme.dim)
         
         win.refresh()
@@ -2251,6 +2264,46 @@ def _run_details_modal(
                 state.message = msg
             except Exception:
                 pass
+
+        elif key in (ord('n'), ord('N')):
+            if note_text:
+                try:
+                    msg = _copy_to_clipboard_with_policy(state, note_text)
+                    win.addstr(box_h - 2, 2, "        COPIED NOTE!        ", theme.ok)
+                    win.refresh()
+                    curses.napms(500)
+                    state.message = msg
+                except Exception:
+                    pass
+            else:
+                win.addstr(box_h - 2, 2, "       NO NOTE TO COPY!      ", theme.warn)
+                win.refresh()
+                curses.napms(500)
+
+        elif key in (ord('h'), ord('H')):
+            if note_text:
+                try:
+                    cred_id = credential['id']
+                    current_hidden = credential.get('note_is_hidden', False)
+                    state.storage.update_credential(
+                        cred_id,
+                        credential['service'],
+                        credential['username'],
+                        credential['password'],
+                        note_text,
+                        not current_hidden
+                    )
+                    state.vault_credentials = state.storage.list_credentials()
+                    credential = next((c for c in state.vault_credentials if c['id'] == cred_id), credential)
+                    break
+                except Exception as e:
+                    win.addstr(box_h - 2, 2, f"     ERROR: {str(e)[:20]}    ", theme.warn)
+                    win.refresh()
+                    curses.napms(1000)
+            else:
+                win.addstr(box_h - 2, 2, "       NO NOTE TO HIDE!     ", theme.warn)
+                win.refresh()
+                curses.napms(500)
 
 
 def _run_vault_modal(
@@ -2466,8 +2519,24 @@ def _run_vault_modal(
                 try:
                     # Get existing note for the credential
                     existing_note = cred.get("note", "")
+                    existing_hidden = cred.get("note_is_hidden", False)
                     note = _run_modal(stdscr, theme, "EDIT", "Note (optional):", max_length=500, initial_value=existing_note)
-                    state.storage.update_credential(cred["id"], service, username, password, note)
+                    if note is None:
+                        continue
+                    
+                    # Ask if user wants to hide the note
+                    hide_option = "y" if existing_hidden else "n"
+                    hide_note = _run_modal(
+                        stdscr, theme, "EDIT", 
+                        f"Hide note? (y/n) [{hide_option}]:", 
+                        max_length=1, 
+                        initial_value=hide_option
+                    )
+                    if hide_note is None:
+                        continue
+                    note_is_hidden = hide_note.lower() == "y"
+                    
+                    state.storage.update_credential(cred["id"], service, username, password, note, note_is_hidden)
                     state.vault_credentials = state.storage.list_credentials()
 
                     refreshed_filtered = _filter_vault_credentials(state.vault_credentials, vault_filter)
@@ -2940,6 +3009,13 @@ def run() -> int:
                         state.message = "Add cancelled."
                         stdscr.clear()
                         continue
+                    
+                    note = _run_modal(stdscr, theme, "ADD", "Note (optional, Enter to skip):", max_length=500)
+                    note_is_hidden = False
+                    if note:
+                        hide_note = _run_modal(stdscr, theme, "ADD", "Hide note? (y/n) [n]:", max_length=1, initial_value="n")
+                        note_is_hidden = hide_note and hide_note.lower() == "y"
+                    
                     result = _save_credential_duplicate_safe(
                         stdscr,
                         theme,
@@ -2947,6 +3023,8 @@ def run() -> int:
                         service=service,
                         username=username,
                         password=password,
+                        note=note or "",
+                        note_is_hidden=note_is_hidden,
                     )
                     if result == "saved":
                         state.message = f"Added credential for {service}."

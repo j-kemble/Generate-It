@@ -132,12 +132,12 @@ def test_save_credential_duplicate_safe_saves_when_no_duplicate(monkeypatch) -> 
                 creds.append({"id": i, "service": item[0], "username": item[1], "password": item[2]})
             return creds
 
-        def save_credential(self, service: str, username: str, password: str, note: str = "") -> int:
-            self.saved.append((service, username, password, note))
+        def save_credential(self, service: str, username: str, password: str, note: str = "", note_is_hidden: bool = False) -> int:
+            self.saved.append((service, username, password, note, note_is_hidden))
             return 99
 
-        def update_credential(self, credential_id: int, service: str, username: str, password: str, note: str = "") -> None:
-            self.updated.append((credential_id, service, username, password, note))
+        def update_credential(self, credential_id: int, service: str, username: str, password: str, note: str = "", note_is_hidden: bool = False) -> None:
+            self.updated.append((credential_id, service, username, password, note, note_is_hidden))
 
     storage = FakeStorage()
     state = SimpleNamespace(storage=storage, vault_credentials=[])
@@ -156,7 +156,7 @@ def test_save_credential_duplicate_safe_saves_when_no_duplicate(monkeypatch) -> 
     )
 
     assert result == "saved"
-    assert storage.saved == [("GitLab", "dev", "new-pass", "")]
+    assert storage.saved == [("GitLab", "dev", "new-pass", "", False)]
     assert storage.updated == []
     assert any(c["service"] == "GitLab" for c in state.vault_credentials)
 
@@ -173,12 +173,12 @@ def test_save_credential_duplicate_safe_allows_same_service_different_username(m
                 creds.append({"id": i, "service": item[0], "username": item[1], "password": item[2]})
             return creds
 
-        def save_credential(self, service: str, username: str, password: str, note: str = "") -> int:
-            self.saved.append((service, username, password, note))
+        def save_credential(self, service: str, username: str, password: str, note: str = "", note_is_hidden: bool = False) -> int:
+            self.saved.append((service, username, password, note, note_is_hidden))
             return 99
 
-        def update_credential(self, credential_id: int, service: str, username: str, password: str, note: str = "") -> None:
-            self.updated.append((credential_id, service, username, password, note))
+        def update_credential(self, credential_id: int, service: str, username: str, password: str, note: str = "", note_is_hidden: bool = False) -> None:
+            self.updated.append((credential_id, service, username, password, note, note_is_hidden))
 
     storage = FakeStorage()
     state = SimpleNamespace(storage=storage, vault_credentials=[])
@@ -197,7 +197,7 @@ def test_save_credential_duplicate_safe_allows_same_service_different_username(m
     )
 
     assert result == "saved"
-    assert storage.saved == [("GitHub", "work-account", "new-pass", "")]
+    assert storage.saved == [("GitHub", "work-account", "new-pass", "", False)]
     assert storage.updated == []
 
 
@@ -209,11 +209,11 @@ def test_save_credential_duplicate_safe_overwrites_on_confirmation(monkeypatch) 
         def list_credentials(self):
             return [{"id": 42, "service": "GitHub", "username": "dev", "password": "old"}]
 
-        def save_credential(self, service: str, username: str, password: str, note: str = "") -> int:
+        def save_credential(self, service: str, username: str, password: str, note: str = "", note_is_hidden: bool = False) -> int:
             raise AssertionError("save_credential should not be called for duplicates")
 
-        def update_credential(self, credential_id: int, service: str, username: str, password: str, note: str = "") -> None:
-            self.updated.append((credential_id, service, username, password, note))
+        def update_credential(self, credential_id: int, service: str, username: str, password: str, note: str = "", note_is_hidden: bool = False) -> None:
+            self.updated.append((credential_id, service, username, password, note, note_is_hidden))
 
     storage = FakeStorage()
     state = SimpleNamespace(storage=storage, vault_credentials=[])
@@ -232,7 +232,7 @@ def test_save_credential_duplicate_safe_overwrites_on_confirmation(monkeypatch) 
     )
 
     assert result == "overwritten"
-    assert storage.updated == [(42, "github", "DEV", "new-pass", "")]
+    assert storage.updated == [(42, "github", "DEV", "new-pass", "", False)]
 
 
 def test_save_credential_duplicate_safe_cancels_without_overwrite(monkeypatch) -> None:
@@ -385,3 +385,58 @@ def test_maybe_auto_clear_clipboard_does_not_clear_changed_value(monkeypatch) ->
     cleared = tui._maybe_auto_clear_clipboard(state, now=10.1)
     assert cleared is True
     assert clipboard["value"] == "newer-content"
+
+
+def test_fuzzy_score_edge_cases() -> None:
+    assert tui._fuzzy_score("", "hello") == 0
+    assert tui._fuzzy_score("a", "A") == 0
+    assert tui._fuzzy_score("abc", "abcdef") == 3
+    assert tui._fuzzy_score("xyz", "abc") is None
+
+
+def test_filter_vault_credentials_empty_list() -> None:
+    result = tui._filter_vault_credentials([], "query")
+    assert result == []
+
+
+def test_filter_vault_credentials_special_characters() -> None:
+    creds = [
+        {"id": 1, "service": "GitHub", "username": "dev@test.com", "password": "pass"},
+        {"id": 2, "service": "Test (Org)", "username": "user", "password": "pass"},
+    ]
+    result = tui._filter_vault_credentials(creds, "github")
+    assert len(result) == 1
+    assert result[0]["service"] == "GitHub"
+
+
+def test_filter_vault_credentials_numeric_query() -> None:
+    creds = [
+        {"id": 1, "service": "GitHub", "username": "user123", "password": "pass"},
+        {"id": 2, "service": "Test", "username": "admin", "password": "pass"},
+    ]
+    result = tui._filter_vault_credentials(creds, "123")
+    assert len(result) == 1
+    assert result[0]["username"] == "user123"
+
+
+def test_find_duplicate_credential_empty_list() -> None:
+    result = tui._find_duplicate_credential([], "service", "user")
+    assert result is None
+
+
+def test_truncate_middle_edge_cases() -> None:
+    assert tui._truncate_middle("hello", 10) == "hello"
+    assert tui._truncate_middle("hello", 5) == "hello"
+    assert tui._truncate_middle("hello world", 8) == "he...rld"
+    assert tui._truncate_middle("a", 1) == "a"
+    assert tui._truncate_middle("abc", 4) == "abc"
+    assert tui._truncate_middle("abc", 3) == "abc"
+
+
+def test_coerce_index_edge_cases() -> None:
+    assert tui._coerce_index("", 5, 0) == 0
+    assert tui._coerce_index("abc", 5, 0) == 0
+    assert tui._coerce_index("0", 5, 0) == 0
+    assert tui._coerce_index("4", 5, 0) == 4
+    assert tui._coerce_index("10", 5, 0) == 4
+    assert tui._coerce_index("-1", 5, 0) == 0

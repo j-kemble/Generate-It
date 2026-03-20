@@ -353,3 +353,103 @@ def test_csv_export_invalid_format_raises(temp_storage, tmp_path):
 
     with pytest.raises(StorageError, match="Unsupported export format"):
         temp_storage.export_to_csv(csv_path, export_format="unknown-format")
+
+
+def test_save_credential_with_note_and_hidden_flag(temp_storage):
+    temp_storage.initialize_vault("secret")
+    
+    cred_id = temp_storage.save_credential(
+        "GitHub", "dev", "password", "This is a secret note", note_is_hidden=True
+    )
+    
+    creds = temp_storage.list_credentials()
+    assert len(creds) == 1
+    assert creds[0]["note"] == "This is a secret note"
+    assert creds[0]["note_is_hidden"] is True
+
+
+def test_save_credential_with_note_visible(temp_storage):
+    temp_storage.initialize_vault("secret")
+    
+    cred_id = temp_storage.save_credential(
+        "GitHub", "dev", "password", "Visible note", note_is_hidden=False
+    )
+    
+    creds = temp_storage.list_credentials()
+    assert creds[0]["note"] == "Visible note"
+    assert creds[0]["note_is_hidden"] is False
+
+
+def test_update_credential_note_and_hidden_flag(temp_storage):
+    temp_storage.initialize_vault("secret")
+    
+    cred_id = temp_storage.save_credential("GitHub", "dev", "password")
+    creds = temp_storage.list_credentials()
+    assert creds[0]["note"] == ""
+    assert creds[0]["note_is_hidden"] is False
+    
+    temp_storage.update_credential(cred_id, "GitHub", "dev", "password", "Updated note", True)
+    
+    creds = temp_storage.list_credentials()
+    assert creds[0]["note"] == "Updated note"
+    assert creds[0]["note_is_hidden"] is True
+
+
+def test_update_credential_toggle_hidden_flag(temp_storage):
+    temp_storage.initialize_vault("secret")
+    
+    cred_id = temp_storage.save_credential("GitHub", "dev", "password", "Note", True)
+    
+    temp_storage.update_credential(cred_id, "GitHub", "dev", "password", "Note", False)
+    
+    creds = temp_storage.list_credentials()
+    assert creds[0]["note_is_hidden"] is False
+
+
+def test_delete_credential_nonexistent_id_does_not_raise(temp_storage):
+    temp_storage.initialize_vault("secret")
+    temp_storage.save_credential("GitHub", "dev", "password")
+    
+    temp_storage.delete_credential(9999)
+
+
+def test_vault_unlock_invalid_password_raises(temp_storage):
+    temp_storage.initialize_vault("secret")
+    temp_storage.close()
+    
+    storage2 = StorageManager(db_path=temp_storage.db_path)
+    
+    with pytest.raises(InvalidPasswordError, match="Invalid master password"):
+        storage2.unlock_vault("wrong_password")
+
+
+def test_list_credentials_empty_vault(temp_storage):
+    temp_storage.initialize_vault("secret")
+    
+    creds = temp_storage.list_credentials()
+    assert creds == []
+
+
+def test_export_csv_with_note_field(temp_storage, tmp_path):
+    temp_storage.initialize_vault("secret")
+    temp_storage.save_credential("GitHub", "dev", "pass", "My note")
+    
+    csv_path = tmp_path / "export.csv"
+    exported, skipped = temp_storage.export_to_csv(csv_path, export_format="generic")
+    
+    assert exported == 1
+    content = csv_path.read_text(encoding="utf-8")
+    assert "My note" in content
+
+
+def test_import_csv_with_note_field(temp_storage, tmp_path):
+    temp_storage.initialize_vault("secret")
+    
+    csv_path = tmp_path / "import.csv"
+    csv_path.write_text("name,username,password,note\nGitHub,dev,pass,Imported note\n", encoding="utf-8")
+    
+    imported, skipped, issues = temp_storage.import_from_csv(csv_path, import_format="generic")
+    
+    assert imported == 1
+    creds = temp_storage.list_credentials()
+    assert creds[0]["note"] == "Imported note"
