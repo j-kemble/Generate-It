@@ -1543,13 +1543,19 @@ def _render_footer(stdscr: "curses._CursesWindow", theme: Theme, message: str) -
     h, w = stdscr.getmaxyx()
 
     msg = message[: max(0, w - 1)]
-    help_line = "Tab/↑/↓ move • Enter/g gen • s save • t security • / search • i/e csv • Esc×2 quit"
+    
+    # Stacked help lines for better readability
+    help_lines = [
+        "Tab/↑/↓: Move  •  Enter/g: Generate  •  s: Save",
+        "t: Security  •  /: Search  •  i/e: CSV  •  Esc×2: Quit",
+    ]
 
-    _addstr_safe(stdscr, h - 2, 0, " " * max(0, w - 1), theme.dim)
-    _addstr_safe(stdscr, h - 2, 1, msg, theme.accent)
+    _addstr_safe(stdscr, h - 3, 0, " " * max(0, w - 1), theme.dim)
+    _addstr_safe(stdscr, h - 3, 1, msg, theme.accent)
 
-    _addstr_safe(stdscr, h - 1, 0, " " * max(0, w - 1), theme.dim)
-    _addstr_safe(stdscr, h - 1, 1, help_line[: max(0, w - 2)], theme.dim)
+    for i, line in enumerate(help_lines):
+        _addstr_safe(stdscr, h - 2 + i, 0, " " * max(0, w - 1), theme.dim)
+        _addstr_safe(stdscr, h - 2 + i, 1, line[: max(0, w - 2)], theme.dim)
 
 
 def _render_mode_box(
@@ -1807,13 +1813,15 @@ def _render_actions_box(
     )
     row += 1
 
-    _addstr_safe(
-        stdscr,
-        row,
-        x + 2,
-        "Hotkeys: g gen • s save • t security • / search • v vault • a add • ? help • Esc×2 quit"[:inner_w],
-        theme.dim,
-    )
+    # Stacked hotkeys for better readability
+    hotkey_lines = [
+        "g: Generate  s: Save    t: Security",
+        "/: Search    v: Vault   a: Add",
+        "?: Help     Esc×2: Quit",
+    ]
+    for line in hotkey_lines:
+        _addstr_safe(stdscr, row, x + 2, line[:inner_w], theme.dim)
+        row += 1
 
 
 def _render_vault_box(
@@ -2171,7 +2179,7 @@ def _run_details_modal(
 ) -> None:
     """Runs a modal to show credential details and allow copying."""
     h, w = stdscr.getmaxyx()
-    box_h, box_w = 12, 60
+    box_h, box_w = 14, 60
     y, x = (h - box_h) // 2, (w - box_w) // 2
     
     win = curses.newwin(box_h, box_w, y, x)
@@ -2228,11 +2236,19 @@ def _run_details_modal(
         win.addstr(row, 2, "Created:", label_attr)
         win.addstr(row, 12, str(credential['created_at'])[:box_w-14])
         
-        # Footer
-        note_footer = " • n: Copy Note" if note_text else ""
-        hide_footer = " • h: Show/Hide Note" if note_text else ""
-        footer = f"c: Copy Pass • u: Copy User{note_footer}{hide_footer} • Esc: Close"
-        win.addstr(box_h - 2, 2, footer, theme.dim)
+        # Footer - stacked on two lines for better readability
+        line1 = "c: Copy Pass  u: Copy User"
+        if note_text:
+            line1 += "  n: Copy Note"
+        
+        line2_parts = []
+        if note_text:
+            line2_parts.append("h: Show/Hide Note")
+        line2_parts.append("Esc: Close")
+        line2 = "  ".join(line2_parts)
+        
+        win.addstr(box_h - 3, 2, line1[:box_w-4], theme.dim)
+        win.addstr(box_h - 2, 2, line2[:box_w-4], theme.dim)
         
         win.refresh()
         
@@ -2422,13 +2438,20 @@ def _run_vault_modal(
                 except curses.error:
                     pass
 
-        # Footer
+        # Footer - stacked for readability
         if search_mode:
-            footer = "Typing search • Enter details • ↑/↓ select • Backspace edit • Esc stop"
+            footer_lines = [
+                "Typing search • Enter: details",
+                "↑/↓: select • Backspace: edit • Esc: stop",
+            ]
         else:
-            footer = "Enter details • e edit • c/u copy • d delete • / search • Esc/v close"
+            footer_lines = [
+                "Enter: details  e: edit  c: copy pass  u: copy user",
+                "d: delete  /: search  Esc/v: close",
+            ]
         try:
-            win.addstr(box_h - 2, 2, footer[:inner_w], theme.dim)
+            for i, line in enumerate(footer_lines):
+                win.addstr(box_h - 3 + i, 2, line[:inner_w], theme.dim)
         except curses.error:
             pass
             
