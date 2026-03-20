@@ -9,6 +9,7 @@ Controls (default):
 - Space: toggle
 - ←/→: adjust numeric values
 - Enter / g: generate
+- s: save generated credential
 - v: vault explorer
 - i: import CSV
 - e: export CSV
@@ -1149,7 +1150,7 @@ def _render_footer(stdscr: "curses._CursesWindow", theme: Theme, message: str) -
     h, w = stdscr.getmaxyx()
 
     msg = message[: max(0, w - 1)]
-    help_line = "Tab/↑/↓ move • Enter/g gen • i import • e export • v vault • q quit"
+    help_line = "Tab/↑/↓ move • Enter/g gen • s save • i/e csv • v vault • q quit"
 
     _addstr_safe(stdscr, h - 2, 0, " " * max(0, w - 1), theme.dim)
     _addstr_safe(stdscr, h - 2, 1, msg, theme.accent)
@@ -1400,7 +1401,7 @@ def _render_actions_box(
         stdscr,
         row,
         x + 2,
-        "Hotkeys: g generate • v vault • a add • ? help • q quit"[:inner_w],
+        "Hotkeys: g generate • s save • v vault • a add • ? help • q quit"[:inner_w],
         theme.dim,
     )
 
@@ -1653,6 +1654,79 @@ def _generate(state: AppState, words: list[str]) -> None:
     except Exception as exc:  # pragma: no cover
         state.message = f"Error: {exc}"
         curses.beep()
+
+
+def _run_save_generated_flow(
+    stdscr: "curses._CursesWindow",
+    theme: Theme,
+    state: AppState,
+) -> None:
+    """Save current generated output by prompting for the missing field(s)."""
+    if not state.storage or not state.vault_unlocked:
+        _run_modal(stdscr, theme, "ERROR", "Vault is locked or unavailable.")
+        state.message = "Save unavailable."
+        return
+
+    if not state.output:
+        _run_modal(stdscr, theme, "ERROR", "Nothing to save yet. Generate first.")
+        state.message = "Nothing to save yet."
+        return
+
+    service = _run_modal(stdscr, theme, "SAVE", "Enter Service/Website Name:")
+    if not service:
+        state.message = "Save cancelled."
+        return
+
+    service = service.strip()
+    if not service:
+        state.message = "Save cancelled."
+        return
+
+    try:
+        final_username = ""
+        final_password = ""
+
+        if state.mode == "username":
+            # We generated a username, so we need a password.
+            final_username = state.output
+
+            def _gen_pwd():
+                return generator.generate_character_password(
+                    16, use_letters=True, use_numbers=True, use_special=True
+                )
+
+            final_password = _run_modal(
+                stdscr,
+                theme,
+                "SAVE",
+                f"Enter Password for {final_username}:",
+                is_password=False,
+                generator_func=_gen_pwd,
+            )
+        else:
+            # We generated a password, so we need a username.
+            final_password = state.output
+
+            def _gen_user():
+                return generator.generate_username_adjective_noun(add_numbers=True)
+
+            final_username = _run_modal(
+                stdscr,
+                theme,
+                "SAVE",
+                "Enter Username:",
+                generator_func=_gen_user,
+            )
+
+        if final_username and final_password:
+            state.storage.save_credential(service, final_username, final_password)
+            state.vault_credentials = state.storage.list_credentials()
+            state.message = f"Saved credential for {service}."
+        else:
+            state.message = "Save cancelled."
+
+    except Exception as e:
+        state.message = f"Error saving: {e}"
 
 
 def _run_details_modal(stdscr: "curses._CursesWindow", theme: Theme, credential: dict) -> None:
@@ -2210,6 +2284,7 @@ def run() -> int:
             activate = key in (curses.KEY_ENTER, 10, 13)
             toggle = key == ord(" ")
             generate_now = key in (ord("g"), ord("G"))
+            save_now = key in (ord("s"), ord("S"))
             open_vault = key in (ord("v"), ord("V"))
             import_csv = key in (ord("i"), ord("I"))
             export_csv = key in (ord("e"), ord("E"))
@@ -2220,6 +2295,7 @@ def run() -> int:
                 help_lines = [
                     "GLOBAL HOTKEYS",
                     "g       : Generate new credential",
+                    "s       : Save generated credential",
                     "v       : Open Vault Explorer",
                     "i       : Import credentials from CSV (choose format)",
                     "e       : Export credentials to CSV (choose format)",
@@ -2252,6 +2328,11 @@ def run() -> int:
                     "Esc     : Close vault",
                 ]
                 _run_scrollable_modal(stdscr, theme, "HOTKEY LEGEND", help_lines)
+                stdscr.clear()
+                continue
+
+            if save_now:
+                _run_save_generated_flow(stdscr, theme, state)
                 stdscr.clear()
                 continue
 
@@ -2550,51 +2631,7 @@ def run() -> int:
                     key = ord("a")
                     continue
                 elif focus_id == "save" and activate:
-                    # SAVE FLOW
-                    service = _run_modal(stdscr, theme, "SAVE", "Enter Service/Website Name:")
-                    if service and state.storage and state.output:
-                        try:
-                            final_username = ""
-                            final_password = ""
-
-                            if state.mode == "username":
-                                # We generated a username, so we need a password.
-                                final_username = state.output
-                                
-                                def _gen_pwd():
-                                    return generator.generate_character_password(16, use_letters=True, use_numbers=True, use_special=True)
-                                
-                                final_password = _run_modal(
-                                    stdscr, 
-                                    theme, 
-                                    "SAVE", 
-                                    f"Enter Password for {final_username}:",
-                                    is_password=False, # Show it so they can see what they generated? Or hide it? Usually show during creation.
-                                    generator_func=_gen_pwd
-                                )
-                            else:
-                                # We generated a password, so we need a username.
-                                final_password = state.output
-                                
-                                def _gen_user():
-                                    return generator.generate_username_adjective_noun(add_numbers=True)
-                                    
-                                final_username = _run_modal(
-                                    stdscr, 
-                                    theme, 
-                                    "SAVE", 
-                                    "Enter Username:",
-                                    generator_func=_gen_user
-                                )
-
-                            if final_username and final_password:
-                                state.storage.save_credential(service, final_username, final_password)
-                                state.message = f"Saved credential for {service}."
-                            else:
-                                state.message = "Save cancelled."
-
-                        except Exception as e:
-                            state.message = f"Error saving: {e}"
+                    _run_save_generated_flow(stdscr, theme, state)
                 else:
                     # Enter on sliders generates as a convenience.
                     if activate and focus_id in {"char_length", "word_count", "username_length", "username_word_count"}:

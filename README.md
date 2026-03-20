@@ -67,6 +67,7 @@ Generate It includes an encrypted local vault to store your generated credential
 
 - **Hotkeys**:
   - `g`: Generate new credential
+  - `s`: Save the currently generated credential
   - `v`: Open **Vault Explorer**
   - `i`: Import credentials from CSV
   - `e`: Export credentials to CSV
@@ -83,7 +84,7 @@ Generate It includes an encrypted local vault to store your generated credential
 
 ### Saving Credentials
 When you generate a credential you will:
-1. Select **[ Save ]** (or navigate to it).
+1. Press **`s`** (or select **[ Save ]**).
 2. Enter a **Service Name** (e.g., "GitHub").
 3. Enter a **Username** or **Password** (whichever wasn't generated).
    - **Pro Tip**: Press **`Tab`** in these fields to instantly generate a random username or password on the fly!
