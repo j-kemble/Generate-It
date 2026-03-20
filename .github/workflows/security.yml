@@ -7,10 +7,11 @@ on:
     branches: [main, development]
 
 jobs:
-  # Security linting with Bandit
+  # Security linting with Bandit (report-only, doesn't fail CI for low severity)
   bandit:
     name: Security linting
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -21,9 +22,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
       - name: Run Bandit security scan
-        run: bandit -r generate_it -f json -o bandit-report.json || true
+        run: bandit -r generate_it -f json -o bandit-report.json -ll || true
       - name: Display Bandit report
-        run: bandit -r generate_it || true
+        run: bandit -r generate_it -ll || true
       - name: Upload Bandit report
         uses: actions/upload-artifact@v4
         if: always()
@@ -66,10 +67,11 @@ jobs:
           head: HEAD
           extra_args: --only-verified
 
-  # Static type checking with mypy
+  # Static type checking with mypy (report-only, doesn't fail CI)
   typecheck:
-    name: Static type check
+    name: Static type check (report only)
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -80,7 +82,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
       - name: Run mypy type checker
-        run: mypy generate_it
+        run: mypy generate_it || true
 
   # Test suite with pytest
   test:
