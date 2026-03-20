@@ -182,6 +182,12 @@ def _run_scrollable_modal(
         win.refresh()
         
         key = win.getch()
+
+        if key == 27:  # ESC
+            if search_mode:
+                search_mode = False
+                continue
+            return
         
         if key in (27, ord('q'), ord('Q')):  # ESC/q
             return
@@ -201,18 +207,32 @@ def _truncate_middle(text: str, max_len: int) -> str:
 
 
 def _filter_vault_credentials(credentials: list[dict], query: str) -> list[dict]:
-    """Filter vault credentials by service or username (case-insensitive)."""
+    """Filter and rank vault credentials by fuzzy score on service/username."""
     q = query.strip().lower()
     if not q:
         return list(credentials)
-
-    filtered: list[dict] = []
+    ranked: list[tuple[int, str, str, dict]] = []
     for cred in credentials:
         service = str(cred.get("service", "")).lower()
         username = str(cred.get("username", "")).lower()
-        if q in service or q in username:
-            filtered.append(cred)
-    return filtered
+        combined = f"{service} {username}".strip()
+
+        scores = [
+            s
+            for s in (
+                _fuzzy_score(q, service),
+                _fuzzy_score(q, username),
+                _fuzzy_score(q, combined),
+            )
+            if s is not None
+        ]
+        if not scores:
+            continue
+
+        ranked.append((min(scores), service, username, cred))
+
+    ranked.sort(key=lambda item: (item[0], item[1], item[2]))
+    return [item[3] for item in ranked]
 
 
 def _resolve_start_dir(path_text: str) -> Path:
@@ -1150,7 +1170,7 @@ def _render_footer(stdscr: "curses._CursesWindow", theme: Theme, message: str) -
     h, w = stdscr.getmaxyx()
 
     msg = message[: max(0, w - 1)]
-    help_line = "Tab/↑/↓ move • Enter/g gen • s save • i/e csv • v vault • q quit"
+    help_line = "Tab/↑/↓ move • Enter/g gen • s save • / vault search • i/e csv • q quit"
 
     _addstr_safe(stdscr, h - 2, 0, " " * max(0, w - 1), theme.dim)
     _addstr_safe(stdscr, h - 2, 1, msg, theme.accent)
@@ -1401,7 +1421,7 @@ def _render_actions_box(
         stdscr,
         row,
         x + 2,
-        "Hotkeys: g generate • s save • v vault • a add • ? help • q quit"[:inner_w],
+        "Hotkeys: g gen • s save • / search • v vault • a add • ? help • q quit"[:inner_w],
         theme.dim,
     )
 
@@ -1798,7 +1818,13 @@ def _run_details_modal(stdscr: "curses._CursesWindow", theme: Theme, credential:
                 pass
 
 
-def _run_vault_modal(stdscr: "curses._CursesWindow", theme: Theme, state: AppState) -> None:
+def _run_vault_modal(
+    stdscr: "curses._CursesWindow",
+    theme: Theme,
+    state: AppState,
+    *,
+    start_in_search: bool = False,
+) -> None:
     """Runs a modal vault manager."""
     if not state.vault_unlocked or not state.storage:
         _run_modal(stdscr, theme, "ERROR", "Vault locked or unavailable.")
@@ -1807,6 +1833,7 @@ def _run_vault_modal(stdscr: "curses._CursesWindow", theme: Theme, state: AppSta
     # Reload credentials
     state.vault_credentials = state.storage.list_credentials()
     vault_filter = ""
+    search_mode = start_in_search
     
     while True:
         h, w = stdscr.getmaxyx()
@@ -1846,8 +1873,9 @@ def _run_vault_modal(stdscr: "curses._CursesWindow", theme: Theme, state: AppSta
         else:
             state.vault_selected_idx = max(0, min(state.vault_selected_idx, len(filtered_credentials) - 1))
 
-        filter_label = vault_filter if vault_filter else "(none)"
-        filter_line = f"Filter: {filter_label}"
+        filter_label = vault_filter if vault_filter else "(type to search)"
+        filter_prefix = "Search*" if search_mode else "Search"
+        filter_line = f"{filter_prefix}: {filter_label}"
         try:
             win.addstr(list_y, 2, _truncate_middle(filter_line, inner_w), theme.dim)
         except curses.error:
@@ -1899,7 +1927,10 @@ def _run_vault_modal(stdscr: "curses._CursesWindow", theme: Theme, state: AppSta
                     pass
 
         # Footer
-        footer = "Enter: Details • e edit • c/u copy • d delete • / filter • Esc/v: Close"
+        if search_mode:
+            footer = "Typing search • Enter details • ↑/↓ select • Backspace edit • Esc stop"
+        else:
+            footer = "Enter details • e edit • c/u copy • d delete • / search • Esc/v close"
         try:
             win.addstr(box_h - 2, 2, footer[:inner_w], theme.dim)
         except curses.error:
@@ -1908,35 +1939,36 @@ def _run_vault_modal(stdscr: "curses._CursesWindow", theme: Theme, state: AppSta
         win.refresh()
         
         key = win.getch()
+
+        if key == 27:  # ESC
+            if search_mode:
+                search_mode = False
+                continue
+            return
         
-        if key in (27, ord('v'), ord('V'), ord('q'), ord('Q')): # Esc/v/q
+        if key in (ord('v'), ord('V'), ord('q'), ord('Q')): # v/q
             return
             
         if key == ord('/'):
-            selected_id = None
-            if filtered_credentials and 0 <= state.vault_selected_idx < len(filtered_credentials):
-                selected_id = filtered_credentials[state.vault_selected_idx]["id"]
-
-            filter_input = _run_modal(
-                stdscr,
-                theme,
-                "VAULT FILTER",
-                "Filter by service or username (blank clears):",
-                max_length=120,
-            )
-            if filter_input is not None:
-                vault_filter = filter_input.strip()
-                state.vault_scroll_y = 0
-                if selected_id is not None:
-                    new_filtered = _filter_vault_credentials(state.vault_credentials, vault_filter)
-                    found_idx = next(
-                        (i for i, cred in enumerate(new_filtered) if cred.get("id") == selected_id),
-                        None,
-                    )
-                    state.vault_selected_idx = found_idx if found_idx is not None else 0
-                else:
-                    state.vault_selected_idx = 0
+            search_mode = True
             continue
+
+        if search_mode:
+            if key in (curses.KEY_BACKSPACE, 127, 8):
+                if vault_filter:
+                    vault_filter = vault_filter[:-1]
+                    state.vault_selected_idx = 0
+                    state.vault_scroll_y = 0
+                continue
+            if key == 12:  # Ctrl+L
+                vault_filter = ""
+                state.vault_selected_idx = 0
+                state.vault_scroll_y = 0
+                continue
+            if 32 <= key <= 126:
+                vault_filter += chr(key)
+                state.vault_selected_idx = 0
+                state.vault_scroll_y = 0
         if key in (curses.KEY_UP, ord('k')):
             if filtered_credentials:
                 state.vault_selected_idx = max(0, state.vault_selected_idx - 1)
@@ -2285,6 +2317,7 @@ def run() -> int:
             toggle = key == ord(" ")
             generate_now = key in (ord("g"), ord("G"))
             save_now = key in (ord("s"), ord("S"))
+            quick_vault_search = key == ord("/")
             open_vault = key in (ord("v"), ord("V"))
             import_csv = key in (ord("i"), ord("I"))
             export_csv = key in (ord("e"), ord("E"))
@@ -2296,6 +2329,7 @@ def run() -> int:
                     "GLOBAL HOTKEYS",
                     "g       : Generate new credential",
                     "s       : Save generated credential",
+                    "/       : Quick vault search",
                     "v       : Open Vault Explorer",
                     "i       : Import credentials from CSV (choose format)",
                     "e       : Export credentials to CSV (choose format)",
@@ -2324,10 +2358,15 @@ def run() -> int:
                     "c       : Copy Password",
                     "u       : Copy Username",
                     "d       : Delete entry",
-                    "/       : Set/clear service+username filter",
+                    "/       : Start live vault search",
                     "Esc     : Close vault",
                 ]
                 _run_scrollable_modal(stdscr, theme, "HOTKEY LEGEND", help_lines)
+                stdscr.clear()
+                continue
+
+            if quick_vault_search:
+                _run_vault_modal(stdscr, theme, state, start_in_search=True)
                 stdscr.clear()
                 continue
 

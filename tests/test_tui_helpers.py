@@ -80,3 +80,24 @@ def test_filter_vault_credentials_matches_service_or_username_case_insensitive()
 
     filtered_none = tui._filter_vault_credentials(creds, "not-found")
     assert filtered_none == []
+
+
+def test_filter_vault_credentials_ranks_best_match_first() -> None:
+    creds = [
+        {"id": 1, "service": "Gmail", "username": "foo"},
+        {"id": 2, "service": "GitHub", "username": "octocat"},
+        {"id": 3, "service": "Bitwarden", "username": "gh-user"},
+    ]
+
+    filtered = tui._filter_vault_credentials(creds, "git")
+    assert [c["id"] for c in filtered] == [2]
+
+
+def test_filter_vault_credentials_supports_subsequence_match() -> None:
+    creds = [
+        {"id": 1, "service": "Azure", "username": "devops"},
+        {"id": 2, "service": "Bitbucket", "username": "team"},
+    ]
+
+    filtered = tui._filter_vault_credentials(creds, "azr")
+    assert [c["id"] for c in filtered] == [1]

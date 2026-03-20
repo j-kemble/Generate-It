@@ -68,6 +68,7 @@ Generate It includes an encrypted local vault to store your generated credential
 - **Hotkeys**:
   - `g`: Generate new credential
   - `s`: Save the currently generated credential
+  - `/`: Quick vault search (opens vault search mode)
   - `v`: Open **Vault Explorer**
   - `i`: Import credentials from CSV
   - `e`: Export credentials to CSV
@@ -79,7 +80,7 @@ Generate It includes an encrypted local vault to store your generated credential
 - `c`: Copy Password to clipboard
 - `u`: Copy Username to clipboard
 - `d`: Delete credential (requires confirmation)
-- `/`: Filter credentials by service or username
+- `/`: Start live fuzzy search (results update as you type)
 - `Esc`: Close vault
 
 ### Saving Credentials
