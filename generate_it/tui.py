@@ -155,7 +155,6 @@ def _run_scrollable_modal(
     while True:
         win.erase()
         win.box()
-        
         # Title
         title_text = f" {title} "
         win.addstr(0, 2, title_text[:box_w-4], theme.title)
@@ -197,6 +196,21 @@ def _truncate_middle(text: str, max_len: int) -> str:
     keep_left = (max_len - 3) // 2
     keep_right = max_len - 3 - keep_left
     return f"{text[:keep_left]}...{text[-keep_right:]}"
+
+
+def _filter_vault_credentials(credentials: list[dict], query: str) -> list[dict]:
+    """Filter vault credentials by service or username (case-insensitive)."""
+    q = query.strip().lower()
+    if not q:
+        return list(credentials)
+
+    filtered: list[dict] = []
+    for cred in credentials:
+        service = str(cred.get("service", "")).lower()
+        username = str(cred.get("username", "")).lower()
+        if q in service or q in username:
+            filtered.append(cred)
+    return filtered
 
 
 def _resolve_start_dir(path_text: str) -> Path:
@@ -1717,6 +1731,7 @@ def _run_vault_modal(stdscr: "curses._CursesWindow", theme: Theme, state: AppSta
         
     # Reload credentials
     state.vault_credentials = state.storage.list_credentials()
+    vault_filter = ""
     
     while True:
         h, w = stdscr.getmaxyx()
@@ -1747,6 +1762,22 @@ def _run_vault_modal(stdscr: "curses._CursesWindow", theme: Theme, state: AppSta
         inner_h = box_h - 2
         inner_w = box_w - 4
         list_y = 1
+
+        filtered_credentials = _filter_vault_credentials(state.vault_credentials, vault_filter)
+
+        if not filtered_credentials:
+            state.vault_selected_idx = 0
+            state.vault_scroll_y = 0
+        else:
+            state.vault_selected_idx = max(0, min(state.vault_selected_idx, len(filtered_credentials) - 1))
+
+        filter_label = vault_filter if vault_filter else "(none)"
+        filter_line = f"Filter: {filter_label}"
+        try:
+            win.addstr(list_y, 2, _truncate_middle(filter_line, inner_w), theme.dim)
+        except curses.error:
+            pass
+        list_y += 1
         
         # Header
         headers = f"{'Service':<20} {'Username':<20}"
@@ -1756,15 +1787,15 @@ def _run_vault_modal(stdscr: "curses._CursesWindow", theme: Theme, state: AppSta
             pass
             
         list_y += 2
-        content_h = inner_h - 3 # Reserve space for footer
+        content_h = max(1, inner_h - 4)  # Reserve space for filter line + footer
         
-        if not state.vault_credentials:
+        if not filtered_credentials:
             try:
-                win.addstr(list_y, 2, "No credentials found.", theme.dim)
+                win.addstr(list_y, 2, "No matching credentials.", theme.dim)
             except curses.error:
                 pass
         else:
-            total = len(state.vault_credentials)
+            total = len(filtered_credentials)
             
             # Scrolling
             if state.vault_selected_idx < state.vault_scroll_y:
@@ -1779,7 +1810,7 @@ def _run_vault_modal(stdscr: "curses._CursesWindow", theme: Theme, state: AppSta
             end = min(total, start + content_h)
             
             for i in range(start, end):
-                cred = state.vault_credentials[i]
+                cred = filtered_credentials[i]
                 is_selected = (i == state.vault_selected_idx)
                 
                 attr = theme.focus if is_selected else 0
@@ -1793,7 +1824,7 @@ def _run_vault_modal(stdscr: "curses._CursesWindow", theme: Theme, state: AppSta
                     pass
 
         # Footer
-        footer = "Enter: Details • c: Copy Pass • u: Copy User • d: Delete • Esc/v: Close"
+        footer = "Enter: Details • c/u copy • d delete • / filter • Esc/v: Close"
         try:
             win.addstr(box_h - 2, 2, footer[:inner_w], theme.dim)
         except curses.error:
@@ -1806,16 +1837,41 @@ def _run_vault_modal(stdscr: "curses._CursesWindow", theme: Theme, state: AppSta
         if key in (27, ord('v'), ord('V'), ord('q'), ord('Q')): # Esc/v/q
             return
             
+        if key == ord('/'):
+            selected_id = None
+            if filtered_credentials and 0 <= state.vault_selected_idx < len(filtered_credentials):
+                selected_id = filtered_credentials[state.vault_selected_idx]["id"]
+
+            filter_input = _run_modal(
+                stdscr,
+                theme,
+                "VAULT FILTER",
+                "Filter by service or username (blank clears):",
+                max_length=120,
+            )
+            if filter_input is not None:
+                vault_filter = filter_input.strip()
+                state.vault_scroll_y = 0
+                if selected_id is not None:
+                    new_filtered = _filter_vault_credentials(state.vault_credentials, vault_filter)
+                    found_idx = next(
+                        (i for i, cred in enumerate(new_filtered) if cred.get("id") == selected_id),
+                        None,
+                    )
+                    state.vault_selected_idx = found_idx if found_idx is not None else 0
+                else:
+                    state.vault_selected_idx = 0
+            continue
         if key in (curses.KEY_UP, ord('k')):
-            if state.vault_credentials:
+            if filtered_credentials:
                 state.vault_selected_idx = max(0, state.vault_selected_idx - 1)
         elif key in (curses.KEY_DOWN, ord('j')):
-            if state.vault_credentials:
-                state.vault_selected_idx = min(len(state.vault_credentials) - 1, state.vault_selected_idx + 1)
+            if filtered_credentials:
+                state.vault_selected_idx = min(len(filtered_credentials) - 1, state.vault_selected_idx + 1)
         
         elif key in (ord('c'), ord('C')):
-            if state.vault_credentials:
-                cred = state.vault_credentials[state.vault_selected_idx]
+            if filtered_credentials:
+                cred = filtered_credentials[state.vault_selected_idx]
                 try:
                     pyperclip.copy(cred['password'])
                     _run_modal(stdscr, theme, "SUCCESS", "Password copied to clipboard.")
@@ -1823,8 +1879,8 @@ def _run_vault_modal(stdscr: "curses._CursesWindow", theme: Theme, state: AppSta
                     _run_modal(stdscr, theme, "ERROR", f"Copy failed: {e}")
 
         elif key in (ord('u'), ord('U')):
-            if state.vault_credentials:
-                cred = state.vault_credentials[state.vault_selected_idx]
+            if filtered_credentials:
+                cred = filtered_credentials[state.vault_selected_idx]
                 try:
                     pyperclip.copy(cred['username'])
                     _run_modal(stdscr, theme, "SUCCESS", "Username copied to clipboard.")
@@ -1832,20 +1888,21 @@ def _run_vault_modal(stdscr: "curses._CursesWindow", theme: Theme, state: AppSta
                     _run_modal(stdscr, theme, "ERROR", f"Copy failed: {e}")
 
         elif key in (curses.KEY_ENTER, 10, 13):
-            if state.vault_credentials:
-                cred = state.vault_credentials[state.vault_selected_idx]
+            if filtered_credentials:
+                cred = filtered_credentials[state.vault_selected_idx]
                 _run_details_modal(stdscr, theme, cred)
         
         elif key in (ord('d'), ord('D')):
-            if state.vault_credentials:
-                cred = state.vault_credentials[state.vault_selected_idx]
+            if filtered_credentials:
+                cred = filtered_credentials[state.vault_selected_idx]
                 confirm = _run_modal(stdscr, theme, "CONFIRM", f"Delete {cred['service']}? (type 'yes'):")
                 if confirm and confirm.lower() == 'yes':
                     try:
                         state.storage.delete_credential(cred['id'])
                         state.vault_credentials = state.storage.list_credentials()
-                        if state.vault_selected_idx >= len(state.vault_credentials):
-                            state.vault_selected_idx = max(0, len(state.vault_credentials) - 1)
+                        refreshed_filtered = _filter_vault_credentials(state.vault_credentials, vault_filter)
+                        if state.vault_selected_idx >= len(refreshed_filtered):
+                            state.vault_selected_idx = max(0, len(refreshed_filtered) - 1)
                     except Exception as e:
                         _run_modal(stdscr, theme, "ERROR", f"Delete failed: {e}")
 
@@ -2129,6 +2186,7 @@ def run() -> int:
                     "c       : Copy Password",
                     "u       : Copy Username",
                     "d       : Delete entry",
+                    "/       : Set/clear service+username filter",
                     "Esc     : Close vault",
                 ]
                 _run_scrollable_modal(stdscr, theme, "HOTKEY LEGEND", help_lines)

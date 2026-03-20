@@ -53,3 +53,30 @@ def test_collect_files_for_fuzzy_filters_hidden_and_depth(tmp_path: Path) -> Non
     assert "visible/a.txt" in paths
     assert ".hidden_file.txt" not in paths
     assert ".hidden_dir/secret.txt" not in paths
+
+
+def test_filter_vault_credentials_blank_query_returns_all() -> None:
+    creds = [
+        {"id": 1, "service": "GitHub", "username": "octocat"},
+        {"id": 2, "service": "Gmail", "username": "alice@example.com"},
+    ]
+
+    filtered = tui._filter_vault_credentials(creds, "   ")
+    assert filtered == creds
+
+
+def test_filter_vault_credentials_matches_service_or_username_case_insensitive() -> None:
+    creds = [
+        {"id": 1, "service": "GitHub", "username": "octocat"},
+        {"id": 2, "service": "Gmail", "username": "alice@example.com"},
+        {"id": 3, "service": "Bitwarden", "username": "Bob"},
+    ]
+
+    filtered_service = tui._filter_vault_credentials(creds, "git")
+    assert [c["id"] for c in filtered_service] == [1]
+
+    filtered_user = tui._filter_vault_credentials(creds, "ALICE@")
+    assert [c["id"] for c in filtered_user] == [2]
+
+    filtered_none = tui._filter_vault_credentials(creds, "not-found")
+    assert filtered_none == []

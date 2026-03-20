@@ -77,6 +77,7 @@ Generate It includes an encrypted local vault to store your generated credential
 - `c`: Copy Password to clipboard
 - `u`: Copy Username to clipboard
 - `d`: Delete credential (requires confirmation)
+- `/`: Filter credentials by service or username
 - `Esc`: Close vault
 
 ### Saving Credentials
