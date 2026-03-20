@@ -69,6 +69,27 @@ def test_credential_ops(temp_storage):
     assert creds[0]["service"] == "Google"
 
 
+def test_update_credential_updates_fields_and_password(temp_storage):
+    temp_storage.initialize_vault("secret")
+    cred_id = temp_storage.save_credential("GitHub", "old-user", "old-pass")
+
+    temp_storage.update_credential(cred_id, "GitHub-Work", "new-user", "new-pass")
+
+    creds = temp_storage.list_credentials()
+    assert len(creds) == 1
+    assert creds[0]["id"] == cred_id
+    assert creds[0]["service"] == "GitHub-Work"
+    assert creds[0]["username"] == "new-user"
+    assert creds[0]["password"] == "new-pass"
+
+
+def test_update_credential_missing_id_raises(temp_storage):
+    temp_storage.initialize_vault("secret")
+
+    with pytest.raises(StorageError, match="not found"):
+        temp_storage.update_credential(999999, "Svc", "user", "pass")
+
+
 def test_csv_export_import_round_trip(temp_storage, tmp_path):
     # Export from one vault
     temp_storage.initialize_vault("secret")

@@ -197,6 +197,23 @@ class StorageManager:
         cursor.execute("DELETE FROM credentials WHERE id = ?", (credential_id,))
         conn.commit()
 
+    def update_credential(self, credential_id: int, service: str, username: str, password: str) -> None:
+        """Update an existing credential by id."""
+        if not self._fernet:
+            raise StorageError("Vault is locked.")
+
+        encrypted_password = self._fernet.encrypt(password.encode())
+
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE credentials SET service = ?, username = ?, encrypted_password = ? WHERE id = ?",
+            (service, username, encrypted_password, credential_id),
+        )
+        if cursor.rowcount == 0:
+            raise StorageError(f"Credential with id {credential_id} not found.")
+        conn.commit()
+
     def export_to_csv(
         self,
         csv_path: Path,

@@ -48,9 +48,10 @@ def _run_modal(
     is_password: bool = False,
     generator_func: callable | None = None,
     max_length: int = 50,
+    initial_value: str = "",
 ) -> str | None:
     """Runs a blocking modal dialog for text input. Returns the string or None if cancelled."""
-    input_str = ""
+    input_str = initial_value[:max_length]
     while True:
         h, w = stdscr.getmaxyx()
         min_w = 46
@@ -127,7 +128,7 @@ def _run_modal(
         elif key == 9 and generator_func: # Tab
             try:
                 # Generate and replace current input
-                input_str = generator_func()
+                input_str = str(generator_func())[:max_length]
             except Exception:
                 pass
         elif 32 <= key <= 126:
@@ -1824,7 +1825,7 @@ def _run_vault_modal(stdscr: "curses._CursesWindow", theme: Theme, state: AppSta
                     pass
 
         # Footer
-        footer = "Enter: Details • c/u copy • d delete • / filter • Esc/v: Close"
+        footer = "Enter: Details • e edit • c/u copy • d delete • / filter • Esc/v: Close"
         try:
             win.addstr(box_h - 2, 2, footer[:inner_w], theme.dim)
         except curses.error:
@@ -1868,6 +1869,66 @@ def _run_vault_modal(stdscr: "curses._CursesWindow", theme: Theme, state: AppSta
         elif key in (curses.KEY_DOWN, ord('j')):
             if filtered_credentials:
                 state.vault_selected_idx = min(len(filtered_credentials) - 1, state.vault_selected_idx + 1)
+        
+        elif key in (ord('e'), ord('E')):
+            if filtered_credentials:
+                cred = filtered_credentials[state.vault_selected_idx]
+                service = _run_modal(
+                    stdscr,
+                    theme,
+                    "EDIT",
+                    "Service name:",
+                    max_length=120,
+                    initial_value=cred["service"],
+                )
+                if service is None:
+                    continue
+                username = _run_modal(
+                    stdscr,
+                    theme,
+                    "EDIT",
+                    "Username:",
+                    max_length=120,
+                    initial_value=cred["username"],
+                )
+                if username is None:
+                    continue
+                password = _run_modal(
+                    stdscr,
+                    theme,
+                    "EDIT",
+                    "Password:",
+                    is_password=True,
+                    max_length=200,
+                    initial_value=cred["password"],
+                )
+                if password is None:
+                    continue
+
+                service = service.strip()
+                username = username.strip()
+                if not service or not username or not password:
+                    _run_modal(stdscr, theme, "ERROR", "Service, username, and password are required.")
+                    continue
+
+                try:
+                    state.storage.update_credential(cred["id"], service, username, password)
+                    state.vault_credentials = state.storage.list_credentials()
+
+                    refreshed_filtered = _filter_vault_credentials(state.vault_credentials, vault_filter)
+                    found_idx = next(
+                        (i for i, item in enumerate(refreshed_filtered) if item.get("id") == cred["id"]),
+                        None,
+                    )
+                    if found_idx is None:
+                        state.vault_selected_idx = max(0, len(refreshed_filtered) - 1)
+                    else:
+                        state.vault_selected_idx = found_idx
+                    state.vault_scroll_y = 0
+
+                    _run_modal(stdscr, theme, "SUCCESS", "Credential updated.")
+                except Exception as e:
+                    _run_modal(stdscr, theme, "ERROR", f"Update failed: {e}")
         
         elif key in (ord('c'), ord('C')):
             if filtered_credentials:
@@ -2183,6 +2244,7 @@ def run() -> int:
                     "VAULT EXPLORER (inside 'v')",
                     "↑ / ↓   : Navigate list",
                     "Enter   : View details",
+                    "e       : Edit entry",
                     "c       : Copy Password",
                     "u       : Copy Username",
                     "d       : Delete entry",

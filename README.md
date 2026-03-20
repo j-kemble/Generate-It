@@ -74,6 +74,7 @@ Generate It includes an encrypted local vault to store your generated credential
 ### Vault Explorer (`v`)
 - `↑/↓`: Navigate your saved credentials
 - `Enter`: View credential details
+- `e`: Edit credential
 - `c`: Copy Password to clipboard
 - `u`: Copy Username to clipboard
 - `d`: Delete credential (requires confirmation)
