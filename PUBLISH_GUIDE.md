@@ -35,20 +35,20 @@ Edit `pyproject.toml` and bump the version:
 
 ```toml
 [project]
-version = "0.2.1"  # Change this
+version = "0.2.2"  # Change this
 ```
 
 ### 2. Commit and Tag
 
 ```bash
 git add pyproject.toml
-git commit -m "Bump version to 0.2.1 for release
+git commit -m "Bump version to 0.2.2 for release
 
 Co-Authored-By: Oz <oz-agent@warp.dev>"
 
-git tag v0.2.1
+git tag v0.2.2
 git push origin main
-git push origin v0.2.1
+git push origin v0.2.2
 ```
 
 ### 3. Build Distribution Files
@@ -58,15 +58,15 @@ python -m build
 ```
 
 This creates:
-- `dist/generate_it-0.2.1.tar.gz` (source distribution)
-- `dist/generate_it-0.2.1-py3-none-any.whl` (wheel distribution)
+- `dist/generate_it-0.2.2.tar.gz` (source distribution)
+- `dist/generate_it-0.2.2-py3-none-any.whl` (wheel distribution)
 
 ### 4. Upload to PyPI
 
 Using your API token (replace `YOUR_TOKEN_HERE`):
 
 ```bash
-python -m twine upload dist/generate_it-0.2.1.tar.gz dist/generate_it-0.2.1-py3-none-any.whl \
+python -m twine upload dist/generate_it-0.2.2.tar.gz dist/generate_it-0.2.2-py3-none-any.whl \
   --username __token__ \
   --password YOUR_TOKEN_HERE
 ```
@@ -113,11 +113,11 @@ generate-it
 
 Automated workflows are configured in `.github/workflows/`:
 
-**ci.yml**: Runs cross-platform tests on Python 3.10/3.12 across Linux, macOS, and Windows on pushes and pull requests.
+**ci.yml**: Runs cross-platform tests on Python 3.10/3.12/3.13 across Linux, macOS, and Windows on pushes and pull requests.
 
 **test.yml**: Runs a focused main-branch package validation (pytest + sdist/wheel build + `twine check`) on pushes/PRs targeting main.
 
-**publish.yml**: Automatically builds and publishes to PyPI when you push a version tag (e.g., `git push origin v0.2.1`).
+**publish.yml**: Automatically builds and publishes to PyPI when you push a version tag (e.g., `git push origin v0.2.2`).
 
 ### Setting Up Automated Publishing
 
@@ -129,16 +129,16 @@ Automated workflows are configured in `.github/workflows/`:
 
 ```bash
 # Update version in pyproject.toml
-# e.g., change version = "0.2.0" to version = "0.2.1"
+# e.g., change version = "0.2.1" to version = "0.2.2"
 
 git add pyproject.toml
-git commit -m "Bump version to 0.2.1 for release
+git commit -m "Bump version to 0.2.2 for release
 
 Co-Authored-By: Oz <oz-agent@warp.dev>"
 
-git tag v0.2.1
+git tag v0.2.2
 git push origin main
-git push origin v0.2.1
+git push origin v0.2.2
 ```
 
 The GitHub Actions workflow will automatically:
