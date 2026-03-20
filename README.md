@@ -53,7 +53,9 @@ generate-it
 Generate It includes an encrypted local vault to store your generated credentials.
 - **Encryption**: Uses AES-256 (via `cryptography`) to secure your data locally.
 - **Master Password**: You create a master password on first run. This key is never stored; it unlocks your vault each session.
-- **Offline**: Your data stays on your machine (`~/.local/share/generate-it/` on Linux).
+- **Offline**: Your data stays on your machine:
+  - Linux: `~/.local/share/generate-it/`
+  - Windows: `C:\Users\<user>\AppData\Local\<user>\generate-it\`
 - **Clipboard**: Quickly copy passwords or usernames with hotkeys.
 
 ### Controls
