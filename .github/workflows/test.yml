@@ -27,7 +27,6 @@ jobs:
       - name: Run tests
         run: python -m pytest tests/ -v
       - name: Build and validate package
-      - name: Build package
         run: |
           python -m build --sdist --wheel
           python -m twine check dist/*

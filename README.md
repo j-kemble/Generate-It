@@ -13,7 +13,7 @@ It can generate:
 
 ### From PyPI (recommended)
 
-Requires Python 3.10 or later and pip.
+Requires Python 3.10-3.13 and pip.
 
 ```bash
 pip install generate-it
