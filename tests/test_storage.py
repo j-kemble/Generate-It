@@ -90,6 +90,19 @@ def test_update_credential_missing_id_raises(temp_storage):
         temp_storage.update_credential(999999, "Svc", "user", "pass")
 
 
+def test_app_setting_round_trip(temp_storage):
+    temp_storage.initialize_vault("secret")
+
+    assert temp_storage.get_app_setting("clipboard_auto_clear_index") is None
+    assert temp_storage.get_app_setting("clipboard_auto_clear_index", "0") == "0"
+
+    temp_storage.set_app_setting("clipboard_auto_clear_index", "3")
+    temp_storage.set_app_setting("auto_lock_index", "2")
+
+    assert temp_storage.get_app_setting("clipboard_auto_clear_index") == "3"
+    assert temp_storage.get_app_setting("auto_lock_index") == "2"
+
+
 def test_csv_export_import_round_trip(temp_storage, tmp_path):
     # Export from one vault
     temp_storage.initialize_vault("secret")

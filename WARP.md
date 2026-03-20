@@ -8,6 +8,9 @@ Generate It is a terminal credential generator and local manager featuring a cur
 - **Generating Random Passphrases**: configurable word count with optional insertion.
 - **Generating Random Usernames**: three styles (adjective+noun, random chars, or multiple words).
 - **Secure Local Storage**: AES-encrypted vault for storing and managing generated credentials.
+- **Credential Management**: add/edit/delete/search/copy credentials from an encrypted local vault.
+- **CSV I/O**: import/export across multiple provider formats.
+- **Security UX**: configurable clipboard auto-clear and vault auto-lock policies.
 
 Core logic lives in `generate_it/generator.py` and `generate_it/storage.py`. The curses TUI in `generate_it/tui.py` is the primary interface.
 
@@ -18,7 +21,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
 ```
-New dependencies: `platformdirs`, `cryptography`, `pyperclip`.
+Dependencies include: `platformdirs`, `cryptography`, `pyperclip`.
 
 ### Run
 ```bash
@@ -30,36 +33,57 @@ On first run, you will be prompted to create a **Master Password**. Subsequent r
 ```bash
 python -m pytest
 ```
-Tests cover generation invariants (`tests/test_generator.py`) and secure storage/encryption logic (`tests/test_storage.py`).
+Tests cover generation invariants (`tests/test_generator.py`), storage/encryption and CSV behavior (`tests/test_storage.py`), plus TUI helper logic (`tests/test_tui_helpers.py`).
 
 ## Architecture / code map
 ### Entrypoints
-- `generate_it/__main__.py`: Initializer. Handles the startup sequence:
-  1. Checks if vault exists (via `StorageManager`).
-  2. Triggers **Setup** (first run) or **Login** (unlock) modals.
-  3. Launches the main TUI loop once unlocked.
+- `generate_it/__main__.py`: package entrypoint.
+- `generate_it/tui.py:run()`: main curses app loop and startup login/setup flow.
 
 ### Storage & Security
 `generate_it/storage.py` handles the local SQLite database and encryption:
-- **Location**: Uses `platformdirs` to store `vault.db` in standard user data paths (e.g., `~/.local/share/generate-it/`).
+- **Location**: Uses `platformdirs` to store `vault.db` in standard user data paths.
 - **Encryption**: Uses `cryptography.fernet`. The key is derived from the Master Password + a unique salt using **PBKDF2HMAC** (100k iterations).
 - **Data**: Credentials (service, username, password) are stored as encrypted blobs.
+- **App settings**: non-sensitive preferences are persisted in the `config` table via keys prefixed `app_setting:`.
 
-### Curses TUI
-`generate_it/tui.py` contains the dashboard and modal systems:
-- **Global Hotkeys**:
-  - `g`: Generate new credential.
-  - `v`: Open **Vault Explorer** modal.
-  - `q`: Quit.
-- **Save Flow**:
-  - In Generator modes, clicking **[ Save ]** prompts for Service and Username/Password.
-  - **Tab**: In any save-dialog input field, press Tab to generate a random value (username or password) on the fly.
-- **Vault Explorer (`v`)**:
-  - File-browser style navigation (`↑/↓`).
-  - `Enter`: View full details.
-  - `c`: Copy Password to clipboard (`pyperclip`).
-  - `u`: Copy Username to clipboard.
-  - `d`: Delete entry (requires "yes" confirmation).
+### TUI behavior (current)
+`generate_it/tui.py` contains dashboard rendering, modal input, and event handling.
+
+#### Global hotkeys
+- `g`: Generate
+- `s`: Save currently generated credential
+- `a`: Add credential manually
+- `/`: Quick vault search (opens vault modal in search mode)
+- `v`: Vault explorer
+- `i`: CSV import
+- `e`: CSV export
+- `t`: Security settings
+- `?`: Hotkey legend
+- `Esc` twice: quit app
+
+#### Save / add flow
+- Save and manual add both use duplicate-safe behavior:
+  - duplicates are detected by **(service, username)** (case-insensitive, trimmed)
+  - user is prompted to type `overwrite` or cancel.
+
+#### Vault explorer
+- Live fuzzy search while typing.
+- `Enter` details, `e` edit, `c/u` copy, `d` delete.
+- Copy actions can trigger clipboard auto-clear policy.
+
+#### Security settings
+Configured in-app via `t`:
+- Clipboard auto-clear options:
+  - `No auto-clear`, `15 seconds`, `30 seconds`, `45 seconds`, `1 minute`, `2 minutes`, `3 minutes`
+- Auto-lock options:
+  - `No auto-lock`, `Lock when screen off`, `5 minutes`, `10 minutes`, `15 minutes`
+- Policies are persisted and reloaded from storage settings.
+
+## Contributor notes
+- Keep hotkey/help/footer text in sync with behavior whenever controls change.
+- If modal behavior or key handling changes, add/adjust helper tests in `tests/test_tui_helpers.py`.
+- For storage schema/logic changes, update `tests/test_storage.py` and run full `pytest`.
 
 ## Wordlist customization
 The env var used to point at a custom word list is `GENERATE_IT_WORDLIST`.

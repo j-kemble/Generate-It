@@ -70,10 +70,27 @@ Generate It includes an encrypted local vault to store your generated credential
 - **Hotkeys**:
   - `g`: Generate new credential
   - `s`: Save the currently generated credential
+  - `t`: Open Security Settings
   - `/`: Quick vault search (opens vault search mode)
   - `v`: Open **Vault Explorer**
   - `i`: Import credentials from CSV
   - `e`: Export credentials to CSV
+
+### Security Settings (`t`)
+- **Clipboard auto-clear** options:
+  - `No auto-clear`
+  - `15 seconds`
+  - `30 seconds`
+  - `45 seconds`
+  - `1 minute`
+  - `2 minutes`
+  - `3 minutes`
+- **Auto-lock** options:
+  - `No auto-lock`
+  - `Lock when screen off`
+  - `5 minutes`
+  - `10 minutes`
+  - `15 minutes`
 
 ### Vault Explorer (`v`)
 - `↑/↓`: Navigate your saved credentials

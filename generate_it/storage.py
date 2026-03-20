@@ -44,6 +44,38 @@ class StorageManager:
             self._db_connection.row_factory = sqlite3.Row
         return self._db_connection
 
+    def set_app_setting(self, key: str, value: str) -> None:
+        """Persist a non-sensitive app preference in the config table."""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        stored_key = f"app_setting:{key}"
+        stored_value = value.encode("utf-8")
+        cursor.execute(
+            "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)",
+            (stored_key, stored_value),
+        )
+        conn.commit()
+
+    def get_app_setting(self, key: str, default: Optional[str] = None) -> Optional[str]:
+        """Read a persisted non-sensitive app preference from the config table."""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        stored_key = f"app_setting:{key}"
+        cursor.execute("SELECT value FROM config WHERE key = ?", (stored_key,))
+        row = cursor.fetchone()
+        if not row:
+            return default
+
+        value = row["value"]
+        if isinstance(value, bytes):
+            try:
+                return value.decode("utf-8")
+            except Exception:
+                return default
+        if value is None:
+            return default
+        return str(value)
+
     def _derive_key(self, password: str, salt: bytes) -> bytes:
         """Derives a url-safe base64-encoded key from the password and salt."""
         kdf = PBKDF2HMAC(

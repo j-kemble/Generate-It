@@ -14,6 +14,7 @@ Controls (default):
 - i: import CSV
 - e: export CSV
 - a: add credential manually
+- t: security settings
 - ?: hotkey legend
 - b: jump focus to mode
 """
@@ -37,6 +38,29 @@ from .storage import StorageManager, InvalidPasswordError
 
 APP_NAME = "Generate It"
 ESC_QUIT_WINDOW_SECONDS = 1.0
+AUTO_LOCK_SCREEN_OFF = "screen_off"
+SCREEN_OFF_LOCK_GAP_SECONDS = 20.0
+
+CLIPBOARD_AUTO_CLEAR_OPTIONS: tuple[tuple[str, int | None], ...] = (
+    ("No auto-clear", None),
+    ("15 seconds", 15),
+    ("30 seconds", 30),
+    ("45 seconds", 45),
+    ("1 minute", 60),
+    ("2 minutes", 120),
+    ("3 minutes", 180),
+)
+
+AUTO_LOCK_OPTIONS: tuple[tuple[str, int | str | None], ...] = (
+    ("No auto-lock", None),
+    ("Lock when screen off", AUTO_LOCK_SCREEN_OFF),
+    ("5 minutes", 5 * 60),
+    ("10 minutes", 10 * 60),
+    ("15 minutes", 15 * 60),
+)
+
+SETTING_KEY_CLIPBOARD_AUTO_CLEAR_INDEX = "clipboard_auto_clear_index"
+SETTING_KEY_AUTO_LOCK_INDEX = "auto_lock_index"
 
 
 class QuitApp(Exception):
@@ -761,6 +785,90 @@ def _prompt_csv_format(
         except ValueError as e:
             _run_modal(stdscr, theme, "ERROR", str(e))
 
+
+def _run_security_settings_modal(
+    stdscr: "curses._CursesWindow",
+    theme: Theme,
+    state: AppState,
+) -> None:
+    selected_row = 0
+    rows = ("clipboard", "auto_lock")
+
+    while True:
+        if _maybe_auto_clear_clipboard(state):
+            state.message = "Clipboard auto-cleared."
+        if _should_auto_lock_now(state):
+            reason = _auto_lock_reason_text(state)
+            _lock_vault(state)
+            _prompt_unlock_vault(stdscr, theme, state, reason=reason)
+            return
+
+        h, w = stdscr.getmaxyx()
+        box_h = 11
+        box_w = min(78, max(52, w - 4))
+        y, x = (h - box_h) // 2, (w - box_w) // 2
+        inner_w = max(10, box_w - 4)
+
+        win = curses.newwin(box_h, box_w, y, x)
+        win.keypad(True)
+        win.timeout(250)
+        win.erase()
+        win.box()
+
+        try:
+            win.addstr(0, 2, " SECURITY SETTINGS "[:inner_w], theme.title)
+        except curses.error:
+            pass
+
+        clip_line = f"Clipboard auto-clear: {_clipboard_auto_clear_label(state)}"
+        lock_line = f"Auto-lock: {_auto_lock_label(state)}"
+        clip_attr = theme.focus if selected_row == 0 else 0
+        lock_attr = theme.focus if selected_row == 1 else 0
+
+        _addstr_safe(win, 2, 2, _truncate_middle(clip_line, inner_w), clip_attr)
+        _addstr_safe(win, 4, 2, _truncate_middle(lock_line, inner_w), lock_attr)
+
+        _addstr_safe(
+            win,
+            box_h - 2,
+            2,
+            "↑/↓ select • ←/→ change • Space toggle • Enter/Esc close"[:inner_w],
+            theme.dim,
+        )
+        win.refresh()
+
+        key = win.getch()
+        if key == -1:
+            continue
+        _record_user_activity(state)
+
+        if key in (27, curses.KEY_ENTER, 10, 13):
+            return
+        if key in (curses.KEY_UP, ord("k")):
+            selected_row = max(0, selected_row - 1)
+            continue
+        if key in (curses.KEY_DOWN, ord("j")):
+            selected_row = min(len(rows) - 1, selected_row + 1)
+            continue
+        if key in (curses.KEY_LEFT, ord("h")):
+            if selected_row == 0:
+                state.clipboard_auto_clear_index = (
+                    state.clipboard_auto_clear_index - 1
+                ) % len(CLIPBOARD_AUTO_CLEAR_OPTIONS)
+            else:
+                state.auto_lock_index = (state.auto_lock_index - 1) % len(AUTO_LOCK_OPTIONS)
+            _persist_security_settings(state)
+            continue
+        if key in (curses.KEY_RIGHT, ord("l"), ord(" ")):
+            if selected_row == 0:
+                state.clipboard_auto_clear_index = (
+                    state.clipboard_auto_clear_index + 1
+                ) % len(CLIPBOARD_AUTO_CLEAR_OPTIONS)
+            else:
+                state.auto_lock_index = (state.auto_lock_index + 1) % len(AUTO_LOCK_OPTIONS)
+            _persist_security_settings(state)
+            continue
+
 # --- Header art -------------------------------------------------------------
 
 HEADER_SMALL = ["Generate It"]
@@ -1116,6 +1224,194 @@ class AppState:
     vault_credentials: list[dict] = field(default_factory=list)
     vault_scroll_y: int = 0
     vault_selected_idx: int = 0
+    
+    # Security settings
+    clipboard_auto_clear_index: int = 0
+    auto_lock_index: int = 0
+    clipboard_clear_due_at: float | None = None
+    clipboard_clear_expected: str | None = None
+    last_activity_at: float = field(default_factory=time.monotonic)
+    last_tick_at: float = field(default_factory=time.monotonic)
+
+def _coerce_index(raw: str | None, size: int, default: int = 0) -> int:
+    if size <= 0:
+        return 0
+    try:
+        idx = int(raw) if raw is not None else default
+    except (TypeError, ValueError):
+        idx = default
+    return max(0, min(size - 1, idx))
+
+
+def _clipboard_auto_clear_label(state: AppState) -> str:
+    return CLIPBOARD_AUTO_CLEAR_OPTIONS[state.clipboard_auto_clear_index][0]
+
+
+def _clipboard_auto_clear_seconds(state: AppState) -> int | None:
+    return CLIPBOARD_AUTO_CLEAR_OPTIONS[state.clipboard_auto_clear_index][1]
+
+
+def _auto_lock_label(state: AppState) -> str:
+    return AUTO_LOCK_OPTIONS[state.auto_lock_index][0]
+
+
+def _auto_lock_setting(state: AppState) -> int | str | None:
+    return AUTO_LOCK_OPTIONS[state.auto_lock_index][1]
+
+
+def _persist_security_settings(state: AppState) -> None:
+    if not state.storage:
+        return
+    try:
+        state.storage.set_app_setting(
+            SETTING_KEY_CLIPBOARD_AUTO_CLEAR_INDEX,
+            str(state.clipboard_auto_clear_index),
+        )
+        state.storage.set_app_setting(
+            SETTING_KEY_AUTO_LOCK_INDEX,
+            str(state.auto_lock_index),
+        )
+    except Exception:
+        pass
+
+
+def _load_security_settings(state: AppState) -> None:
+    if not state.storage:
+        return
+    try:
+        clip_raw = state.storage.get_app_setting(
+            SETTING_KEY_CLIPBOARD_AUTO_CLEAR_INDEX,
+            str(state.clipboard_auto_clear_index),
+        )
+        lock_raw = state.storage.get_app_setting(
+            SETTING_KEY_AUTO_LOCK_INDEX,
+            str(state.auto_lock_index),
+        )
+        state.clipboard_auto_clear_index = _coerce_index(
+            clip_raw,
+            len(CLIPBOARD_AUTO_CLEAR_OPTIONS),
+            default=0,
+        )
+        state.auto_lock_index = _coerce_index(
+            lock_raw,
+            len(AUTO_LOCK_OPTIONS),
+            default=0,
+        )
+    except Exception:
+        state.clipboard_auto_clear_index = 0
+        state.auto_lock_index = 0
+
+
+def _record_user_activity(state: AppState, now: float | None = None) -> None:
+    current = time.monotonic() if now is None else now
+    state.last_activity_at = current
+    state.last_tick_at = current
+
+
+def _should_auto_lock_now(state: AppState, now: float | None = None) -> bool:
+    current = time.monotonic() if now is None else now
+    if not state.vault_unlocked:
+        state.last_tick_at = current
+        return False
+
+    setting = _auto_lock_setting(state)
+    should_lock = False
+    if setting == AUTO_LOCK_SCREEN_OFF:
+        should_lock = (current - state.last_tick_at) >= SCREEN_OFF_LOCK_GAP_SECONDS
+    elif isinstance(setting, int):
+        should_lock = (current - state.last_activity_at) >= setting
+
+    state.last_tick_at = current
+    return should_lock
+
+
+def _auto_lock_reason_text(state: AppState) -> str:
+    setting = _auto_lock_setting(state)
+    if setting == AUTO_LOCK_SCREEN_OFF:
+        return "Vault auto-locked after screen-off/sleep detection."
+    return f"Vault auto-locked after {_auto_lock_label(state)} of inactivity."
+
+
+def _copy_to_clipboard_with_policy(state: AppState, value: str) -> str:
+    pyperclip.copy(value)
+    seconds = _clipboard_auto_clear_seconds(state)
+    if seconds is None:
+        state.clipboard_clear_due_at = None
+        state.clipboard_clear_expected = None
+        return "Copied to clipboard."
+
+    state.clipboard_clear_due_at = time.monotonic() + seconds
+    state.clipboard_clear_expected = value
+    return f"Copied to clipboard. Auto-clear in {_clipboard_auto_clear_label(state)}."
+
+
+def _maybe_auto_clear_clipboard(state: AppState, now: float | None = None) -> bool:
+    if state.clipboard_clear_due_at is None:
+        return False
+
+    current = time.monotonic() if now is None else now
+    if current < state.clipboard_clear_due_at:
+        return False
+
+    expected = state.clipboard_clear_expected
+    state.clipboard_clear_due_at = None
+    state.clipboard_clear_expected = None
+
+    try:
+        current_clip = pyperclip.paste()
+        if expected is None or current_clip == expected:
+            pyperclip.copy("")
+    except Exception:
+        return False
+    return True
+
+
+def _lock_vault(state: AppState) -> None:
+    if state.storage:
+        state.storage.close()
+    state.vault_unlocked = False
+    state.vault_credentials = []
+    state.vault_selected_idx = 0
+    state.vault_scroll_y = 0
+
+
+def _prompt_unlock_vault(
+    stdscr: "curses._CursesWindow",
+    theme: Theme,
+    state: AppState,
+    *,
+    reason: str,
+) -> bool:
+    if not state.storage:
+        state.message = "Vault unavailable."
+        return False
+
+    while True:
+        pwd = _run_modal(
+            stdscr,
+            theme,
+            "VAULT LOCKED",
+            f"{reason} Enter Master Password to unlock (Esc to keep locked):",
+            is_password=True,
+            max_length=200,
+        )
+        if pwd is None:
+            state.message = "Vault locked."
+            return False
+
+        try:
+            state.storage.unlock_vault(pwd)
+            state.vault_unlocked = True
+            state.vault_credentials = state.storage.list_credentials()
+            _record_user_activity(state)
+            state.message = "Vault unlocked."
+            return True
+        except InvalidPasswordError:
+            _run_modal(stdscr, theme, "ERROR", "Invalid master password.")
+        except Exception as e:
+            _run_modal(stdscr, theme, "ERROR", f"Unlock failed: {e}")
+            state.message = "Vault locked."
+            return False
 
 
 def _focus_items(state: AppState) -> list[str]:
@@ -1245,7 +1541,7 @@ def _render_footer(stdscr: "curses._CursesWindow", theme: Theme, message: str) -
     h, w = stdscr.getmaxyx()
 
     msg = message[: max(0, w - 1)]
-    help_line = "Tab/↑/↓ move • Enter/g gen • s save • / vault search • i/e csv • Esc×2 quit"
+    help_line = "Tab/↑/↓ move • Enter/g gen • s save • t security • / search • i/e csv • Esc×2 quit"
 
     _addstr_safe(stdscr, h - 2, 0, " " * max(0, w - 1), theme.dim)
     _addstr_safe(stdscr, h - 2, 1, msg, theme.accent)
@@ -1496,7 +1792,24 @@ def _render_actions_box(
         stdscr,
         row,
         x + 2,
-        "Hotkeys: g gen • s save • / search • v vault • a add • ? help • Esc×2 quit"[:inner_w],
+        f"Clipboard: {_clipboard_auto_clear_label(state)}"[:inner_w],
+        theme.dim,
+    )
+    row += 1
+    _addstr_safe(
+        stdscr,
+        row,
+        x + 2,
+        f"Auto-lock: {_auto_lock_label(state)}"[:inner_w],
+        theme.dim,
+    )
+    row += 1
+
+    _addstr_safe(
+        stdscr,
+        row,
+        x + 2,
+        "Hotkeys: g gen • s save • t security • / search • v vault • a add • ? help • Esc×2 quit"[:inner_w],
         theme.dim,
     )
 
@@ -1840,7 +2153,12 @@ def _run_save_generated_flow(
         state.message = f"Error saving: {e}"
 
 
-def _run_details_modal(stdscr: "curses._CursesWindow", theme: Theme, credential: dict) -> None:
+def _run_details_modal(
+    stdscr: "curses._CursesWindow",
+    theme: Theme,
+    state: AppState,
+    credential: dict,
+) -> None:
     """Runs a modal to show credential details and allow copying."""
     h, w = stdscr.getmaxyx()
     box_h, box_w = 12, 60
@@ -1848,8 +2166,16 @@ def _run_details_modal(stdscr: "curses._CursesWindow", theme: Theme, credential:
     
     win = curses.newwin(box_h, box_w, y, x)
     win.keypad(True)
+    win.timeout(250)
     
     while True:
+        if _maybe_auto_clear_clipboard(state):
+            state.message = "Clipboard auto-cleared."
+        if _should_auto_lock_now(state):
+            reason = _auto_lock_reason_text(state)
+            _lock_vault(state)
+            _prompt_unlock_vault(stdscr, theme, state, reason=reason)
+            return
         win.erase()
         win.box()
         
@@ -1885,26 +2211,31 @@ def _run_details_modal(stdscr: "curses._CursesWindow", theme: Theme, credential:
         win.refresh()
         
         key = win.getch()
+        if key == -1:
+            continue
+        _record_user_activity(state)
         
         if key in (27, ord('q'), ord('Q')): # Esc/q
             return
             
         elif key in (ord('c'), ord('C')):
             try:
-                pyperclip.copy(credential['password'])
+                msg = _copy_to_clipboard_with_policy(state, credential['password'])
                 # Quick feedback overlay
                 win.addstr(box_h - 2, 2, "       COPIED PASSWORD!       ", theme.ok)
                 win.refresh()
                 curses.napms(500)
+                state.message = msg
             except Exception:
                 pass
 
         elif key in (ord('u'), ord('U')):
             try:
-                pyperclip.copy(credential['username'])
+                msg = _copy_to_clipboard_with_policy(state, credential['username'])
                 win.addstr(box_h - 2, 2, "       COPIED USERNAME!       ", theme.ok)
                 win.refresh()
                 curses.napms(500)
+                state.message = msg
             except Exception:
                 pass
 
@@ -1927,6 +2258,13 @@ def _run_vault_modal(
     search_mode = start_in_search
     
     while True:
+        if _maybe_auto_clear_clipboard(state):
+            state.message = "Clipboard auto-cleared."
+        if _should_auto_lock_now(state):
+            reason = _auto_lock_reason_text(state)
+            _lock_vault(state)
+            _prompt_unlock_vault(stdscr, theme, state, reason=reason)
+            return
         h, w = stdscr.getmaxyx()
         
         # Calculate box dimensions (80% of screen)
@@ -1942,6 +2280,7 @@ def _run_vault_modal(
         # Easier to just draw a solid box on top.
         win = curses.newwin(box_h, box_w, y, x)
         win.keypad(True)
+        win.timeout(250)
         win.erase()
         win.box()
         
@@ -2030,6 +2369,9 @@ def _run_vault_modal(
         win.refresh()
         
         key = win.getch()
+        if key == -1:
+            continue
+        _record_user_activity(state)
 
         if key == 27:  # ESC
             if search_mode:
@@ -2131,8 +2473,8 @@ def _run_vault_modal(
             if filtered_credentials:
                 cred = filtered_credentials[state.vault_selected_idx]
                 try:
-                    pyperclip.copy(cred['password'])
-                    _run_modal(stdscr, theme, "SUCCESS", "Password copied to clipboard.")
+                    msg = _copy_to_clipboard_with_policy(state, cred['password'])
+                    _run_modal(stdscr, theme, "SUCCESS", msg)
                 except Exception as e:
                     _run_modal(stdscr, theme, "ERROR", f"Copy failed: {e}")
 
@@ -2140,15 +2482,15 @@ def _run_vault_modal(
             if filtered_credentials:
                 cred = filtered_credentials[state.vault_selected_idx]
                 try:
-                    pyperclip.copy(cred['username'])
-                    _run_modal(stdscr, theme, "SUCCESS", "Username copied to clipboard.")
+                    msg = _copy_to_clipboard_with_policy(state, cred['username'])
+                    _run_modal(stdscr, theme, "SUCCESS", msg)
                 except Exception as e:
                     _run_modal(stdscr, theme, "ERROR", f"Copy failed: {e}")
 
         elif key in (curses.KEY_ENTER, 10, 13):
             if filtered_credentials:
                 cred = filtered_credentials[state.vault_selected_idx]
-                _run_details_modal(stdscr, theme, cred)
+                _run_details_modal(stdscr, theme, state, cred)
         
         elif key in (ord('d'), ord('D')):
             if filtered_credentials:
@@ -2185,6 +2527,7 @@ def run() -> int:
             pass
 
         stdscr.keypad(True)
+        stdscr.timeout(250)
 
         words = generator.load_wordlist()
         state = AppState()
@@ -2259,13 +2602,23 @@ def run() -> int:
 
         # Load initial credentials
         if state.vault_unlocked and state.storage:
-             state.vault_credentials = state.storage.list_credentials()
+            state.vault_credentials = state.storage.list_credentials()
+            _load_security_settings(state)
+            _record_user_activity(state)
 
         # Generate something immediately so the dashboard isn't empty.
         _generate(state, words)
         last_esc_quit_at: float | None = None
 
         while True:
+            if _maybe_auto_clear_clipboard(state):
+                state.message = "Clipboard auto-cleared."
+            if _should_auto_lock_now(state):
+                reason = _auto_lock_reason_text(state)
+                _lock_vault(state)
+                _prompt_unlock_vault(stdscr, theme, state, reason=reason)
+                stdscr.clear()
+                continue
             stdscr.erase()
             header_end = _render_header(stdscr, theme)
             h, w = stdscr.getmaxyx()
@@ -2276,6 +2629,9 @@ def run() -> int:
                 _render_footer(stdscr, theme, state.message)
                 stdscr.refresh()
                 key = stdscr.getch()
+                if key == -1:
+                    continue
+                _record_user_activity(state)
                 if key == 27:
                     should_quit, last_esc_quit_at = _handle_double_esc_quit(
                         key=key, last_esc_at=last_esc_quit_at
@@ -2373,6 +2729,9 @@ def run() -> int:
             stdscr.refresh()
 
             key = stdscr.getch()
+            if key == -1:
+                continue
+            _record_user_activity(state)
             if key == 27:
                 should_quit, last_esc_quit_at = _handle_double_esc_quit(
                     key=key, last_esc_at=last_esc_quit_at
@@ -2437,6 +2796,7 @@ def run() -> int:
             save_now = key in (ord("s"), ord("S"))
             quick_vault_search = key == ord("/")
             open_vault = key in (ord("v"), ord("V"))
+            open_security_settings = key in (ord("t"), ord("T"))
             import_csv = key in (ord("i"), ord("I"))
             export_csv = key in (ord("e"), ord("E"))
             manual_add = key in (ord("a"), ord("A"))
@@ -2447,12 +2807,17 @@ def run() -> int:
                     "GLOBAL HOTKEYS",
                     "g       : Generate new credential",
                     "s       : Save generated credential",
+                    "t       : Security settings",
                     "/       : Quick vault search",
                     "v       : Open Vault Explorer",
                     "i       : Import credentials from CSV (choose format)",
                     "e       : Export credentials to CSV (choose format)",
                     "?       : Show this help",
                     "Esc x2  : Quit application",
+                    "",
+                    "SECURITY OPTIONS",
+                    "Clipboard auto-clear: No auto-clear / 15s / 30s / 45s / 1m / 2m / 3m",
+                    "Auto-lock: No auto-lock / Lock when screen off / 5m / 10m / 15m",
                     "",
                     "NAVIGATION & EDITING",
                     "Tab     : Move focus forward",
@@ -2480,6 +2845,15 @@ def run() -> int:
                     "Esc     : Close vault",
                 ]
                 _run_scrollable_modal(stdscr, theme, "HOTKEY LEGEND", help_lines)
+                stdscr.clear()
+                continue
+
+            if open_security_settings:
+                _run_security_settings_modal(stdscr, theme, state)
+                state.message = (
+                    f"Security updated: clipboard={_clipboard_auto_clear_label(state)}, "
+                    f"auto-lock={_auto_lock_label(state)}."
+                )
                 stdscr.clear()
                 continue
 

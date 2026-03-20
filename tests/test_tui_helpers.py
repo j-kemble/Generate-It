@@ -312,3 +312,76 @@ def test_handle_double_esc_quit_non_esc_clears_state() -> None:
     )
     assert should_quit is False
     assert last_esc is None
+
+
+def test_coerce_index_clamps_and_defaults() -> None:
+    assert tui._coerce_index("3", 5, default=0) == 3
+    assert tui._coerce_index("999", 5, default=0) == 4
+    assert tui._coerce_index("-10", 5, default=0) == 0
+    assert tui._coerce_index("bad", 5, default=2) == 2
+    assert tui._coerce_index(None, 5, default=1) == 1
+
+
+def test_security_option_label_helpers() -> None:
+    state = tui.AppState()
+    state.clipboard_auto_clear_index = 2  # 30 seconds
+    state.auto_lock_index = 3  # 10 minutes
+
+    assert tui._clipboard_auto_clear_label(state) == "30 seconds"
+    assert tui._clipboard_auto_clear_seconds(state) == 30
+    assert tui._auto_lock_label(state) == "10 minutes"
+    assert tui._auto_lock_setting(state) == 600
+
+
+def test_should_auto_lock_now_for_inactivity() -> None:
+    state = tui.AppState()
+    state.vault_unlocked = True
+    state.auto_lock_index = 2  # 5 minutes
+    state.last_activity_at = 100.0
+    state.last_tick_at = 100.0
+
+    assert tui._should_auto_lock_now(state, now=399.0) is False
+    assert tui._should_auto_lock_now(state, now=401.0) is True
+
+
+def test_should_auto_lock_now_for_screen_off_gap() -> None:
+    state = tui.AppState()
+    state.vault_unlocked = True
+    state.auto_lock_index = 1  # Lock when screen off
+    state.last_activity_at = 100.0
+    state.last_tick_at = 100.0
+
+    assert tui._should_auto_lock_now(state, now=110.0) is False
+    assert tui._should_auto_lock_now(state, now=131.0) is True
+
+
+def test_maybe_auto_clear_clipboard_clears_when_due_and_unchanged(monkeypatch) -> None:
+    clipboard = {"value": "secret"}
+
+    monkeypatch.setattr(tui.pyperclip, "paste", lambda: clipboard["value"])
+    monkeypatch.setattr(tui.pyperclip, "copy", lambda text: clipboard.__setitem__("value", text))
+
+    state = tui.AppState()
+    state.clipboard_clear_due_at = 10.0
+    state.clipboard_clear_expected = "secret"
+
+    cleared = tui._maybe_auto_clear_clipboard(state, now=10.1)
+    assert cleared is True
+    assert clipboard["value"] == ""
+    assert state.clipboard_clear_due_at is None
+    assert state.clipboard_clear_expected is None
+
+
+def test_maybe_auto_clear_clipboard_does_not_clear_changed_value(monkeypatch) -> None:
+    clipboard = {"value": "newer-content"}
+
+    monkeypatch.setattr(tui.pyperclip, "paste", lambda: clipboard["value"])
+    monkeypatch.setattr(tui.pyperclip, "copy", lambda text: clipboard.__setitem__("value", text))
+
+    state = tui.AppState()
+    state.clipboard_clear_due_at = 10.0
+    state.clipboard_clear_expected = "old-content"
+
+    cleared = tui._maybe_auto_clear_clipboard(state, now=10.1)
+    assert cleared is True
+    assert clipboard["value"] == "newer-content"
