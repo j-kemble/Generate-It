@@ -132,22 +132,6 @@ def _resolve_start_dir(path_text: str) -> Path:
         return parent
     return Path.cwd()
 
-def _handle_double_esc_quit(
-    *,
-    key: int,
-    last_esc_at: float | None,
-    now: float | None = None,
-    window_seconds: float = ESC_QUIT_WINDOW_SECONDS,
-) -> tuple[bool, float | None]:
-    """Return (should_quit, new_last_esc_at) for double-Esc app exit logic."""
-    if key != 27:
-        return False, None
-
-    current = time.monotonic() if now is None else now
-    if last_esc_at is not None and (current - last_esc_at) <= window_seconds:
-        return True, None
-    return False, current
-
 def _run_fuzzy_file_picker(
     stdscr: curses.window,
     theme: Theme,
@@ -708,23 +692,6 @@ def _auto_lock_reason_text(state: AppState) -> str:
         return "Vault auto-locked after screen-off/sleep detection."
     return f"Vault auto-locked after {_auto_lock_label(state)} of inactivity."
 
-def _copy_to_clipboard_with_policy(state: AppState, value: str) -> str:
-    try:
-        pyperclip.copy(value)
-    except Exception:
-        # Fallback for systems (like headless Linux) without a clipboard manager
-        return "Clipboard error: Install 'xclip' or 'xsel'."
-
-    seconds = _clipboard_auto_clear_seconds(state)
-    if seconds is None:
-        state.clipboard_clear_due_at = None
-        state.clipboard_clear_expected = None
-        return "Copied to clipboard."
-
-    state.clipboard_clear_due_at = time.monotonic() + seconds
-    state.clipboard_clear_expected = value
-    return f"Copied to clipboard. Auto-clear in {_clipboard_auto_clear_label(state)}."
-
 def _maybe_auto_clear_clipboard(state: AppState, now: float | None = None) -> bool:
     if state.clipboard_clear_due_at is None:
         return False
@@ -1045,7 +1012,7 @@ def _run_details_modal(
             
         elif key in (ord('c'), ord('C')):
             try:
-                msg = _copy_to_clipboard_with_policy(state, credential['password'])
+                msg = tui_flow._copy_to_clipboard_with_policy(state, credential['password'])
                 # Quick feedback overlay
                 win.addstr(box_h - 2, 2, "       COPIED PASSWORD!       ", theme.ok)
                 win.refresh()
@@ -1056,7 +1023,7 @@ def _run_details_modal(
 
         elif key in (ord('u'), ord('U')):
             try:
-                msg = _copy_to_clipboard_with_policy(state, credential['username'])
+                msg = tui_flow._copy_to_clipboard_with_policy(state, credential['username'])
                 win.addstr(box_h - 2, 2, "       COPIED USERNAME!       ", theme.ok)
                 win.refresh()
                 curses.napms(500)
@@ -1067,7 +1034,7 @@ def _run_details_modal(
         elif key in (ord('n'), ord('N')):
             if note_text:
                 try:
-                    msg = _copy_to_clipboard_with_policy(state, note_text)
+                    msg = tui_flow._copy_to_clipboard_with_policy(state, note_text)
                     win.addstr(box_h - 2, 2, "        COPIED NOTE!        ", theme.ok)
                     win.refresh()
                     curses.napms(500)
@@ -1364,7 +1331,7 @@ def _run_vault_modal(
             if filtered_credentials:
                 cred = filtered_credentials[state.vault_selected_idx]
                 try:
-                    msg = _copy_to_clipboard_with_policy(state, cred['password'])
+                    msg = tui_flow._copy_to_clipboard_with_policy(state, cred['password'])
                     tui_modal._run_modal(stdscr, theme, "SUCCESS", msg)
                 except Exception as e:
                     tui_modal._run_modal(stdscr, theme, "ERROR", f"Copy failed: {e}")
@@ -1373,7 +1340,7 @@ def _run_vault_modal(
             if filtered_credentials:
                 cred = filtered_credentials[state.vault_selected_idx]
                 try:
-                    msg = _copy_to_clipboard_with_policy(state, cred['username'])
+                    msg = tui_flow._copy_to_clipboard_with_policy(state, cred['username'])
                     tui_modal._run_modal(stdscr, theme, "SUCCESS", msg)
                 except Exception as e:
                     tui_modal._run_modal(stdscr, theme, "ERROR", f"Copy failed: {e}")
@@ -1438,7 +1405,7 @@ def run() -> int:
                 R._addstr_safe(stdscr, 13, 7, "Press Esc twice to quit", theme.dim)
                 stdscr.refresh()
                 key = stdscr.getch()
-                should_quit, critical_last_esc_at = _handle_double_esc_quit(
+                should_quit, critical_last_esc_at = tui_flow._handle_double_esc_quit(
                     key=key, last_esc_at=critical_last_esc_at
                 )
                 if should_quit:
@@ -1525,7 +1492,7 @@ def run() -> int:
                         continue
                     _record_user_activity(state)
                     if key == 27:
-                        should_quit, last_esc_quit_at = _handle_double_esc_quit(
+                        should_quit, last_esc_quit_at = tui_flow._handle_double_esc_quit(
                             key=key, last_esc_at=last_esc_quit_at
                         )
                         if should_quit:
@@ -1644,7 +1611,7 @@ def run() -> int:
                 continue
             _record_user_activity(state)
             if key == 27:
-                should_quit, last_esc_quit_at = _handle_double_esc_quit(
+                should_quit, last_esc_quit_at = tui_flow._handle_double_esc_quit(
                     key=key, last_esc_at=last_esc_quit_at
                 )
                 if should_quit:
@@ -1998,4 +1965,10 @@ def run() -> int:
 # state-label helpers (e.g. _selected_category_count) that are defined
 # above in this module.
 from . import tui_render as R
+from . import tui_flow
+
+# Re-exported so existing callers (including tests) that reference
+# tui._handle_double_esc_quit keep working after the verbatim move into
+# tui_flow.
+_handle_double_esc_quit = tui_flow._handle_double_esc_quit
 from .tui_render import Theme
