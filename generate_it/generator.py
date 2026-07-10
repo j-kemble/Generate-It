@@ -6,6 +6,7 @@ This module is UI-agnostic: both the curses TUI and any CLI wrapper can use it.
 from __future__ import annotations
 
 from pathlib import Path
+import functools
 import os
 import secrets
 import string
@@ -30,7 +31,7 @@ PASSPHRASE_SPECIALS = "!@#$%&*?"
 
 # Username-related character sets.
 USERNAME_ALPHANUMERIC = string.ascii_lowercase + string.digits
-USERNAME_SEPARATORS = ["_", "-"]
+USERNAME_SEPARATORS = frozenset(["_", "-"])
 
 # Wordlist lookup order:
 # 1) explicit `path` argument
@@ -313,16 +314,10 @@ def secure_shuffle(items: list[str]) -> None:
 
 
 def _dedupe_preserve_order(items: list[str]) -> list[str]:
-    seen: set[str] = set()
-    out: list[str] = []
-    for x in items:
-        if x in seen:
-            continue
-        seen.add(x)
-        out.append(x)
-    return out
+    return list(dict.fromkeys(items))
 
 
+@functools.lru_cache(maxsize=1)
 def load_wordlist(path: Path | None = None) -> list[str]:
     """Load passphrase words.
 

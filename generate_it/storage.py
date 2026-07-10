@@ -5,7 +5,7 @@ import csv
 from pathlib import Path
 from typing import List, Optional, Dict, Tuple
 
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from platformdirs import user_data_dir
@@ -169,8 +169,8 @@ class StorageManager:
             decrypted_verification = fernet.decrypt(verification_token)
             if decrypted_verification != b"VERIFICATION_TOKEN":
                 raise InvalidPasswordError("Invalid master password.")
-        except InvalidPasswordError:
-            raise
+        except (InvalidPasswordError, InvalidToken):
+            raise InvalidPasswordError("Invalid master password.")
         except Exception as e:
             # Re-raise as storage error if it's not a password validation issue
             # (e.g., database corruption, connection issues)
@@ -184,12 +184,16 @@ class StorageManager:
             self._db_connection = None
         self._fernet = None
 
-    def save_credential(self, service: str, username: str, password: str, note: str = "", note_is_hidden: bool = False) -> int:
-        if not self._fernet:
+    def _require_unlocked(self) -> Fernet:
+        if self._fernet is None:
             raise StorageError("Vault is locked.")
+        return self._fernet
 
-        encrypted_password = self._fernet.encrypt(password.encode())
-        encrypted_note = self._fernet.encrypt(note.encode()) if note else None
+    def save_credential(self, service: str, username: str, password: str, note: str = "", note_is_hidden: bool = False) -> int:
+        fernet = self._require_unlocked()
+
+        encrypted_password = fernet.encrypt(password.encode())
+        encrypted_note = fernet.encrypt(note.encode()) if note else None
         
         conn = self._get_conn()
         cursor = conn.cursor()
@@ -198,22 +202,22 @@ class StorageManager:
             (service, username, encrypted_password, encrypted_note, 1 if note_is_hidden else 0)
         )
         conn.commit()
-        return cursor.lastrowid
+        return int(cursor.lastrowid or 0)
 
     def list_credentials(self) -> List[dict]:
         """Returns a list of credentials with decrypted passwords and notes."""
-        if not self._fernet:
-            raise StorageError("Vault is locked.")
+        fernet = self._require_unlocked()
 
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute("SELECT id, service, username, encrypted_password, encrypted_note, note_is_hidden, created_at FROM credentials ORDER BY service")
         
         results = []
+        fernet = self._require_unlocked()
         for row in cursor.fetchall():
             try:
-                password = self._fernet.decrypt(row["encrypted_password"]).decode()
-                note = self._fernet.decrypt(row["encrypted_note"]).decode() if row["encrypted_note"] else ""
+                password = fernet.decrypt(row["encrypted_password"]).decode()
+                note = fernet.decrypt(row["encrypted_note"]).decode() if row["encrypted_note"] else ""
                 note_is_hidden = bool(row["note_is_hidden"]) if row["note_is_hidden"] is not None else False
                 results.append({
                     "id": row["id"],
@@ -239,8 +243,7 @@ class StorageManager:
         return results
 
     def delete_credential(self, credential_id: int) -> None:
-        if not self._fernet:
-            raise StorageError("Vault is locked.")
+        self._require_unlocked()
             
         conn = self._get_conn()
         cursor = conn.cursor()
@@ -249,11 +252,10 @@ class StorageManager:
 
     def update_credential(self, credential_id: int, service: str, username: str, password: str, note: str = "", note_is_hidden: bool = False) -> None:
         """Update an existing credential by id."""
-        if not self._fernet:
-            raise StorageError("Vault is locked.")
+        fernet = self._require_unlocked()
 
-        encrypted_password = self._fernet.encrypt(password.encode())
-        encrypted_note = self._fernet.encrypt(note.encode()) if note else None
+        encrypted_password = fernet.encrypt(password.encode())
+        encrypted_note = fernet.encrypt(note.encode()) if note else None
 
         conn = self._get_conn()
         cursor = conn.cursor()
@@ -276,8 +278,7 @@ class StorageManager:
             Tuple of (exported_count, skipped_rows)
             skipped_rows is a list of dicts with 'service', 'username', 'error' keys
         """
-        if not self._fernet:
-            raise StorageError("Vault is locked.")
+        fernet = self._require_unlocked()
         try:
             normalized_format = csv_formats.normalize_export_format(export_format)
         except ValueError as e:
@@ -289,21 +290,23 @@ class StorageManager:
         
         exported = 0
         skipped = []
-        
+        fernet = self._require_unlocked()
+
         with open(csv_path, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             writer.writerow(csv_formats.get_export_headers(normalized_format))
             
             for row in cursor.fetchall():
+                fernet = self._require_unlocked()
                 try:
-                    password = self._fernet.decrypt(row["encrypted_password"]).decode()
+                    password = fernet.decrypt(row["encrypted_password"]).decode()
                     writer.writerow(
                         csv_formats.build_export_row(
                             normalized_format,
                             service=row["service"],
                             username=row["username"],
                             password=password,
-                            note=(self._fernet.decrypt(row["encrypted_note"]).decode() if row["encrypted_note"] else ""),
+                            note=(fernet.decrypt(row["encrypted_note"]).decode() if row["encrypted_note"] else ""),
                         )
                     )
                     exported += 1
@@ -339,8 +342,7 @@ class StorageManager:
             Tuple of (imported_count, skipped_count, duplicate_list)
             duplicate_list contains dicts with 'service', 'username', 'reason' keys
         """
-        if not self._fernet:
-            raise StorageError("Vault is locked.")
+        fernet = self._require_unlocked()
         try:
             requested_format = csv_formats.normalize_import_format(import_format)
         except ValueError as e:
@@ -397,6 +399,9 @@ class StorageManager:
                     })
                     continue
 
+                if not parsed:
+                    continue
+
                 service = parsed["service"]
                 username = parsed["username"]
                 password = parsed["password"]
@@ -408,13 +413,13 @@ class StorageManager:
                     if merge_duplicates and not dry_run:
                         # Update existing credential
                         cred_id = existing_map[key]
-                        encrypted_password = self._fernet.encrypt(password.encode())
-                        encrypted_note = self._fernet.encrypt(note.encode()) if note else None
+                        fernet = self._require_unlocked()
+                        encrypted_password = fernet.encrypt(password.encode())
+                        encrypted_note = fernet.encrypt(note.encode()) if note else None
                         cursor.execute(
                             "UPDATE credentials SET encrypted_password = ?, encrypted_note = ?, note_is_hidden = 0 WHERE id = ?",
                             (encrypted_password, encrypted_note, cred_id)
                         )
-                        conn.commit()
                         imported += 1
                     else:
                         skipped += 1
@@ -426,16 +431,17 @@ class StorageManager:
                 else:
                     # Insert new credential
                     if not dry_run:
-                        encrypted_password = self._fernet.encrypt(password.encode())
-                        encrypted_note = self._fernet.encrypt(note.encode()) if note else None
+                        fernet = self._require_unlocked()
+                        encrypted_password = fernet.encrypt(password.encode())
+                        encrypted_note = fernet.encrypt(note.encode()) if note else None
                         cursor.execute(
                             "INSERT INTO credentials (service, username, encrypted_password, encrypted_note, note_is_hidden) VALUES (?, ?, ?, ?, ?)",
                             (service, username, encrypted_password, encrypted_note, 0)
                         )
-                        conn.commit()
                         existing_map[key] = cursor.lastrowid
                     imported += 1
                     # Add to existing keys to avoid duplicate inserts in the same import
                     existing_keys.add(key)
         
+        conn.commit()
         return imported, skipped, duplicates
