@@ -14,6 +14,14 @@ from . import csv_formats
 APP_NAME = "generate-it"
 APP_AUTHOR = "j-kemble"
 
+# Default PBKDF2 parameters for newly created vaults.
+# Persisted per-vault in the config table so existing vaults keep unlocking.
+_DEFAULT_PBKDF2_ITERATIONS = 480_000
+_DEFAULT_SALT_LENGTH = 32
+
+# Legacy defaults for vaults created before these params were persisted.
+_LEGACY_PBKDF2_ITERATIONS = 100_000
+
 class StorageError(Exception):
     """Base exception for storage errors."""
     pass
@@ -76,20 +84,35 @@ class StorageManager:
             return default
         return str(value)
 
-    def _derive_key(self, password: str, salt: bytes) -> bytes:
+    def _read_int_config(self, cursor: sqlite3.Cursor, key: str, default: int) -> int:
+        """Read an integer-valued config entry, falling back to `default` if absent."""
+        try:
+            cursor.execute("SELECT value FROM config WHERE key=?", (key,))
+            row = cursor.fetchone()
+            if row is None:
+                return default
+            raw = row["value"]
+            if isinstance(raw, bytes):
+                raw = raw.decode("utf-8")
+            return int(str(raw))
+        except (sqlite3.OperationalError, TypeError, ValueError):
+            return default
+
+    def _derive_key(self, password: str, salt: bytes, iterations: Optional[int] = None) -> bytes:
         """Derives a url-safe base64-encoded key from the password and salt."""
+        iters = iterations if iterations is not None else _DEFAULT_PBKDF2_ITERATIONS
         kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(),
             length=32,
             salt=salt,
-            iterations=100_000,
+            iterations=iters,
         )
         return base64.urlsafe_b64encode(kdf.derive(password.encode()))
 
     def initialize_vault(self, master_password: str) -> None:
         """Sets up the database schema and initializes security markers."""
-        salt = os.urandom(16)
-        key = self._derive_key(master_password, salt)
+        salt = os.urandom(_DEFAULT_SALT_LENGTH)
+        key = self._derive_key(master_password, salt, _DEFAULT_PBKDF2_ITERATIONS)
         fernet = Fernet(key)
         
         # Encrypt a known value to verify password later
@@ -126,6 +149,8 @@ class StorageManager:
         # Store configuration
         cursor.execute("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", ("salt", salt))
         cursor.execute("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", ("verification", verification_token))
+        cursor.execute("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", ("pbkdf2_iterations", str(_DEFAULT_PBKDF2_ITERATIONS)))
+        cursor.execute("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", ("salt_length", str(_DEFAULT_SALT_LENGTH)))
         
         conn.commit()
         
@@ -162,7 +187,12 @@ class StorageManager:
              # Handle cases where config might be corrupted or missing keys
              raise StorageError("Vault configuration corrupted.")
 
-        key = self._derive_key(master_password, salt)
+        # Read the iteration count persisted for this vault. Fall back to the
+        # legacy default (100k) for vaults created before this value was stored,
+        # so existing vaults keep unlocking.
+        stored_iters = self._read_int_config(cursor, "pbkdf2_iterations", _LEGACY_PBKDF2_ITERATIONS)
+
+        key = self._derive_key(master_password, salt, stored_iters)
         fernet = Fernet(key)
 
         try:
