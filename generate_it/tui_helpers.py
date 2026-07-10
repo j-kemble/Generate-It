@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 from . import generator
 
 if TYPE_CHECKING:
-    from . import tui
+    from .tui_state import AppState
 
 
 def _truncate_middle(text: str, max_len: int) -> str:
@@ -98,7 +98,7 @@ def _fuzzy_score(query: str, text: str) -> int | None:
     return 1000 + gap_penalty + len(t)
 
 
-def _estimate_entropy_bits(state: "tui.AppState", wordlist_size: int) -> float:
+def _estimate_entropy_bits(state: "AppState", wordlist_size: int) -> float:
     if state.mode == "chars":
         alphabet = 0
         if state.use_letters:

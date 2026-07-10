@@ -5,13 +5,14 @@ from typing import Optional
 
 from . import tui
 from . import tui_modal
+from .tui_state import AppState
 from .storage import StorageManager, InvalidPasswordError
 
 
 def _prompt_unlock_vault(
     stdscr: curses.window,
     theme: tui.Theme,
-    state: tui.AppState,
+    state: AppState,
     *,
     reason: str,
 ) -> bool:

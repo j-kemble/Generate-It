@@ -19,7 +19,7 @@ from . import tui as _tui
 from .tui_helpers import _estimate_entropy_bits, _strength_label
 
 if TYPE_CHECKING:
-    from .tui import AppState
+    from .tui_state import AppState
 
 # State-label helpers that live in tui.py (kept there on purpose) â
 # re-exported here so the verbatim-moved render code keeps working.
