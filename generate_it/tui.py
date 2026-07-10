@@ -35,6 +35,7 @@ import pyperclip
 
 from . import generator
 from . import tui_modal
+from . import tui_security
 from . import csv_formats
 from .storage import StorageManager, InvalidPasswordError
 from .tui_helpers import (
@@ -564,7 +565,7 @@ def _run_security_settings_modal(
         if _should_auto_lock_now(state):
             reason = _auto_lock_reason_text(state)
             _lock_vault(state)
-            _prompt_unlock_vault(stdscr, theme, state, reason=reason)
+            tui_security._prompt_unlock_vault(stdscr, theme, state, reason=reason)
             return
 
         h, w = stdscr.getmaxyx()
@@ -815,44 +816,6 @@ def _lock_vault(state: AppState) -> None:
     state.vault_selected_idx = 0
     state.vault_scroll_y = 0
 
-def _prompt_unlock_vault(
-    stdscr: curses.window,
-    theme: Theme,
-    state: AppState,
-    *,
-    reason: str,
-) -> bool:
-    if not state.storage:
-        state.message = "Vault unavailable."
-        return False
-
-    while True:
-        pwd = tui_modal._run_modal(
-            stdscr,
-            theme,
-            "VAULT LOCKED",
-            f"{reason} Enter Master Password to unlock (Esc to keep locked):",
-            is_password=True,
-            max_length=200,
-        )
-        if pwd is None:
-            state.message = "Vault locked."
-            return False
-
-        try:
-            state.storage.unlock_vault(pwd)
-            state.vault_unlocked = True
-            state.vault_credentials = state.storage.list_credentials()
-            _record_user_activity(state)
-            state.message = "Vault unlocked."
-            return True
-        except InvalidPasswordError:
-            tui_modal._run_modal(stdscr, theme, "ERROR", "Invalid master password.")
-        except Exception as e:
-            tui_modal._run_modal(stdscr, theme, "ERROR", f"Unlock failed: {e}")
-            state.message = "Vault locked."
-            return False
-
 def _focus_items(state: AppState) -> list[str]:
     items = ["mode_chars", "mode_words", "mode_username"]
 
@@ -1075,7 +1038,7 @@ def _run_details_modal(
         if _should_auto_lock_now(state):
             reason = _auto_lock_reason_text(state)
             _lock_vault(state)
-            _prompt_unlock_vault(stdscr, theme, state, reason=reason)
+            tui_security._prompt_unlock_vault(stdscr, theme, state, reason=reason)
             return
         win.erase()
         win.box()
@@ -1228,7 +1191,7 @@ def _run_vault_modal(
         if _should_auto_lock_now(state):
             reason = _auto_lock_reason_text(state)
             _lock_vault(state)
-            _prompt_unlock_vault(stdscr, theme, state, reason=reason)
+            tui_security._prompt_unlock_vault(stdscr, theme, state, reason=reason)
             return
         h, w = stdscr.getmaxyx()
         
@@ -1606,7 +1569,7 @@ def run() -> int:
             if _should_auto_lock_now(state):
                 reason = _auto_lock_reason_text(state)
                 _lock_vault(state)
-                _prompt_unlock_vault(stdscr, theme, state, reason=reason)
+                tui_security._prompt_unlock_vault(stdscr, theme, state, reason=reason)
                 stdscr.clear()
                 redraw = True
                 continue
