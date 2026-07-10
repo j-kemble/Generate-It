@@ -216,3 +216,35 @@ def test_detect_import_format_edge_cases() -> None:
     assert csv_formats.detect_import_format(["login_username", "login_password", "name"]) == "bitwarden"
     assert csv_formats.detect_import_format(["password", "username"]) == "generic"
     assert csv_formats.detect_import_format(["url", "username", "password", "note"]) == "generic"
+
+
+def test_detect_import_format_normalizes_each_nonempty_header_once(monkeypatch) -> None:
+    calls: list[str] = []
+    original = csv_formats.normalize_header_name
+
+    def counted(value: str) -> str:
+        calls.append(value)
+        return original(value)
+
+    monkeypatch.setattr(csv_formats, "normalize_header_name", counted)
+
+    assert csv_formats.detect_import_format(
+        [" Name ", "", "login username", "login-password"]
+    ) == "bitwarden"
+    assert calls == [" Name ", "login username", "login-password"]
+
+
+def test_missing_required_headers_normalizes_each_supplied_header_once(monkeypatch) -> None:
+    calls: list[str] = []
+    original = csv_formats.normalize_header_name
+
+    def counted(value: str) -> str:
+        calls.append(value)
+        return original(value)
+
+    monkeypatch.setattr(csv_formats, "normalize_header_name", counted)
+    headers = [" Name ", "User Name", " Pass Word ", ""]
+
+    csv_formats.missing_required_headers(headers, import_format="generic")
+
+    assert all(calls.count(header) == 1 for header in headers[:-1])

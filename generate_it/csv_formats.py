@@ -143,9 +143,9 @@ def normalize_export_format(value: str) -> str:
 
 def detect_import_format(fieldnames: Iterable[str]) -> str:
     normalized = {
-        normalize_header_name(h)
+        normalized_header
         for h in fieldnames
-        if h and normalize_header_name(h)
+        if h and (normalized_header := normalize_header_name(h))
     }
 
     if {"login_username", "login_password"}.issubset(normalized):
@@ -177,9 +177,9 @@ def missing_required_headers(fieldnames: Iterable[str], *, import_format: str) -
         raise ValueError("missing_required_headers() requires a resolved import format, not 'auto'.")
 
     normalized_headers = {
-        normalize_header_name(h)
+        normalized_header
         for h in fieldnames
-        if h and normalize_header_name(h)
+        if h and (normalized_header := normalize_header_name(h))
     }
     aliases = _IMPORT_FIELD_ALIASES[normalized_format]
     missing: list[str] = []
