@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from generate_it import tui
+from generate_it import tui_files
 from generate_it import tui_modal
 from generate_it import tui_helpers
 
@@ -50,7 +51,7 @@ def test_collect_files_for_fuzzy_filters_hidden_and_depth(tmp_path: Path) -> Non
     (tmp_path / ".hidden_file.txt").write_text("h", encoding="utf-8")
     (tmp_path / ".hidden_dir" / "secret.txt").write_text("s", encoding="utf-8")
 
-    files = tui._collect_files_for_fuzzy(tmp_path, max_files=100, max_depth=4)
+    files = tui_files._collect_files_for_fuzzy(tmp_path, max_files=100, max_depth=4)
     paths = {str(p.relative_to(tmp_path)).replace("\\", "/") for p in files}
 
     assert "visible/a.txt" in paths

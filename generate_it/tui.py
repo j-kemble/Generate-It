@@ -34,6 +34,7 @@ import textwrap
 import pyperclip
 
 from . import generator
+from . import tui_files
 from . import tui_modal
 from . import tui_security
 from . import csv_formats
@@ -130,28 +131,6 @@ def _resolve_start_dir(path_text: str) -> Path:
         return parent
     return Path.cwd()
 
-def _collect_files_for_fuzzy(root_dir: Path, max_files: int = 5000, max_depth: int = 8) -> list[Path]:
-    files: list[Path] = []
-    root = root_dir.expanduser()
-    if not root.exists() or not root.is_dir():
-        return files
-
-    root_depth = len(root.parts)
-    for dirpath, dirnames, filenames in os.walk(root):
-        dir_path = Path(dirpath)
-        depth = len(dir_path.parts) - root_depth
-        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
-        if depth >= max_depth:
-            dirnames[:] = []
-
-        for filename in filenames:
-            if filename.startswith("."):
-                continue
-            files.append(dir_path / filename)
-            if len(files) >= max_files:
-                return files
-    return files
-
 def _handle_double_esc_quit(
     *,
     key: int,
@@ -173,7 +152,7 @@ def _run_fuzzy_file_picker(
     theme: Theme,
     root_dir: Path,
 ) -> str | None:
-    files = _collect_files_for_fuzzy(root_dir)
+    files = tui_files._collect_files_for_fuzzy(root_dir)
     if not files:
         tui_modal._run_modal(stdscr, theme, "NO FILES", f"No files found under {root_dir}.")
         return None
