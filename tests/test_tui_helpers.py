@@ -4,27 +4,28 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from generate_it import tui
+from generate_it import tui_helpers
 
 
 def test_truncate_middle_behaviour() -> None:
-    assert tui._truncate_middle("short", 10) == "short"
-    assert tui._truncate_middle("abcdef", 3) == "abc"
-    assert tui._truncate_middle("abcdefghijklmnopqrstuvwxyz", 11) == "abcd...wxyz"
+    assert tui_helpers._truncate_middle("short", 10) == "short"
+    assert tui_helpers._truncate_middle("abcdef", 3) == "abc"
+    assert tui_helpers._truncate_middle("abcdefghijklmnopqrstuvwxyz", 11) == "abcd...wxyz"
 
 
 def test_fuzzy_score_basic_cases() -> None:
     # Empty query should match everything with neutral score.
-    assert tui._fuzzy_score("", "foo/bar.txt") == 0
+    assert tui_helpers._fuzzy_score("", "foo/bar.txt") == 0
 
     # Direct substring scores lower (better) than subsequence fallback.
-    direct = tui._fuzzy_score("bar", "foo/bar.txt")
-    subseq = tui._fuzzy_score("brt", "foo/bar.txt")
+    direct = tui_helpers._fuzzy_score("bar", "foo/bar.txt")
+    subseq = tui_helpers._fuzzy_score("brt", "foo/bar.txt")
     assert direct is not None
     assert subseq is not None
     assert direct < subseq
 
     # Non-match returns None.
-    assert tui._fuzzy_score("zzz", "foo/bar.txt") is None
+    assert tui_helpers._fuzzy_score("zzz", "foo/bar.txt") is None
 
 
 def test_resolve_start_dir_cases(tmp_path: Path) -> None:
@@ -62,7 +63,7 @@ def test_filter_vault_credentials_blank_query_returns_all() -> None:
         {"id": 2, "service": "Gmail", "username": "alice@example.com"},
     ]
 
-    filtered = tui._filter_vault_credentials(creds, "   ")
+    filtered = tui_helpers._filter_vault_credentials(creds, "   ")
     assert filtered == creds
 
 
@@ -73,13 +74,13 @@ def test_filter_vault_credentials_matches_service_or_username_case_insensitive()
         {"id": 3, "service": "Bitwarden", "username": "Bob"},
     ]
 
-    filtered_service = tui._filter_vault_credentials(creds, "git")
+    filtered_service = tui_helpers._filter_vault_credentials(creds, "git")
     assert [c["id"] for c in filtered_service] == [1]
 
-    filtered_user = tui._filter_vault_credentials(creds, "ALICE@")
+    filtered_user = tui_helpers._filter_vault_credentials(creds, "ALICE@")
     assert [c["id"] for c in filtered_user] == [2]
 
-    filtered_none = tui._filter_vault_credentials(creds, "not-found")
+    filtered_none = tui_helpers._filter_vault_credentials(creds, "not-found")
     assert filtered_none == []
 
 
@@ -90,7 +91,7 @@ def test_filter_vault_credentials_ranks_best_match_first() -> None:
         {"id": 3, "service": "Bitwarden", "username": "gh-user"},
     ]
 
-    filtered = tui._filter_vault_credentials(creds, "git")
+    filtered = tui_helpers._filter_vault_credentials(creds, "git")
     assert [c["id"] for c in filtered] == [2]
 
 
@@ -100,7 +101,7 @@ def test_filter_vault_credentials_supports_subsequence_match() -> None:
         {"id": 2, "service": "Bitbucket", "username": "team"},
     ]
 
-    filtered = tui._filter_vault_credentials(creds, "azr")
+    filtered = tui_helpers._filter_vault_credentials(creds, "azr")
     assert [c["id"] for c in filtered] == [1]
 
 
@@ -388,14 +389,14 @@ def test_maybe_auto_clear_clipboard_does_not_clear_changed_value(monkeypatch) ->
 
 
 def test_fuzzy_score_edge_cases() -> None:
-    assert tui._fuzzy_score("", "hello") == 0
-    assert tui._fuzzy_score("a", "A") == 0
-    assert tui._fuzzy_score("abc", "abcdef") == 3
-    assert tui._fuzzy_score("xyz", "abc") is None
+    assert tui_helpers._fuzzy_score("", "hello") == 0
+    assert tui_helpers._fuzzy_score("a", "A") == 0
+    assert tui_helpers._fuzzy_score("abc", "abcdef") == 3
+    assert tui_helpers._fuzzy_score("xyz", "abc") is None
 
 
 def test_filter_vault_credentials_empty_list() -> None:
-    result = tui._filter_vault_credentials([], "query")
+    result = tui_helpers._filter_vault_credentials([], "query")
     assert result == []
 
 
@@ -404,7 +405,7 @@ def test_filter_vault_credentials_special_characters() -> None:
         {"id": 1, "service": "GitHub", "username": "dev@test.com", "password": "pass"},
         {"id": 2, "service": "Test (Org)", "username": "user", "password": "pass"},
     ]
-    result = tui._filter_vault_credentials(creds, "github")
+    result = tui_helpers._filter_vault_credentials(creds, "github")
     assert len(result) == 1
     assert result[0]["service"] == "GitHub"
 
@@ -414,7 +415,7 @@ def test_filter_vault_credentials_numeric_query() -> None:
         {"id": 1, "service": "GitHub", "username": "user123", "password": "pass"},
         {"id": 2, "service": "Test", "username": "admin", "password": "pass"},
     ]
-    result = tui._filter_vault_credentials(creds, "123")
+    result = tui_helpers._filter_vault_credentials(creds, "123")
     assert len(result) == 1
     assert result[0]["username"] == "user123"
 
@@ -425,12 +426,12 @@ def test_find_duplicate_credential_empty_list() -> None:
 
 
 def test_truncate_middle_edge_cases() -> None:
-    assert tui._truncate_middle("hello", 10) == "hello"
-    assert tui._truncate_middle("hello", 5) == "hello"
-    assert tui._truncate_middle("hello world", 8) == "he...rld"
-    assert tui._truncate_middle("a", 1) == "a"
-    assert tui._truncate_middle("abc", 4) == "abc"
-    assert tui._truncate_middle("abc", 3) == "abc"
+    assert tui_helpers._truncate_middle("hello", 10) == "hello"
+    assert tui_helpers._truncate_middle("hello", 5) == "hello"
+    assert tui_helpers._truncate_middle("hello world", 8) == "he...rld"
+    assert tui_helpers._truncate_middle("a", 1) == "a"
+    assert tui_helpers._truncate_middle("abc", 4) == "abc"
+    assert tui_helpers._truncate_middle("abc", 3) == "abc"
 
 
 def test_coerce_index_edge_cases() -> None:

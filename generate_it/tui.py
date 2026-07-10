@@ -22,6 +22,7 @@ Controls (default):
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Callable
 import curses
 import datetime as _dt
 import os
@@ -35,6 +36,14 @@ import pyperclip
 from . import generator
 from . import csv_formats
 from .storage import StorageManager, InvalidPasswordError
+from .tui_helpers import (
+    _truncate_middle,
+    _fuzzy_score,
+    _filter_vault_credentials,
+    _find_duplicate_credential,
+    _estimate_entropy_bits,
+    _strength_label,
+)
 
 APP_NAME = "Generate It"
 ESC_QUIT_WINDOW_SECONDS = 1.0
@@ -68,12 +77,12 @@ class QuitApp(Exception):
 
 
 def _run_modal(
-    stdscr: "curses._CursesWindow",
+    stdscr: curses.window,
     theme: Theme,
     title: str,
     prompt: str,
     is_password: bool = False,
-    generator_func: callable | None = None,
+    generator_func: Callable | None = None,
     max_length: int = 50,
     initial_value: str = "",
 ) -> str | None:
@@ -155,7 +164,10 @@ def _run_modal(
         elif key == 9 and generator_func: # Tab
             try:
                 # Generate and replace current input
-                input_str = str(generator_func())[:max_length]
+                if generator_func is not None:
+                    input_str = str(generator_func())[:max_length]
+                else:
+                    input_str = ""
             except Exception:
                 pass
         elif 32 <= key <= 126:
@@ -163,7 +175,7 @@ def _run_modal(
                 input_str += chr(key)
 
 def _run_scrollable_modal(
-    stdscr: "curses._CursesWindow",
+    stdscr: curses.window,
     theme: Theme,
     title: str,
     lines: list[str],
@@ -216,71 +228,8 @@ def _run_scrollable_modal(
         elif key in (curses.KEY_DOWN, ord('j')):
             scroll_pos = min(max(0, len(lines) - content_h), scroll_pos + 1)
 
-def _truncate_middle(text: str, max_len: int) -> str:
-    if len(text) <= max_len:
-        return text
-    if max_len <= 3:
-        return text[:max_len]
-    keep_left = (max_len - 3) // 2
-    keep_right = max_len - 3 - keep_left
-    return f"{text[:keep_left]}...{text[-keep_right:]}"
-
-
-def _filter_vault_credentials(credentials: list[dict], query: str) -> list[dict]:
-    """Filter and rank vault credentials by fuzzy score on service/username."""
-    q = query.strip().lower()
-    if not q:
-        return list(credentials)
-    ranked: list[tuple[int, str, str, dict]] = []
-    for cred in credentials:
-        service = str(cred.get("service", "")).lower()
-        username = str(cred.get("username", "")).lower()
-        combined = f"{service} {username}".strip()
-
-        scores = [
-            s
-            for s in (
-                _fuzzy_score(q, service),
-                _fuzzy_score(q, username),
-                _fuzzy_score(q, combined),
-            )
-            if s is not None
-        ]
-        if not scores:
-            continue
-
-        ranked.append((min(scores), service, username, cred))
-
-    ranked.sort(key=lambda item: (item[0], item[1], item[2]))
-    return [item[3] for item in ranked]
-
-
-def _find_duplicate_credential(
-    credentials: list[dict],
-    service: str,
-    username: str,
-    *,
-    exclude_id: int | None = None,
-) -> dict | None:
-    service_key = service.strip().lower()
-    username_key = username.strip().lower()
-    if not service_key or not username_key:
-        return None
-
-    for cred in credentials:
-        cred_id = cred.get("id")
-        if exclude_id is not None and cred_id == exclude_id:
-            continue
-        cred_service = str(cred.get("service", "")).strip().lower()
-        cred_username = str(cred.get("username", "")).strip().lower()
-        if cred_service == service_key and cred_username == username_key:
-            return cred
-
-    return None
-
-
 def _save_credential_duplicate_safe(
-    stdscr: "curses._CursesWindow",
+    stdscr: curses.window,
     theme: Theme,
     state: AppState,
     *,
@@ -357,32 +306,6 @@ def _collect_files_for_fuzzy(root_dir: Path, max_files: int = 5000, max_depth: i
     return files
 
 
-def _fuzzy_score(query: str, text: str) -> int | None:
-    q = query.strip().lower()
-    if not q:
-        return 0
-    t = text.lower()
-
-    if q in t:
-        return t.index(q) * 2 + (len(t) - len(q))
-
-    q_idx = 0
-    gap_penalty = 0
-    last_match = -1
-    for i, ch in enumerate(t):
-        if q_idx >= len(q):
-            break
-        if ch == q[q_idx]:
-            if last_match != -1:
-                gap_penalty += i - last_match - 1
-            last_match = i
-            q_idx += 1
-    if q_idx != len(q):
-        return None
-
-    return 1000 + gap_penalty + len(t)
-
-
 def _handle_double_esc_quit(
     *,
     key: int,
@@ -401,7 +324,7 @@ def _handle_double_esc_quit(
 
 
 def _run_fuzzy_file_picker(
-    stdscr: "curses._CursesWindow",
+    stdscr: curses.window,
     theme: Theme,
     root_dir: Path,
 ) -> str | None:
@@ -514,7 +437,7 @@ def _run_fuzzy_file_picker(
 
 
 def _run_file_browser_modal(
-    stdscr: "curses._CursesWindow",
+    stdscr: curses.window,
     theme: Theme,
     start_dir: Path,
 ) -> str | None:
@@ -662,7 +585,7 @@ def _run_file_browser_modal(
 
 
 def _run_path_modal(
-    stdscr: "curses._CursesWindow",
+    stdscr: curses.window,
     theme: Theme,
     title: str,
     prompt: str,
@@ -754,7 +677,7 @@ def _run_path_modal(
 
 
 def _prompt_csv_format(
-    stdscr: "curses._CursesWindow",
+    stdscr: curses.window,
     theme: Theme,
     *,
     mode: str,
@@ -789,7 +712,7 @@ def _prompt_csv_format(
 
 
 def _run_security_settings_modal(
-    stdscr: "curses._CursesWindow",
+    stdscr: curses.window,
     theme: Theme,
     state: AppState,
 ) -> None:
@@ -958,7 +881,7 @@ def _pixel_banner(text: str) -> list[str]:
 
 
 def _addstr_safe(
-    stdscr: "curses._CursesWindow", y: int, x: int, s: str, attr: int = 0
+    stdscr: curses.window, y: int, x: int, s: str, attr: int = 0
 ) -> None:
     h, w = stdscr.getmaxyx()
     if y < 0 or y >= h or x >= w:
@@ -974,31 +897,31 @@ def _addstr_safe(
         return
 
 
-def _center_x(stdscr: "curses._CursesWindow", s: str) -> int:
+def _center_x(stdscr: curses.window, s: str) -> int:
     _, w = stdscr.getmaxyx()
     return max(0, (w - len(s)) // 2)
 
 
-def _draw_hline(stdscr: "curses._CursesWindow", y: int, x: int, w: int, ch, attr: int = 0) -> None:
+def _draw_hline(stdscr: curses.window, y: int, x: int, w: int, ch, attr: int = 0) -> None:
     if w <= 0:
         return
     try:
-        stdscr.hline(y, x, ch, w, attr)
+        stdscr.hline(y, x, ch, w)
     except curses.error:
         return
 
 
-def _draw_vline(stdscr: "curses._CursesWindow", y: int, x: int, h: int, ch, attr: int = 0) -> None:
+def _draw_vline(stdscr: curses.window, y: int, x: int, h: int, ch, attr: int = 0) -> None:
     if h <= 0:
         return
     try:
-        stdscr.vline(y, x, ch, h, attr)
+        stdscr.vline(y, x, ch, h)
     except curses.error:
         return
 
 
 def _draw_box(
-    stdscr: "curses._CursesWindow",
+    stdscr: curses.window,
     y: int,
     x: int,
     h: int,
@@ -1137,7 +1060,7 @@ def _init_theme() -> Theme:
 
 
 def _add_gradient(
-    stdscr: "curses._CursesWindow",
+    stdscr: curses.window,
     y: int,
     x: int,
     s: str,
@@ -1335,7 +1258,12 @@ def _auto_lock_reason_text(state: AppState) -> str:
 
 
 def _copy_to_clipboard_with_policy(state: AppState, value: str) -> str:
-    pyperclip.copy(value)
+    try:
+        pyperclip.copy(value)
+    except Exception:
+        # Fallback for systems (like headless Linux) without a clipboard manager
+        return "Clipboard error: Install 'xclip' or 'xsel'."
+
     seconds = _clipboard_auto_clear_seconds(state)
     if seconds is None:
         state.clipboard_clear_due_at = None
@@ -1378,7 +1306,7 @@ def _lock_vault(state: AppState) -> None:
 
 
 def _prompt_unlock_vault(
-    stdscr: "curses._CursesWindow",
+    stdscr: curses.window,
     theme: Theme,
     state: AppState,
     *,
@@ -1447,46 +1375,6 @@ def _selected_category_count(state: AppState) -> int:
     return int(state.use_letters) + int(state.use_numbers) + int(state.use_special)
 
 
-def _estimate_entropy_bits(state: AppState, wordlist_size: int) -> float:
-    if state.mode == "chars":
-        alphabet = 0
-        if state.use_letters:
-            alphabet += len(generator.LETTERS)
-        if state.use_numbers:
-            alphabet += len(generator.NUMBERS)
-        if state.use_special:
-            alphabet += len(generator.SPECIAL_CHARACTERS)
-        if alphabet <= 1:
-            return 0.0
-        return float(state.char_length) * math.log2(alphabet)
-
-    if wordlist_size <= 1:
-        base = 0.0
-    else:
-        base = float(state.word_count) * math.log2(wordlist_size)
-
-    # Extra tokens are inserted into words; we show an approximate addition.
-    extra = 0.0
-    if state.add_numbers:
-        # Digits length chosen randomly from {2,3,4}; approximate with 3 digits.
-        extra += 3.0 * math.log2(10)
-    if state.add_special:
-        extra += math.log2(max(2, len(generator.PASSPHRASE_SPECIALS)))
-
-    return base + extra
-
-
-def _strength_label(bits: float) -> tuple[str, str]:
-    # label, kind
-    if bits < 40:
-        return "weak", "bad"
-    if bits < 60:
-        return "ok", "warn"
-    if bits < 80:
-        return "strong", "ok"
-    return "very strong", "ok"
-
-
 # --- Rendering --------------------------------------------------------------
 
 
@@ -1502,7 +1390,7 @@ def _header_lines_for_width(w: int) -> list[str]:
     return HEADER_SMALL
 
 
-def _render_header(stdscr: "curses._CursesWindow", theme: Theme) -> int:
+def _render_header(stdscr: curses.window, theme: Theme) -> int:
     h, w = stdscr.getmaxyx()
     lines = _header_lines_for_width(w)
 
@@ -1533,13 +1421,13 @@ def _render_header(stdscr: "curses._CursesWindow", theme: Theme) -> int:
     return y + 1
 
 
-def _render_resize_hint(stdscr: "curses._CursesWindow", theme: Theme) -> None:
+def _render_resize_hint(stdscr: curses.window, theme: Theme) -> None:
     h, w = stdscr.getmaxyx()
     msg = "Resize terminal for dashboard view (recommended: 80x24). Press Esc twice to quit."
     _addstr_safe(stdscr, h // 2, _center_x(stdscr, msg), msg, theme.title)
 
 
-def _render_footer(stdscr: "curses._CursesWindow", theme: Theme, message: str) -> None:
+def _render_footer(stdscr: curses.window, theme: Theme, message: str) -> None:
     h, w = stdscr.getmaxyx()
 
     msg = message[: max(0, w - 1)]
@@ -1559,7 +1447,7 @@ def _render_footer(stdscr: "curses._CursesWindow", theme: Theme, message: str) -
 
 
 def _render_mode_box(
-    stdscr: "curses._CursesWindow",
+    stdscr: curses.window,
     theme: Theme,
     *,
     y: int,
@@ -1591,7 +1479,7 @@ def _render_mode_box(
 
 
 def _render_settings_box(
-    stdscr: "curses._CursesWindow",
+    stdscr: curses.window,
     theme: Theme,
     *,
     y: int,
@@ -1764,7 +1652,7 @@ def _render_settings_box(
 
 
 def _render_actions_box(
-    stdscr: "curses._CursesWindow",
+    stdscr: curses.window,
     theme: Theme,
     *,
     y: int,
@@ -1825,7 +1713,7 @@ def _render_actions_box(
 
 
 def _render_vault_box(
-    stdscr: "curses._CursesWindow",
+    stdscr: curses.window,
     theme: Theme,
     *,
     y: int,
@@ -1898,7 +1786,7 @@ def _render_vault_box(
 
 
 def _render_output_box(
-    stdscr: "curses._CursesWindow",
+    stdscr: curses.window,
     theme: Theme,
     *,
     y: int,
@@ -1930,7 +1818,7 @@ def _render_output_box(
 
 
 def _render_info_box(
-    stdscr: "curses._CursesWindow",
+    stdscr: curses.window,
     theme: Theme,
     *,
     y: int,
@@ -2075,7 +1963,7 @@ def _generate(state: AppState, words: list[str]) -> None:
 
 
 def _run_save_generated_flow(
-    stdscr: "curses._CursesWindow",
+    stdscr: curses.window,
     theme: Theme,
     state: AppState,
 ) -> None:
@@ -2101,8 +1989,8 @@ def _run_save_generated_flow(
         return
 
     try:
-        final_username = ""
-        final_password = ""
+        final_username: str | None = ""
+        final_password: str | None = ""
 
         if state.mode == "username":
             # We generated a username, so we need a password.
@@ -2146,7 +2034,7 @@ def _run_save_generated_flow(
             note_is_hidden = False
             if note:
                 hide_note = _run_modal(stdscr, theme, "SAVE", "Hide note? (y/n) [n]:", max_length=1, initial_value="n")
-                note_is_hidden = hide_note and hide_note.lower() == "y"
+                note_is_hidden = bool(hide_note and hide_note.lower() == "y")
 
             result = _save_credential_duplicate_safe(
                 stdscr,
@@ -2172,7 +2060,7 @@ def _run_save_generated_flow(
 
 
 def _run_details_modal(
-    stdscr: "curses._CursesWindow",
+    stdscr: curses.window,
     theme: Theme,
     state: AppState,
     credential: dict,
@@ -2301,15 +2189,16 @@ def _run_details_modal(
                 try:
                     cred_id = credential['id']
                     current_hidden = credential.get('note_is_hidden', False)
-                    state.storage.update_credential(
-                        cred_id,
-                        credential['service'],
-                        credential['username'],
-                        credential['password'],
-                        note_text,
-                        not current_hidden
-                    )
-                    state.vault_credentials = state.storage.list_credentials()
+                    if state.storage:
+                        state.storage.update_credential(
+                            cred_id,
+                            credential['service'],
+                            credential['username'],
+                            credential['password'],
+                            note_text,
+                            not current_hidden
+                        )
+                        state.vault_credentials = state.storage.list_credentials()
                     credential = next((c for c in state.vault_credentials if c['id'] == cred_id), credential)
                     break
                 except Exception as e:
@@ -2323,7 +2212,7 @@ def _run_details_modal(
 
 
 def _run_vault_modal(
-    stdscr: "curses._CursesWindow",
+    stdscr: curses.window,
     theme: Theme,
     state: AppState,
     *,
@@ -2626,7 +2515,7 @@ def run() -> int:
     except Exception:
         pass
 
-    def _main(stdscr: "curses._CursesWindow") -> int:
+    def _main(stdscr: curses.window) -> int:
         theme = _init_theme()
 
         try:
@@ -2717,6 +2606,7 @@ def run() -> int:
         # Generate something immediately so the dashboard isn't empty.
         _generate(state, words)
         last_esc_quit_at: float | None = None
+        redraw = True
 
         while True:
             if _maybe_auto_clear_clipboard(state):
@@ -2726,117 +2616,120 @@ def run() -> int:
                 _lock_vault(state)
                 _prompt_unlock_vault(stdscr, theme, state, reason=reason)
                 stdscr.clear()
+                redraw = True
                 continue
-            stdscr.erase()
-            header_end = _render_header(stdscr, theme)
-            h, w = stdscr.getmaxyx()
-
-            min_w, min_h = 70, 20
-            if w < min_w or h < min_h:
-                _render_resize_hint(stdscr, theme)
+            if redraw:
+                stdscr.erase()
+                header_end = _render_header(stdscr, theme)
+                h, w = stdscr.getmaxyx()
+    
+                min_w, min_h = 70, 20
+                if w < min_w or h < min_h:
+                    _render_resize_hint(stdscr, theme)
+                    _render_footer(stdscr, theme, state.message)
+                    stdscr.refresh()
+                    key = stdscr.getch()
+                    if key == -1:
+                        continue
+                    _record_user_activity(state)
+                    if key == 27:
+                        should_quit, last_esc_quit_at = _handle_double_esc_quit(
+                            key=key, last_esc_at=last_esc_quit_at
+                        )
+                        if should_quit:
+                            return 0
+                        state.message = "Press Esc again to quit."
+                        continue
+                    last_esc_quit_at = None
+                    if key in (ord("q"), ord("Q")):
+                        state.message = "Press Esc twice to quit."
+                    continue
+    
+                footer_h = 2
+                body_y = header_end
+                body_h = max(1, h - body_y - footer_h)
+    
+                gap = 1
+                # Two columns
+                left_w = max(34, min((w - gap) // 2, w - gap - 30))
+                right_x = left_w + gap
+                right_w = max(1, w - right_x)
+    
+                # Standard layout heights
+                mode_h = 6
+                actions_h = 7 # Increased for Save button
+                settings_h = max(6, body_h - mode_h - actions_h - 2 * gap)
+    
+                # Right column: OUTPUT + INFO
+                info_h = 8
+                output_h = max(6, body_h - info_h - gap)
+                info_h = max(6, body_h - output_h - gap)
+    
+                focus_items = _focus_items(state)
+                state.focus_index = max(0, min(state.focus_index, len(focus_items) - 1))
+                focus_id = focus_items[state.focus_index]
+    
+                # --- Rendering ---
+                
+                # Mode box is always visible
+                _render_mode_box(
+                    stdscr,
+                    theme,
+                    y=body_y,
+                    x=0,
+                    h=mode_h,
+                    w=left_w,
+                    state=state,
+                    focus_id=focus_id,
+                )
+    
+                # Standard Generator Layout
+                _render_settings_box(
+                    stdscr,
+                    theme,
+                    y=body_y + mode_h + gap,
+                    x=0,
+                    h=settings_h,
+                    w=left_w,
+                    state=state,
+                    focus_id=focus_id,
+                )
+                _render_actions_box(
+                    stdscr,
+                    theme,
+                    y=body_y + mode_h + gap + settings_h + gap,
+                    x=0,
+                    h=actions_h,
+                    w=left_w,
+                    state=state,
+                    focus_id=focus_id,
+                )
+    
+                _render_output_box(
+                    stdscr,
+                    theme,
+                    y=body_y,
+                    x=right_x,
+                    h=output_h,
+                    w=right_w,
+                    state=state,
+                )
+                _render_info_box(
+                    stdscr,
+                    theme,
+                    y=body_y + output_h + gap,
+                    x=right_x,
+                    h=info_h,
+                    w=right_w,
+                    state=state,
+                    wordlist_size=len(words),
+                )
+    
                 _render_footer(stdscr, theme, state.message)
                 stdscr.refresh()
-                key = stdscr.getch()
-                if key == -1:
-                    continue
-                _record_user_activity(state)
-                if key == 27:
-                    should_quit, last_esc_quit_at = _handle_double_esc_quit(
-                        key=key, last_esc_at=last_esc_quit_at
-                    )
-                    if should_quit:
-                        return 0
-                    state.message = "Press Esc again to quit."
-                    continue
-                last_esc_quit_at = None
-                if key in (ord("q"), ord("Q")):
-                    state.message = "Press Esc twice to quit."
-                continue
-
-            footer_h = 2
-            body_y = header_end
-            body_h = max(1, h - body_y - footer_h)
-
-            gap = 1
-            # Two columns
-            left_w = max(34, min((w - gap) // 2, w - gap - 30))
-            right_x = left_w + gap
-            right_w = max(1, w - right_x)
-
-            # Standard layout heights
-            mode_h = 6
-            actions_h = 7 # Increased for Save button
-            settings_h = max(6, body_h - mode_h - actions_h - 2 * gap)
-
-            # Right column: OUTPUT + INFO
-            info_h = 8
-            output_h = max(6, body_h - info_h - gap)
-            info_h = max(6, body_h - output_h - gap)
-
-            focus_items = _focus_items(state)
-            state.focus_index = max(0, min(state.focus_index, len(focus_items) - 1))
-            focus_id = focus_items[state.focus_index]
-
-            # --- Rendering ---
-            
-            # Mode box is always visible
-            _render_mode_box(
-                stdscr,
-                theme,
-                y=body_y,
-                x=0,
-                h=mode_h,
-                w=left_w,
-                state=state,
-                focus_id=focus_id,
-            )
-
-            # Standard Generator Layout
-            _render_settings_box(
-                stdscr,
-                theme,
-                y=body_y + mode_h + gap,
-                x=0,
-                h=settings_h,
-                w=left_w,
-                state=state,
-                focus_id=focus_id,
-            )
-            _render_actions_box(
-                stdscr,
-                theme,
-                y=body_y + mode_h + gap + settings_h + gap,
-                x=0,
-                h=actions_h,
-                w=left_w,
-                state=state,
-                focus_id=focus_id,
-            )
-
-            _render_output_box(
-                stdscr,
-                theme,
-                y=body_y,
-                x=right_x,
-                h=output_h,
-                w=right_w,
-                state=state,
-            )
-            _render_info_box(
-                stdscr,
-                theme,
-                y=body_y + output_h + gap,
-                x=right_x,
-                h=info_h,
-                w=right_w,
-                state=state,
-                wordlist_size=len(words),
-            )
-
-            _render_footer(stdscr, theme, state.message)
-            stdscr.refresh()
 
             key = stdscr.getch()
+            redraw = (key != -1)
             if key == -1:
                 continue
             _record_user_activity(state)
@@ -3037,7 +2930,7 @@ def run() -> int:
                     note_is_hidden = False
                     if note:
                         hide_note = _run_modal(stdscr, theme, "ADD", "Hide note? (y/n) [n]:", max_length=1, initial_value="n")
-                        note_is_hidden = hide_note and hide_note.lower() == "y"
+                        note_is_hidden = bool(hide_note and hide_note.lower() == "y")
                     
                     result = _save_credential_duplicate_safe(
                         stdscr,
@@ -3220,7 +3113,7 @@ def run() -> int:
                                 merge = True
                         
                         # Import with merge decision
-                        imported, skipped, duplicates = state.storage.import_from_csv(
+                        imported, skipped_num, duplicates = state.storage.import_from_csv(
                             csv_path,
                             merge_duplicates=merge,
                             dry_run=False,
@@ -3231,7 +3124,7 @@ def run() -> int:
                         if duplicates:
                             result_lines = [f"Import complete:", ""]
                             result_lines.append(f"Imported: {imported}")
-                            result_lines.append(f"Skipped: {skipped}")
+                            result_lines.append(f"Skipped: {skipped_num}")
                             if duplicates:
                                 result_lines.append("")
                                 result_lines.append("Issues:")
