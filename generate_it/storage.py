@@ -243,7 +243,6 @@ class StorageManager:
         cursor.execute("SELECT id, service, username, encrypted_password, encrypted_note, note_is_hidden, created_at FROM credentials ORDER BY service")
         
         results = []
-        fernet = self._require_unlocked()
         for row in cursor.fetchall():
             try:
                 password = fernet.decrypt(row["encrypted_password"]).decode()
