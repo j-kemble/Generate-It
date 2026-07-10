@@ -32,6 +32,8 @@ class AppState:
 
     message: str = "Press Enter (or g) to generate."
     focus_index: int = 0
+    focus_items_cache_key: tuple[str, str, bool, bool] | None = None
+    focus_items_cache: tuple[str, ...] = ()
     
     # Vault / Storage
     storage: StorageManager | None = None

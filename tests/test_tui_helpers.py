@@ -443,3 +443,32 @@ def test_coerce_index_edge_cases() -> None:
     assert tui._coerce_index("4", 5, 0) == 4
     assert tui._coerce_index("10", 5, 0) == 4
     assert tui._coerce_index("-1", 5, 0) == 0
+
+
+def test_cached_focus_items_rebuilds_only_when_composition_changes(monkeypatch) -> None:
+    state = tui.AppState()
+    original = tui._focus_items
+    calls = 0
+
+    def counted(current_state):
+        nonlocal calls
+        calls += 1
+        return original(current_state)
+
+    monkeypatch.setattr(tui, "_focus_items", counted)
+
+    first = tui._get_cached_focus_items(state)
+    first.append("mutated-by-caller")
+    assert "mutated-by-caller" not in tui._get_cached_focus_items(state)
+    assert calls == 1
+
+    state.mode = "words"
+    tui._get_cached_focus_items(state)
+    state.username_style = "random"
+    tui._get_cached_focus_items(state)
+    state.vault_unlocked = True
+    tui._get_cached_focus_items(state)
+    state.output = "generated"
+    tui._get_cached_focus_items(state)
+
+    assert calls == 5

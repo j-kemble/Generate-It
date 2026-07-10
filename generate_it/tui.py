@@ -750,6 +750,20 @@ def _focus_items(state: AppState) -> list[str]:
         
     return items
 
+
+def _get_cached_focus_items(state: AppState) -> list[str]:
+    key = (
+        state.mode,
+        state.username_style,
+        state.vault_unlocked,
+        bool(state.output),
+    )
+    if state.focus_items_cache_key != key:
+        state.focus_items_cache_key = key
+        state.focus_items_cache = tuple(_focus_items(state))
+    return list(state.focus_items_cache)
+
+
 def _selected_category_count(state: AppState) -> int:
     return int(state.use_letters) + int(state.use_numbers) + int(state.use_special)
 
@@ -1539,8 +1553,8 @@ def run() -> int:
                 info_h = 8
                 output_h = max(6, body_h - info_h - gap)
                 info_h = max(6, body_h - output_h - gap)
-    
-                focus_items = _focus_items(state)
+
+                focus_items = _get_cached_focus_items(state)
                 state.focus_index = max(0, min(state.focus_index, len(focus_items) - 1))
                 focus_id = focus_items[state.focus_index]
     
@@ -1925,17 +1939,17 @@ def run() -> int:
                 if focus_id == "mode_chars":
                     state.mode = "chars"
                     state.message = "Mode: characters"
-                    focus_items = _focus_items(state)
+                    focus_items = _get_cached_focus_items(state)
                     state.focus_index = max(0, min(state.focus_index, len(focus_items) - 1))
                 elif focus_id == "mode_words":
                     state.mode = "words"
                     state.message = "Mode: words"
-                    focus_items = _focus_items(state)
+                    focus_items = _get_cached_focus_items(state)
                     state.focus_index = max(0, min(state.focus_index, len(focus_items) - 1))
                 elif focus_id == "mode_username":
                     state.mode = "username"
                     state.message = "Mode: username"
-                    focus_items = _focus_items(state)
+                    focus_items = _get_cached_focus_items(state)
                     state.focus_index = max(0, min(state.focus_index, len(focus_items) - 1))
                 elif focus_id in {"letters", "numbers", "special"}:
                     _toggle_category(state, focus_id)
@@ -1948,7 +1962,7 @@ def run() -> int:
                     idx = styles.index(state.username_style)
                     state.username_style = styles[(idx + 1) % len(styles)]
                     state.message = f"Username style: {state.username_style}"
-                    focus_items = _focus_items(state)
+                    focus_items = _get_cached_focus_items(state)
                     state.focus_index = max(0, min(state.focus_index, len(focus_items) - 1))
                 elif focus_id == "username_separator":
                     state.username_separator = "-" if state.username_separator == "_" else "_"
