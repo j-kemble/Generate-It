@@ -939,6 +939,9 @@ def _run_details_modal(
     win = curses.newwin(box_h, box_w, y, x)
     win.keypad(True)
     win.timeout(250)
+    feedback_text = ""
+    feedback_attr = theme.dim
+    feedback_until = 0.0
     
     while True:
         if _maybe_auto_clear_clipboard(state):
@@ -1001,8 +1004,13 @@ def _run_details_modal(
         line2_parts.append("Esc: Close")
         line2 = "  ".join(line2_parts)
         
+        footer_text = line2
+        footer_attr = theme.dim
+        if feedback_text and time.monotonic() < feedback_until:
+            footer_text = feedback_text
+            footer_attr = feedback_attr
         win.addstr(box_h - 3, 2, line1[:box_w-4], theme.dim)
-        win.addstr(box_h - 2, 2, line2[:box_w-4], theme.dim)
+        win.addstr(box_h - 2, 2, footer_text[:box_w-4], footer_attr)
         
         win.refresh()
         
@@ -1017,10 +1025,9 @@ def _run_details_modal(
         elif key in (ord('c'), ord('C')):
             try:
                 msg = tui_flow._copy_to_clipboard_with_policy(state, credential['password'])
-                # Quick feedback overlay
-                win.addstr(box_h - 2, 2, "       COPIED PASSWORD!       ", theme.ok)
-                win.refresh()
-                curses.napms(500)
+                feedback_text = "       COPIED PASSWORD!       "
+                feedback_attr = theme.ok
+                feedback_until = time.monotonic() + 0.5
                 state.message = msg
             except Exception:
                 pass
@@ -1028,9 +1035,9 @@ def _run_details_modal(
         elif key in (ord('u'), ord('U')):
             try:
                 msg = tui_flow._copy_to_clipboard_with_policy(state, credential['username'])
-                win.addstr(box_h - 2, 2, "       COPIED USERNAME!       ", theme.ok)
-                win.refresh()
-                curses.napms(500)
+                feedback_text = "       COPIED USERNAME!       "
+                feedback_attr = theme.ok
+                feedback_until = time.monotonic() + 0.5
                 state.message = msg
             except Exception:
                 pass
@@ -1039,16 +1046,16 @@ def _run_details_modal(
             if note_text:
                 try:
                     msg = tui_flow._copy_to_clipboard_with_policy(state, note_text)
-                    win.addstr(box_h - 2, 2, "        COPIED NOTE!        ", theme.ok)
-                    win.refresh()
-                    curses.napms(500)
+                    feedback_text = "        COPIED NOTE!        "
+                    feedback_attr = theme.ok
+                    feedback_until = time.monotonic() + 0.5
                     state.message = msg
                 except Exception:
                     pass
             else:
-                win.addstr(box_h - 2, 2, "       NO NOTE TO COPY!      ", theme.warn)
-                win.refresh()
-                curses.napms(500)
+                feedback_text = "       NO NOTE TO COPY!      "
+                feedback_attr = theme.warn
+                feedback_until = time.monotonic() + 0.5
 
         elif key in (ord('h'), ord('H')):
             if note_text:
@@ -1068,13 +1075,13 @@ def _run_details_modal(
                     credential = next((c for c in state.vault_credentials if c['id'] == cred_id), credential)
                     break
                 except Exception as e:
-                    win.addstr(box_h - 2, 2, f"     ERROR: {str(e)[:20]}    ", theme.warn)
-                    win.refresh()
-                    curses.napms(1000)
+                    feedback_text = f"     ERROR: {str(e)[:20]}    "
+                    feedback_attr = theme.warn
+                    feedback_until = time.monotonic() + 1.0
             else:
-                win.addstr(box_h - 2, 2, "       NO NOTE TO HIDE!     ", theme.warn)
-                win.refresh()
-                curses.napms(500)
+                feedback_text = "       NO NOTE TO HIDE!     "
+                feedback_attr = theme.warn
+                feedback_until = time.monotonic() + 0.5
 
 def _run_vault_modal(
     stdscr: curses.window,
