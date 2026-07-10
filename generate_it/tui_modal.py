@@ -2,12 +2,29 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Callable, TYPE_CHECKING
 import curses
 import textwrap
 
 if TYPE_CHECKING:
     from . import tui
+
+
+@dataclass
+class _WindowCache:
+    """Retain one curses window until a modal's geometry changes."""
+
+    geometry: tuple[int, int, int, int] | None = None
+    window: curses.window | None = None
+
+    def get(self, height: int, width: int, y: int, x: int) -> curses.window:
+        geometry = (height, width, y, x)
+        if self.window is None or self.geometry != geometry:
+            self.window = curses.newwin(height, width, y, x)
+            self.window.keypad(True)
+            self.geometry = geometry
+        return self.window
 
 
 def _run_modal(
@@ -22,6 +39,7 @@ def _run_modal(
 ) -> str | None:
     """Runs a blocking modal dialog for text input. Returns the string or None if cancelled."""
     input_str = initial_value[:max_length]
+    window_cache = _WindowCache()
     while True:
         h, w = stdscr.getmaxyx()
         min_w = 46
@@ -53,8 +71,7 @@ def _run_modal(
             help_row = input_row + 2
 
         y, x = (h - box_h) // 2, (w - box_w) // 2
-        win = curses.newwin(box_h, box_w, y, x)
-        win.keypad(True)
+        win = window_cache.get(box_h, box_w, y, x)
         win.erase()
         win.box()
         # Title

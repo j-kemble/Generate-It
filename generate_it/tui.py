@@ -145,6 +145,9 @@ def _run_fuzzy_file_picker(
     query = ""
     selected_idx = 0
     scroll_pos = 0
+    window_cache = tui_modal._WindowCache()
+    cached_query: str | None = None
+    matches: list[tuple[int, str, Path]] = []
 
     while True:
         h, w = stdscr.getmaxyx()
@@ -152,8 +155,7 @@ def _run_fuzzy_file_picker(
         box_w = min(max(70, int(w * 0.9)), max(44, w - 2))
         y, x = (h - box_h) // 2, (w - box_w) // 2
 
-        win = curses.newwin(box_h, box_w, y, x)
-        win.keypad(True)
+        win = window_cache.get(box_h, box_w, y, x)
         win.erase()
         win.box()
 
@@ -174,15 +176,17 @@ def _run_fuzzy_file_picker(
         except curses.error:
             pass
 
-        scored: list[tuple[int, str, Path]] = []
-        for p in files:
-            rel = str(p.relative_to(root_dir))
-            score = _fuzzy_score(query, rel)
-            if score is None:
-                continue
-            scored.append((score, rel, p))
-        scored.sort(key=lambda item: (item[0], len(item[1]), item[1]))
-        matches = scored[:500]
+        if cached_query != query:
+            scored: list[tuple[int, str, Path]] = []
+            for p in files:
+                rel = str(p.relative_to(root_dir))
+                score = _fuzzy_score(query, rel)
+                if score is None:
+                    continue
+                scored.append((score, rel, p))
+            scored.sort(key=lambda item: (item[0], len(item[1]), item[1]))
+            matches = scored[:500]
+            cached_query = query
 
         content_y = 4
         content_h = max(1, box_h - 7)
@@ -256,6 +260,7 @@ def _run_file_browser_modal(
     filter_query = ""
     selected_idx = 0
     scroll_pos = 0
+    window_cache = tui_modal._WindowCache()
 
     while True:
         h, w = stdscr.getmaxyx()
@@ -263,8 +268,7 @@ def _run_file_browser_modal(
         box_w = min(max(70, int(w * 0.9)), max(44, w - 2))
         y, x = (h - box_h) // 2, (w - box_w) // 2
 
-        win = curses.newwin(box_h, box_w, y, x)
-        win.keypad(True)
+        win = window_cache.get(box_h, box_w, y, x)
         win.erase()
         win.box()
 
@@ -400,6 +404,7 @@ def _run_path_modal(
     max_length: int = 300,
 ) -> str | None:
     input_str = ""
+    window_cache = tui_modal._WindowCache()
 
     while True:
         h, w = stdscr.getmaxyx()
@@ -428,8 +433,7 @@ def _run_path_modal(
             help_row = input_row + 2
 
         y, x = (h - box_h) // 2, (w - box_w) // 2
-        win = curses.newwin(box_h, box_w, y, x)
-        win.keypad(True)
+        win = window_cache.get(box_h, box_w, y, x)
         win.erase()
         win.box()
 
@@ -523,6 +527,7 @@ def _run_security_settings_modal(
 ) -> None:
     selected_row = 0
     rows = ("clipboard", "auto_lock")
+    window_cache = tui_modal._WindowCache()
 
     while True:
         if _maybe_auto_clear_clipboard(state):
@@ -539,8 +544,7 @@ def _run_security_settings_modal(
         y, x = (h - box_h) // 2, (w - box_w) // 2
         inner_w = max(10, box_w - 4)
 
-        win = curses.newwin(box_h, box_w, y, x)
-        win.keypad(True)
+        win = window_cache.get(box_h, box_w, y, x)
         win.timeout(250)
         win.erase()
         win.box()
@@ -1088,6 +1092,9 @@ def _run_vault_modal(
     state.vault_credentials = state.storage.list_credentials()
     vault_filter = ""
     search_mode = start_in_search
+    window_cache = tui_modal._WindowCache()
+    cached_filter_key: tuple[int, str] | None = None
+    filtered_credentials: list[dict] = []
     
     while True:
         if _maybe_auto_clear_clipboard(state):
@@ -1110,8 +1117,7 @@ def _run_vault_modal(
         
         # We need to clear the area or redraw the whole screen behind it? 
         # Easier to just draw a solid box on top.
-        win = curses.newwin(box_h, box_w, y, x)
-        win.keypad(True)
+        win = window_cache.get(box_h, box_w, y, x)
         win.timeout(250)
         win.erase()
         win.box()
@@ -1127,7 +1133,10 @@ def _run_vault_modal(
         inner_w = box_w - 4
         list_y = 1
 
-        filtered_credentials = _filter_vault_credentials(state.vault_credentials, vault_filter)
+        filter_key = (id(state.vault_credentials), vault_filter)
+        if cached_filter_key != filter_key:
+            filtered_credentials = _filter_vault_credentials(state.vault_credentials, vault_filter)
+            cached_filter_key = filter_key
 
         if not filtered_credentials:
             state.vault_selected_idx = 0
