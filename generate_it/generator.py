@@ -317,6 +317,15 @@ def _dedupe_preserve_order(items: list[str]) -> list[str]:
     return list(dict.fromkeys(items))
 
 
+def _secure_sample_without_replacement(words: list[str], count: int) -> list[str]:
+    """Select distinct words with CSPRNG indices and no shifting removals."""
+    pool = list(words)
+    for position in range(count):
+        selected_index = position + secrets.randbelow(len(pool) - position)
+        pool[position], pool[selected_index] = pool[selected_index], pool[position]
+    return pool[:count]
+
+
 @functools.lru_cache(maxsize=1)
 def load_wordlist(path: Path | None = None) -> list[str]:
     """Load passphrase words.
@@ -438,11 +447,7 @@ def generate_passphrase(
         raise ValueError("wordlist is too small for the requested word_count")
 
     # Choose words without replacement so a passphrase never repeats a word.
-    pool = list(words)
-    chosen_words: list[str] = []
-    for _ in range(word_count):
-        idx = secrets.randbelow(len(pool))
-        chosen_words.append(pool.pop(idx))
+    chosen_words = _secure_sample_without_replacement(words, word_count)
 
     if add_numbers:
         digits_len = secrets.choice([2, 3, 4])
@@ -490,11 +495,7 @@ def generate_username_words(
         raise ValueError("wordlist is too small for the requested word_count")
 
     # Choose words without replacement.
-    pool = list(words)
-    chosen_words: list[str] = []
-    for _ in range(word_count):
-        idx = secrets.randbelow(len(pool))
-        chosen_words.append(pool.pop(idx))
+    chosen_words = _secure_sample_without_replacement(words, word_count)
 
     username = separator.join(chosen_words)
 

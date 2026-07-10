@@ -129,3 +129,39 @@ def test_username_separators_used_in_generation():
     # A separator NOT in the frozenset must be rejected.
     with pytest.raises(ValueError):
         generator.generate_username_words(2, separator=".")
+
+
+def test_secure_sample_without_replacement_uses_shrinking_csprng_ranges(monkeypatch):
+    calls: list[int] = []
+
+    def choose_first(size: int) -> int:
+        calls.append(size)
+        return 0
+
+    monkeypatch.setattr(generator.secrets, "randbelow", choose_first)
+
+    sampled = generator._secure_sample_without_replacement(
+        ["alpha", "beta", "gamma", "delta", "epsilon"], 3
+    )
+
+    assert sampled == ["alpha", "beta", "gamma"]
+    assert calls == [5, 4, 3]
+
+
+def test_word_generators_share_secure_sampling_helper(monkeypatch):
+    calls: list[int] = []
+
+    def sample_first(words: list[str], count: int) -> list[str]:
+        calls.append(count)
+        return words[:count]
+
+    monkeypatch.setattr(generator, "_secure_sample_without_replacement", sample_first)
+    words = ["alpha", "beta", "gamma", "delta", "epsilon"]
+
+    assert generator.generate_passphrase(
+        3, add_numbers=False, add_special=False, words=words
+    ) == "alpha-beta-gamma"
+    assert generator.generate_username_words(
+        2, add_numbers=False, separator="_", words=words
+    ) == "alpha_beta"
+    assert calls == [3, 2]
