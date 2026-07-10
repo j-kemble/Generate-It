@@ -30,6 +30,12 @@ class VaultNotInitializedError(StorageError):
     """Raised when attempting to access a vault that doesn't exist."""
     pass
 
+
+class VaultAlreadyInitializedError(StorageError):
+    """Raised when initialization would overwrite an existing vault."""
+    pass
+
+
 class InvalidPasswordError(StorageError):
     """Raised when the provided master password is incorrect."""
     pass
@@ -111,6 +117,9 @@ class StorageManager:
 
     def initialize_vault(self, master_password: str) -> None:
         """Sets up the database schema and initializes security markers."""
+        if self.vault_exists():
+            raise VaultAlreadyInitializedError("Vault already initialized.")
+
         salt = os.urandom(_DEFAULT_SALT_LENGTH)
         key = self._derive_key(master_password, salt, _DEFAULT_PBKDF2_ITERATIONS)
         fernet = Fernet(key)
