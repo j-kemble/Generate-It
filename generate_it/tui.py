@@ -34,6 +34,7 @@ import textwrap
 import pyperclip
 
 from . import generator
+from . import tui_modal
 from . import csv_formats
 from .storage import StorageManager, InvalidPasswordError
 from .tui_helpers import (
@@ -76,158 +77,6 @@ class QuitApp(Exception):
     """Raised when the user requests to quit from anywhere in the TUI."""
 
 
-def _run_modal(
-    stdscr: curses.window,
-    theme: Theme,
-    title: str,
-    prompt: str,
-    is_password: bool = False,
-    generator_func: Callable | None = None,
-    max_length: int = 50,
-    initial_value: str = "",
-) -> str | None:
-    """Runs a blocking modal dialog for text input. Returns the string or None if cancelled."""
-    input_str = initial_value[:max_length]
-    while True:
-        h, w = stdscr.getmaxyx()
-        min_w = 46
-        max_w = max(min_w, w - 4)
-        preferred_w = max(60, len(prompt) + 8)
-        box_w = min(max_w, preferred_w)
-        inner_w = max(10, box_w - 4)
-
-        prompt_lines = textwrap.wrap(
-            prompt,
-            width=inner_w,
-            break_long_words=True,
-            break_on_hyphens=False,
-        ) or [""]
-
-        help_txt = "Enter: Confirm • Esc: Cancel"
-        if generator_func:
-            help_txt += " • Tab: Generate"
-
-        input_row = 2 + len(prompt_lines) + 1
-        help_row = input_row + 2
-        box_h = max(8, help_row + 2)
-        box_h = min(max(8, h - 2), box_h)
-
-        max_prompt_lines = max(1, box_h - 6)
-        if len(prompt_lines) > max_prompt_lines:
-            prompt_lines = prompt_lines[: max_prompt_lines - 1] + ["..."]
-            input_row = 2 + len(prompt_lines) + 1
-            help_row = input_row + 2
-
-        y, x = (h - box_h) // 2, (w - box_w) // 2
-        win = curses.newwin(box_h, box_w, y, x)
-        win.keypad(True)
-        win.erase()
-        win.box()
-        # Title
-        title_text = f" {title} "
-        try:
-            win.addstr(0, 2, title_text[: max(0, box_w - 4)], theme.title)
-        except curses.error:
-            pass
-
-        # Prompt (wrapped)
-        for i, line in enumerate(prompt_lines):
-            try:
-                win.addstr(2 + i, 2, line[:inner_w], theme.accent)
-            except curses.error:
-                pass
-        # Input field
-        field_attr = curses.A_REVERSE | theme.dim
-        display_str = "*" * len(input_str) if is_password else input_str
-        # Cursor simulation
-        display_str += " "
-        if len(display_str) > inner_w:
-            display_str = display_str[-inner_w:]
-        try:
-            win.addstr(input_row, 2, display_str[:inner_w], field_attr)
-        except curses.error:
-            pass
-
-        # Help
-        try:
-            win.addstr(help_row, 2, help_txt[:inner_w], theme.dim)
-        except curses.error:
-            pass
-        win.refresh()
-        key = win.getch()
-        if key == 27: # ESC
-            return None
-        elif key in (curses.KEY_ENTER, 10, 13):
-            return input_str
-        elif key in (curses.KEY_BACKSPACE, 127, 8):
-            input_str = input_str[:-1]
-        elif key == 9 and generator_func: # Tab
-            try:
-                # Generate and replace current input
-                if generator_func is not None:
-                    input_str = str(generator_func())[:max_length]
-                else:
-                    input_str = ""
-            except Exception:
-                pass
-        elif 32 <= key <= 126:
-            if len(input_str) < max_length:
-                input_str += chr(key)
-
-def _run_scrollable_modal(
-    stdscr: curses.window,
-    theme: Theme,
-    title: str,
-    lines: list[str],
-) -> None:
-    """Runs a blocking modal with scrollable multi-line text."""
-    h, w = stdscr.getmaxyx()
-    box_h = min(20, h - 4)
-    box_w = min(70, w - 4)
-    y, x = (h - box_h) // 2, (w - box_w) // 2
-    
-    win = curses.newwin(box_h, box_w, y, x)
-    win.keypad(True)
-    
-    scroll_pos = 0
-    content_h = box_h - 4  # Reserve space for title, border, and footer
-    
-    while True:
-        win.erase()
-        win.box()
-        # Title
-        title_text = f" {title} "
-        win.addstr(0, 2, title_text[:box_w-4], theme.title)
-        
-        # Content with scrolling
-        visible_lines = lines[scroll_pos:scroll_pos + content_h]
-        for i, line in enumerate(visible_lines):
-            try:
-                win.addstr(2 + i, 2, line[:box_w-4])
-            except curses.error:
-                pass
-        
-        # Footer with scroll indicator
-        if len(lines) > content_h:
-            footer = f"↑/↓: Scroll • Esc: Close ({scroll_pos+1}-{min(scroll_pos+content_h, len(lines))} of {len(lines)})"
-        else:
-            footer = "Esc: Close"
-        try:
-            win.addstr(box_h - 2, 2, footer[:box_w-4], theme.dim)
-        except curses.error:
-            pass
-        
-        win.refresh()
-        
-        key = win.getch()
-        
-        if key in (27, ord('q'), ord('Q')):  # ESC/q
-            return
-        elif key in (curses.KEY_UP, ord('k')):
-            scroll_pos = max(0, scroll_pos - 1)
-        elif key in (curses.KEY_DOWN, ord('j')):
-            scroll_pos = min(max(0, len(lines) - content_h), scroll_pos + 1)
-
 def _save_credential_duplicate_safe(
     stdscr: curses.window,
     theme: Theme,
@@ -249,7 +98,7 @@ def _save_credential_duplicate_safe(
         username,
     )
     if existing is not None:
-        confirm = _run_modal(
+        confirm = tui_modal._run_modal(
             stdscr,
             theme,
             "DUPLICATE FOUND",
@@ -330,7 +179,7 @@ def _run_fuzzy_file_picker(
 ) -> str | None:
     files = _collect_files_for_fuzzy(root_dir)
     if not files:
-        _run_modal(stdscr, theme, "NO FILES", f"No files found under {root_dir}.")
+        tui_modal._run_modal(stdscr, theme, "NO FILES", f"No files found under {root_dir}.")
         return None
 
     query = ""
@@ -555,7 +404,7 @@ def _run_file_browser_modal(
         if key in (ord('s'), ord('S')):
             return str(current_dir)
         if key == ord('/'):
-            filter_input = _run_modal(
+            filter_input = tui_modal._run_modal(
                 stdscr,
                 theme,
                 "FILTER",
@@ -694,7 +543,7 @@ def _prompt_csv_format(
         default_value = "generic"
 
     while True:
-        chosen = _run_modal(
+        chosen = tui_modal._run_modal(
             stdscr,
             theme,
             title,
@@ -708,7 +557,7 @@ def _prompt_csv_format(
         try:
             return normalizer(candidate)
         except ValueError as e:
-            _run_modal(stdscr, theme, "ERROR", str(e))
+            tui_modal._run_modal(stdscr, theme, "ERROR", str(e))
 
 
 def _run_security_settings_modal(
@@ -1317,7 +1166,7 @@ def _prompt_unlock_vault(
         return False
 
     while True:
-        pwd = _run_modal(
+        pwd = tui_modal._run_modal(
             stdscr,
             theme,
             "VAULT LOCKED",
@@ -1337,9 +1186,9 @@ def _prompt_unlock_vault(
             state.message = "Vault unlocked."
             return True
         except InvalidPasswordError:
-            _run_modal(stdscr, theme, "ERROR", "Invalid master password.")
+            tui_modal._run_modal(stdscr, theme, "ERROR", "Invalid master password.")
         except Exception as e:
-            _run_modal(stdscr, theme, "ERROR", f"Unlock failed: {e}")
+            tui_modal._run_modal(stdscr, theme, "ERROR", f"Unlock failed: {e}")
             state.message = "Vault locked."
             return False
 
@@ -1969,16 +1818,16 @@ def _run_save_generated_flow(
 ) -> None:
     """Save current generated output by prompting for the missing field(s)."""
     if not state.storage or not state.vault_unlocked:
-        _run_modal(stdscr, theme, "ERROR", "Vault is locked or unavailable.")
+        tui_modal._run_modal(stdscr, theme, "ERROR", "Vault is locked or unavailable.")
         state.message = "Save unavailable."
         return
 
     if not state.output:
-        _run_modal(stdscr, theme, "ERROR", "Nothing to save yet. Generate first.")
+        tui_modal._run_modal(stdscr, theme, "ERROR", "Nothing to save yet. Generate first.")
         state.message = "Nothing to save yet."
         return
 
-    service = _run_modal(stdscr, theme, "SAVE", "Enter Service/Website Name:")
+    service = tui_modal._run_modal(stdscr, theme, "SAVE", "Enter Service/Website Name:")
     if not service:
         state.message = "Save cancelled."
         return
@@ -2001,7 +1850,7 @@ def _run_save_generated_flow(
                     16, use_letters=True, use_numbers=True, use_special=True
                 )
 
-            final_password = _run_modal(
+            final_password = tui_modal._run_modal(
                 stdscr,
                 theme,
                 "SAVE",
@@ -2016,7 +1865,7 @@ def _run_save_generated_flow(
             def _gen_user():
                 return generator.generate_username_adjective_noun(add_numbers=True)
 
-            final_username = _run_modal(
+            final_username = tui_modal._run_modal(
                 stdscr,
                 theme,
                 "SAVE",
@@ -2030,10 +1879,10 @@ def _run_save_generated_flow(
                 state.message = "Save cancelled."
                 return
 
-            note = _run_modal(stdscr, theme, "SAVE", "Note (optional, Enter to skip):", max_length=500)
+            note = tui_modal._run_modal(stdscr, theme, "SAVE", "Note (optional, Enter to skip):", max_length=500)
             note_is_hidden = False
             if note:
-                hide_note = _run_modal(stdscr, theme, "SAVE", "Hide note? (y/n) [n]:", max_length=1, initial_value="n")
+                hide_note = tui_modal._run_modal(stdscr, theme, "SAVE", "Hide note? (y/n) [n]:", max_length=1, initial_value="n")
                 note_is_hidden = bool(hide_note and hide_note.lower() == "y")
 
             result = _save_credential_duplicate_safe(
@@ -2220,7 +2069,7 @@ def _run_vault_modal(
 ) -> None:
     """Runs a modal vault manager."""
     if not state.vault_unlocked or not state.storage:
-        _run_modal(stdscr, theme, "ERROR", "Vault locked or unavailable.")
+        tui_modal._run_modal(stdscr, theme, "ERROR", "Vault locked or unavailable.")
         return
         
     # Reload credentials
@@ -2390,7 +2239,7 @@ def _run_vault_modal(
         elif key in (ord('e'), ord('E')):
             if filtered_credentials:
                 cred = filtered_credentials[state.vault_selected_idx]
-                service = _run_modal(
+                service = tui_modal._run_modal(
                     stdscr,
                     theme,
                     "EDIT",
@@ -2400,7 +2249,7 @@ def _run_vault_modal(
                 )
                 if service is None:
                     continue
-                username = _run_modal(
+                username = tui_modal._run_modal(
                     stdscr,
                     theme,
                     "EDIT",
@@ -2410,7 +2259,7 @@ def _run_vault_modal(
                 )
                 if username is None:
                     continue
-                password = _run_modal(
+                password = tui_modal._run_modal(
                     stdscr,
                     theme,
                     "EDIT",
@@ -2425,20 +2274,20 @@ def _run_vault_modal(
                 service = service.strip()
                 username = username.strip()
                 if not service or not username or not password:
-                    _run_modal(stdscr, theme, "ERROR", "Service, username, and password are required.")
+                    tui_modal._run_modal(stdscr, theme, "ERROR", "Service, username, and password are required.")
                     continue
 
                 try:
                     # Get existing note for the credential
                     existing_note = cred.get("note", "")
                     existing_hidden = cred.get("note_is_hidden", False)
-                    note = _run_modal(stdscr, theme, "EDIT", "Note (optional):", max_length=500, initial_value=existing_note)
+                    note = tui_modal._run_modal(stdscr, theme, "EDIT", "Note (optional):", max_length=500, initial_value=existing_note)
                     if note is None:
                         continue
                     
                     # Ask if user wants to hide the note
                     hide_option = "y" if existing_hidden else "n"
-                    hide_note = _run_modal(
+                    hide_note = tui_modal._run_modal(
                         stdscr, theme, "EDIT", 
                         f"Hide note? (y/n) [{hide_option}]:", 
                         max_length=1, 
@@ -2462,27 +2311,27 @@ def _run_vault_modal(
                         state.vault_selected_idx = found_idx
                     state.vault_scroll_y = 0
 
-                    _run_modal(stdscr, theme, "SUCCESS", "Credential updated.")
+                    tui_modal._run_modal(stdscr, theme, "SUCCESS", "Credential updated.")
                 except Exception as e:
-                    _run_modal(stdscr, theme, "ERROR", f"Update failed: {e}")
+                    tui_modal._run_modal(stdscr, theme, "ERROR", f"Update failed: {e}")
         
         elif key in (ord('c'), ord('C')):
             if filtered_credentials:
                 cred = filtered_credentials[state.vault_selected_idx]
                 try:
                     msg = _copy_to_clipboard_with_policy(state, cred['password'])
-                    _run_modal(stdscr, theme, "SUCCESS", msg)
+                    tui_modal._run_modal(stdscr, theme, "SUCCESS", msg)
                 except Exception as e:
-                    _run_modal(stdscr, theme, "ERROR", f"Copy failed: {e}")
+                    tui_modal._run_modal(stdscr, theme, "ERROR", f"Copy failed: {e}")
 
         elif key in (ord('u'), ord('U')):
             if filtered_credentials:
                 cred = filtered_credentials[state.vault_selected_idx]
                 try:
                     msg = _copy_to_clipboard_with_policy(state, cred['username'])
-                    _run_modal(stdscr, theme, "SUCCESS", msg)
+                    tui_modal._run_modal(stdscr, theme, "SUCCESS", msg)
                 except Exception as e:
-                    _run_modal(stdscr, theme, "ERROR", f"Copy failed: {e}")
+                    tui_modal._run_modal(stdscr, theme, "ERROR", f"Copy failed: {e}")
 
         elif key in (curses.KEY_ENTER, 10, 13):
             if filtered_credentials:
@@ -2492,7 +2341,7 @@ def _run_vault_modal(
         elif key in (ord('d'), ord('D')):
             if filtered_credentials:
                 cred = filtered_credentials[state.vault_selected_idx]
-                confirm = _run_modal(stdscr, theme, "CONFIRM", f"Delete {cred['service']}? (type 'yes'):")
+                confirm = tui_modal._run_modal(stdscr, theme, "CONFIRM", f"Delete {cred['service']}? (type 'yes'):")
                 if confirm and confirm.lower() == 'yes':
                     try:
                         state.storage.delete_credential(cred['id'])
@@ -2501,7 +2350,7 @@ def _run_vault_modal(
                         if state.vault_selected_idx >= len(refreshed_filtered):
                             state.vault_selected_idx = max(0, len(refreshed_filtered) - 1)
                     except Exception as e:
-                        _run_modal(stdscr, theme, "ERROR", f"Delete failed: {e}")
+                        tui_modal._run_modal(stdscr, theme, "ERROR", f"Delete failed: {e}")
 
 
 # --- Main loop --------------------------------------------------------------
@@ -2559,15 +2408,15 @@ def run() -> int:
             while True:
                 stdscr.erase()
                 _render_header(stdscr, theme)
-                pwd = _run_modal(stdscr, theme, "SETUP", "Create Master Password:", is_password=True)
+                pwd = tui_modal._run_modal(stdscr, theme, "SETUP", "Create Master Password:", is_password=True)
                 if pwd is None: # Cancelled
                     return 0
                 if len(pwd) < 4:
-                    _run_modal(stdscr, theme, "ERROR", "Password too short (min 4 chars). Press Enter.")
+                    tui_modal._run_modal(stdscr, theme, "ERROR", "Password too short (min 4 chars). Press Enter.")
                     continue
                 
                 # Confirm password
-                pwd2 = _run_modal(stdscr, theme, "SETUP", "Confirm Master Password:", is_password=True)
+                pwd2 = tui_modal._run_modal(stdscr, theme, "SETUP", "Confirm Master Password:", is_password=True)
                 if pwd2 is None: # Cancelled
                     continue
 
@@ -2577,15 +2426,15 @@ def run() -> int:
                         state.vault_unlocked = True
                         break
                     except Exception as e:
-                        _run_modal(stdscr, theme, "ERROR", f"Init failed: {e}. Press Enter.")
+                        tui_modal._run_modal(stdscr, theme, "ERROR", f"Init failed: {e}. Press Enter.")
                 else:
-                    _run_modal(stdscr, theme, "ERROR", "Passwords do not match. Press Enter.")
+                    tui_modal._run_modal(stdscr, theme, "ERROR", "Passwords do not match. Press Enter.")
         else:
             # Unlock existing vault
             while True:
                 stdscr.erase()
                 _render_header(stdscr, theme)
-                pwd = _run_modal(stdscr, theme, "LOGIN", "Enter Master Password:", is_password=True)
+                pwd = tui_modal._run_modal(stdscr, theme, "LOGIN", "Enter Master Password:", is_password=True)
                 if pwd is None: # Cancelled
                     return 0
                 
@@ -2845,7 +2694,7 @@ def run() -> int:
                     "/       : Start live vault search",
                     "Esc     : Close vault",
                 ]
-                _run_scrollable_modal(stdscr, theme, "HOTKEY LEGEND", help_lines)
+                tui_modal._run_scrollable_modal(stdscr, theme, "HOTKEY LEGEND", help_lines)
                 stdscr.clear()
                 continue
 
@@ -2871,11 +2720,11 @@ def run() -> int:
             # Manual add (hotkey)
             if manual_add:
                 if not state.vault_unlocked or not state.storage:
-                    _run_modal(stdscr, theme, "ERROR", "Vault is locked or unavailable.")
+                    tui_modal._run_modal(stdscr, theme, "ERROR", "Vault is locked or unavailable.")
                     stdscr.clear()
                     continue
                 try:
-                    service = _run_modal(stdscr, theme, "ADD", "Service name:", max_length=120)
+                    service = tui_modal._run_modal(stdscr, theme, "ADD", "Service name:", max_length=120)
                     if not service:
                         state.message = "Add cancelled."
                         stdscr.clear()
@@ -2889,7 +2738,7 @@ def run() -> int:
                     def _gen_user():
                         return generator.generate_username_adjective_noun(add_numbers=True)
 
-                    username = _run_modal(
+                    username = tui_modal._run_modal(
                         stdscr,
                         theme,
                         "ADD",
@@ -2912,7 +2761,7 @@ def run() -> int:
                             16, use_letters=True, use_numbers=True, use_special=True
                         )
 
-                    password = _run_modal(
+                    password = tui_modal._run_modal(
                         stdscr,
                         theme,
                         "ADD",
@@ -2926,10 +2775,10 @@ def run() -> int:
                         stdscr.clear()
                         continue
                     
-                    note = _run_modal(stdscr, theme, "ADD", "Note (optional, Enter to skip):", max_length=500)
+                    note = tui_modal._run_modal(stdscr, theme, "ADD", "Note (optional, Enter to skip):", max_length=500)
                     note_is_hidden = False
                     if note:
-                        hide_note = _run_modal(stdscr, theme, "ADD", "Hide note? (y/n) [n]:", max_length=1, initial_value="n")
+                        hide_note = tui_modal._run_modal(stdscr, theme, "ADD", "Hide note? (y/n) [n]:", max_length=1, initial_value="n")
                         note_is_hidden = bool(hide_note and hide_note.lower() == "y")
                     
                     result = _save_credential_duplicate_safe(
@@ -2949,7 +2798,7 @@ def run() -> int:
                     else:
                         state.message = "Add cancelled."
                 except Exception as e:
-                    _run_modal(stdscr, theme, "ERROR", f"Add failed: {e}")
+                    tui_modal._run_modal(stdscr, theme, "ERROR", f"Add failed: {e}")
                     state.message = "Add failed."
                 stdscr.clear()
                 continue
@@ -2967,7 +2816,7 @@ def run() -> int:
             # CSV Export
             if export_csv:
                 if not state.vault_unlocked or not state.storage:
-                    _run_modal(stdscr, theme, "ERROR", "Vault is locked or unavailable.")
+                    tui_modal._run_modal(stdscr, theme, "ERROR", "Vault is locked or unavailable.")
                     stdscr.clear()
                     continue
                 
@@ -2991,7 +2840,7 @@ def run() -> int:
                             f"generate-it-{selected_export_format}-"
                             f"{_dt.datetime.now().strftime('%Y%m%d-%H%M%S')}.csv"
                         )
-                        filename = _run_modal(
+                        filename = tui_modal._run_modal(
                             stdscr,
                             theme,
                             "EXPORT FILENAME",
@@ -3005,7 +2854,7 @@ def run() -> int:
 
                         filename = filename.strip() or default_name
                         if "/" in filename or "\\" in filename:
-                            _run_modal(
+                            tui_modal._run_modal(
                                 stdscr,
                                 theme,
                                 "ERROR",
@@ -3021,14 +2870,14 @@ def run() -> int:
 
                     parent_dir = csv_path.parent
                     if not parent_dir.exists() or not parent_dir.is_dir():
-                        _run_modal(stdscr, theme, "ERROR", f"Directory not found: {parent_dir}")
+                        tui_modal._run_modal(stdscr, theme, "ERROR", f"Directory not found: {parent_dir}")
                         state.message = "Export cancelled."
                         stdscr.clear()
                         continue
                     
                     # Check if file exists and confirm overwrite
                     if csv_path.exists():
-                        confirm = _run_modal(stdscr, theme, "CONFIRM", f"File exists. Overwrite? (type 'yes'):")
+                        confirm = tui_modal._run_modal(stdscr, theme, "CONFIRM", f"File exists. Overwrite? (type 'yes'):")
                         if not confirm or confirm.lower() != 'yes':
                             state.message = "Export cancelled."
                             stdscr.clear()
@@ -3044,7 +2893,7 @@ def run() -> int:
                             skip_lines = [f"The following {len(skipped)} credential(s) failed to export:", ""]
                             for item in skipped:
                                 skip_lines.append(f"- {item['service']} / {item['username']}: {item['error']}")
-                            _run_scrollable_modal(stdscr, theme, "EXPORT WARNING", skip_lines)
+                            tui_modal._run_scrollable_modal(stdscr, theme, "EXPORT WARNING", skip_lines)
                         
                         format_label = csv_formats.EXPORT_FORMAT_LABELS.get(
                             selected_export_format,
@@ -3054,7 +2903,7 @@ def run() -> int:
                         if skipped:
                             state.message += f" ({len(skipped)} skipped)"
                     except Exception as e:
-                        _run_modal(stdscr, theme, "ERROR", f"Export failed: {e}")
+                        tui_modal._run_modal(stdscr, theme, "ERROR", f"Export failed: {e}")
                         state.message = "Export failed."
                 
                 stdscr.clear()
@@ -3063,7 +2912,7 @@ def run() -> int:
             # CSV Import
             if import_csv:
                 if not state.vault_unlocked or not state.storage:
-                    _run_modal(stdscr, theme, "ERROR", "Vault is locked or unavailable.")
+                    tui_modal._run_modal(stdscr, theme, "ERROR", "Vault is locked or unavailable.")
                     stdscr.clear()
                     continue
                 
@@ -3083,7 +2932,7 @@ def run() -> int:
                     csv_path = Path(file_path).expanduser()
                     
                     if not csv_path.exists():
-                        _run_modal(stdscr, theme, "ERROR", f"File not found: {csv_path}")
+                        tui_modal._run_modal(stdscr, theme, "ERROR", f"File not found: {csv_path}")
                         stdscr.clear()
                         continue
                     
@@ -3106,9 +2955,9 @@ def run() -> int:
                                     dup_lines.append(f"- {item['service']} / {item['username']}")
                             dup_lines.append("")
                             dup_lines.append("Do you want to merge (overwrite) duplicates?")
-                            _run_scrollable_modal(stdscr, theme, "DUPLICATES FOUND", dup_lines)
+                            tui_modal._run_scrollable_modal(stdscr, theme, "DUPLICATES FOUND", dup_lines)
                             
-                            merge_confirm = _run_modal(stdscr, theme, "MERGE?", "Type 'yes' to merge/overwrite:")
+                            merge_confirm = tui_modal._run_modal(stdscr, theme, "MERGE?", "Type 'yes' to merge/overwrite:")
                             if merge_confirm and merge_confirm.lower() == 'yes':
                                 merge = True
                         
@@ -3130,9 +2979,9 @@ def run() -> int:
                                 result_lines.append("Issues:")
                                 for item in duplicates:
                                     result_lines.append(f"- {item['service']} / {item['username']}: {item['reason']}")
-                            _run_scrollable_modal(stdscr, theme, "IMPORT RESULTS", result_lines)
+                            tui_modal._run_scrollable_modal(stdscr, theme, "IMPORT RESULTS", result_lines)
                         else:
-                            _run_modal(stdscr, theme, "SUCCESS", f"Imported {imported} credential(s).")
+                            tui_modal._run_modal(stdscr, theme, "SUCCESS", f"Imported {imported} credential(s).")
                         
                         format_label = csv_formats.IMPORT_FORMAT_LABELS.get(
                             selected_import_format,
@@ -3144,7 +2993,7 @@ def run() -> int:
                         state.vault_credentials = state.storage.list_credentials()
                         
                     except Exception as e:
-                        _run_modal(stdscr, theme, "ERROR", f"Import failed: {e}")
+                        tui_modal._run_modal(stdscr, theme, "ERROR", f"Import failed: {e}")
                         state.message = "Import failed."
                 
                 stdscr.clear()

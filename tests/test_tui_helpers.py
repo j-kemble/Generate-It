@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from generate_it import tui
+from generate_it import tui_modal
 from generate_it import tui_helpers
 
 
@@ -145,7 +146,7 @@ def test_save_credential_duplicate_safe_saves_when_no_duplicate(monkeypatch) -> 
     theme = object()
     stdscr = object()
 
-    monkeypatch.setattr(tui, "_run_modal", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tui_modal, "_run_modal", lambda *args, **kwargs: None)
 
     result = tui._save_credential_duplicate_safe(
         stdscr,
@@ -186,7 +187,7 @@ def test_save_credential_duplicate_safe_allows_same_service_different_username(m
     theme = object()
     stdscr = object()
 
-    monkeypatch.setattr(tui, "_run_modal", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tui_modal, "_run_modal", lambda *args, **kwargs: None)
 
     result = tui._save_credential_duplicate_safe(
         stdscr,
@@ -221,7 +222,7 @@ def test_save_credential_duplicate_safe_overwrites_on_confirmation(monkeypatch) 
     theme = object()
     stdscr = object()
 
-    monkeypatch.setattr(tui, "_run_modal", lambda *args, **kwargs: "overwrite")
+    monkeypatch.setattr(tui_modal, "_run_modal", lambda *args, **kwargs: "overwrite")
 
     result = tui._save_credential_duplicate_safe(
         stdscr,
@@ -257,7 +258,7 @@ def test_save_credential_duplicate_safe_cancels_without_overwrite(monkeypatch) -
     theme = object()
     stdscr = object()
 
-    monkeypatch.setattr(tui, "_run_modal", lambda *args, **kwargs: "cancel")
+    monkeypatch.setattr(tui_modal, "_run_modal", lambda *args, **kwargs: "cancel")
 
     result = tui._save_credential_duplicate_safe(
         stdscr,
