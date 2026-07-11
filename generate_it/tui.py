@@ -21,13 +21,8 @@ Controls (default):
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Callable
 import curses
-import datetime as _dt
-import os
 import locale
-import math
 import time
 from pathlib import Path
 import textwrap
@@ -46,8 +41,6 @@ from .tui_helpers import (
     _fuzzy_score,
     _filter_vault_credentials,
     _find_duplicate_credential,
-    _estimate_entropy_bits,
-    _strength_label,
 )
 
 APP_NAME = "Generate It"

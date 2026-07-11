@@ -29,7 +29,6 @@ class AppState:
 
     output: str = ""
     seen_passphrases: BoundedSet[str] = field(default_factory=BoundedSet)
-    seen_usernames: set[str] = field(default_factory=set)
 
     message: str = "Press Enter (or g) to generate."
     focus_index: int = 0
