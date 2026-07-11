@@ -83,19 +83,40 @@ class StorageManager:
     def __init__(self, db_path: Optional[Path] = None):
         if db_path:
             self.db_path = db_path
+            self.data_dir = db_path.parent
+            self.data_dir.mkdir(parents=True, exist_ok=True)
+            self._ensure_private_permissions(self.data_dir, 0o700)
         else:
             self.data_dir = Path(user_data_dir(APP_NAME, APP_AUTHOR))
             self.data_dir.mkdir(parents=True, exist_ok=True)
+            self._ensure_private_permissions(self.data_dir, 0o700)
             self.db_path = self.data_dir / "vault.db"
         
         self._fernet: Optional[Fernet] = None
         self._db_connection: Optional[sqlite3.Connection] = None
+
+    @staticmethod
+    def _ensure_private_permissions(path: Path, mode: int = 0o600) -> None:
+        """Set owner-only permissions on a file or directory.
+
+        On POSIX systems this enforces ``mode`` (default 0600 for files,
+        0700 for directories).  On non-POSIX systems this is a no-op.
+        Failures are logged but never raised — the database still works
+        even when the filesystem doesn't support POSIX permissions.
+        """
+        if not hasattr(os, "chmod"):
+            return
+        try:
+            os.chmod(str(path), mode)
+        except OSError:
+            _log.warning("Could not set permissions on %s", path)
 
     def _get_conn(self) -> sqlite3.Connection:
         if not self._db_connection:
             self._db_connection = sqlite3.connect(self.db_path)
             self._db_connection.row_factory = sqlite3.Row
             self._db_connection.execute("PRAGMA busy_timeout=5000")
+            self._ensure_private_permissions(self.db_path, 0o600)
         return self._db_connection
 
     def set_app_setting(self, key: str, value: str) -> None:
@@ -204,6 +225,9 @@ class StorageManager:
         cursor.execute("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", ("salt_length", str(_DEFAULT_SALT_LENGTH)))
         
         conn.commit()
+
+        # Defense in depth: ensure the file is owner-only after creation.
+        self._ensure_private_permissions(self.db_path, 0o600)
 
         # Automatically unlock after initialization
         self._fernet = fernet

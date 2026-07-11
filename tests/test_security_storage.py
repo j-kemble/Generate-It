@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import pytest
+import os
+import stat
 
 from generate_it.storage import StorageError
 
@@ -47,3 +49,63 @@ class TestInitializeRejectsWeakPasswords:
         # Pre-existing vault still unlocks
         creds = temp_storage_initialized.list_credentials()
         assert isinstance(creds, list)
+
+
+class TestVaultPermissions:
+    """Task 2.1: Vault file and directory permissions must be owner-only."""
+
+    def test_data_directory_is_0700(self, tmp_path):
+        """Custom data directory must be created with 0700 permissions."""
+        from generate_it.storage import StorageManager
+        data_dir = tmp_path / "secure_data"
+        db_path = data_dir / "vault.db"
+        # Only test on POSIX
+        if not hasattr(os, "chmod"):
+            pytest.skip("POSIX permissions not supported on this platform")
+
+        storage = StorageManager(db_path=db_path)
+        try:
+            mode = stat.S_IMODE(os.stat(data_dir).st_mode)
+            assert mode == 0o700, f"Expected 0700, got {oct(mode)}"
+        finally:
+            storage.close()
+
+    def test_database_is_0600_after_creation(self, tmp_path):
+        """Database file must be 0600 after vault initialization."""
+        if not hasattr(os, "chmod"):
+            pytest.skip("POSIX permissions not supported on this platform")
+
+        from generate_it.storage import StorageManager
+        db_path = tmp_path / "vault.db"
+        storage = StorageManager(db_path=db_path)
+        try:
+            storage.initialize_vault("a-strong-master-password")
+            mode = stat.S_IMODE(os.stat(db_path).st_mode)
+            assert mode == 0o600, f"Expected 0600, got {oct(mode)}"
+        finally:
+            storage.close()
+
+    def test_existing_overly_permissive_db_is_tightened(self, tmp_path):
+        """An existing 0644 database must be tightened to 0600 on open."""
+        if not hasattr(os, "chmod"):
+            pytest.skip("POSIX permissions not supported on this platform")
+
+        from generate_it.storage import StorageManager
+        db_path = tmp_path / "vault.db"
+        storage = StorageManager(db_path=db_path)
+        storage.initialize_vault("a-strong-master-password")
+        storage.close()
+
+        # Make it world-readable
+        os.chmod(str(db_path), 0o644)
+        mode_before = stat.S_IMODE(os.stat(db_path).st_mode)
+        assert mode_before == 0o644
+
+        # Reopen — must tighten
+        storage2 = StorageManager(db_path=db_path)
+        try:
+            storage2.unlock_vault("a-strong-master-password")
+            mode_after = stat.S_IMODE(os.stat(db_path).st_mode)
+            assert mode_after == 0o600, f"Expected 0600 after reopen, got {oct(mode_after)}"
+        finally:
+            storage2.close()
