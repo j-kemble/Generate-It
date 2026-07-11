@@ -14,14 +14,14 @@ def test_full_credential_lifecycle(tmp_path: Path) -> None:
 
     # 1. Create vault and save credentials
     storage = StorageManager(db_path=db_path)
-    storage.initialize_vault("master")
+    storage.initialize_vault("a-strong-master-password")
     storage.save_credential("GitHub", "dev", "gh-secret", note="2FA enabled")
     storage.save_credential("Gmail", "alice", "mail-secret")
     storage.close()
 
     # 2. Reopen and export
     storage = StorageManager(db_path=db_path)
-    storage.unlock_vault("master")
+    storage.unlock_vault("a-strong-master-password")
     exported, skipped = storage.export_to_csv(csv_path, export_format="generic")
     assert exported == 2
     assert skipped == []
@@ -61,7 +61,7 @@ def test_full_credential_lifecycle(tmp_path: Path) -> None:
 
     # 6. Import CSV2 into first vault with merge — only Netflix is new
     storage = StorageManager(db_path=db_path)
-    storage.unlock_vault("master")
+    storage.unlock_vault("a-strong-master-password")
     imported2, _, _ = storage.import_from_csv(csv2, merge_duplicates=True, import_format="generic")
     # imported counts all rows processed (3 = 2 merged updates + 1 new insert)
     assert imported2 == 3
@@ -69,7 +69,7 @@ def test_full_credential_lifecycle(tmp_path: Path) -> None:
 
     # Verify no duplicates were created — still exactly 3 unique credentials
     storage = StorageManager(db_path=db_path)
-    storage.unlock_vault("master")
+    storage.unlock_vault("a-strong-master-password")
     all_creds = storage.list_credentials()
     assert len(all_creds) == 3
     services = {c["service"] for c in all_creds}

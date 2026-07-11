@@ -1445,10 +1445,7 @@ def run() -> int:
                 pwd = tui_modal._run_modal(stdscr, theme, "SETUP", "Create Master Password:", is_password=True)
                 if pwd is None: # Cancelled
                     return 0
-                if len(pwd) < 4:
-                    tui_modal._run_modal(stdscr, theme, "ERROR", "Password too short (min 4 chars). Press Enter.")
-                    continue
-                
+
                 # Confirm password
                 pwd2 = tui_modal._run_modal(stdscr, theme, "SETUP", "Confirm Master Password:", is_password=True)
                 if pwd2 is None: # Cancelled

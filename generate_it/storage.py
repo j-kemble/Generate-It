@@ -43,6 +43,42 @@ class InvalidPasswordError(StorageError):
     """Raised when the provided master password is incorrect."""
     pass
 
+
+class WeakMasterPasswordError(StorageError):
+    """Raised when the master password fails the strength policy."""
+    pass
+
+
+# Common weak passwords that are unconditionally rejected (case-insensitive).
+_WEAK_PASSWORDS: frozenset[str] = frozenset({
+    "password", "12345678", "123456789012", "qwertyuiop", "masterpass",
+})
+
+_MAX_MASTER_PASSWORD_LENGTH = 1024
+
+
+def _validate_master_password(password: str) -> None:
+    """Validate a master password against the security policy.
+
+    Raises:
+        WeakMasterPasswordError: if the password is empty, too short, too long,
+            or matches a known common/weak value.
+    """
+    if not password:
+        raise WeakMasterPasswordError("Master password cannot be empty.")
+    if len(password) < 12:
+        raise WeakMasterPasswordError(
+            "Master password must be at least 12 characters (15+ recommended)."
+        )
+    if len(password) > _MAX_MASTER_PASSWORD_LENGTH:
+        raise WeakMasterPasswordError(
+            f"Master password must be at most {_MAX_MASTER_PASSWORD_LENGTH} characters."
+        )
+    if password.casefold() in _WEAK_PASSWORDS:
+        raise WeakMasterPasswordError(
+            "That password is too common and easily guessed. Please choose a stronger one."
+        )
+
 class StorageManager:
     def __init__(self, db_path: Optional[Path] = None):
         if db_path:
@@ -123,6 +159,8 @@ class StorageManager:
         """Sets up the database schema and initializes security markers."""
         if self.vault_exists():
             raise VaultAlreadyInitializedError("Vault already initialized.")
+
+        _validate_master_password(master_password)
 
         salt = os.urandom(_DEFAULT_SALT_LENGTH)
         key = self._derive_key(master_password, salt, _DEFAULT_PBKDF2_ITERATIONS)
