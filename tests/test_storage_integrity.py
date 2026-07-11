@@ -150,3 +150,16 @@ def test_list_credentials_propagates_unexpected_error(monkeypatch, tmp_path) -> 
     with pytest.raises(RuntimeError, match="unexpected"):
         storage.list_credentials()
     storage.close()
+
+
+# ── Phase 4, Task 4: bounded SQLite busy timeout ──────────────────────
+
+def test_storage_connection_uses_busy_timeout(tmp_path) -> None:
+    """New connections get a 5-second busy timeout so transient locks wait."""
+    storage = StorageManager(db_path=tmp_path / "vault.db")
+    try:
+        conn = storage._get_conn()
+        timeout = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+        assert timeout == 5_000
+    finally:
+        storage.close()

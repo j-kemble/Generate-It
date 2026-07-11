@@ -56,6 +56,7 @@ class StorageManager:
         if not self._db_connection:
             self._db_connection = sqlite3.connect(self.db_path)
             self._db_connection.row_factory = sqlite3.Row
+            self._db_connection.execute("PRAGMA busy_timeout=5000")
         return self._db_connection
 
     def set_app_setting(self, key: str, value: str) -> None:
