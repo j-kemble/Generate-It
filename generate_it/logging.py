@@ -2,11 +2,15 @@
 
 Logs go to ``<data_dir>/generate-it.log`` by default (1 MB × 3 backups).
 Never log passwords, keys, or credential contents.
+
+All log directories are created 0700 and log files 0600 so logs remain
+private regardless of the prevailing umask.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -23,6 +27,35 @@ _FORMATTER = logging.Formatter(
 )
 
 _initialised = False
+
+
+class _PrivateRotatingFileHandler(RotatingFileHandler):
+    """RotatingFileHandler that keeps rotated files owner-only (0600)."""
+
+    def doRollover(self) -> None:
+        super().doRollover()
+        # After rotation the just-rotated file sits at <base>.1 — tighten it
+        # and any pre-existing backup files in case they were created before
+        # this protection was added.
+        if hasattr(os, "chmod"):
+            for idx in range(1, self.backupCount + 1):
+                rotated = Path(self.baseFilename).with_suffix(
+                    Path(self.baseFilename).suffix + f".{idx}"
+                )
+                if rotated.exists():
+                    try:
+                        os.chmod(str(rotated), 0o600)
+                    except OSError:
+                        pass
+
+
+def _set_private(path: Path, mode: int) -> None:
+    """Set *path* to *mode* if the platform supports chmod."""
+    if hasattr(os, "chmod"):
+        try:
+            os.chmod(str(path), mode)
+        except OSError:
+            pass
 
 
 def init_logging(
@@ -42,10 +75,14 @@ def init_logging(
     path = log_path or _DEFAULT_LOG_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
 
+    # Tighten the log directory to owner-only *before* creating files.
+    _set_private(path.parent, 0o700)
+
     # Create an empty file first so RotatingFileHandler can append.
     path.touch(exist_ok=True)
+    _set_private(path, 0o600)
 
-    handler = RotatingFileHandler(
+    handler = _PrivateRotatingFileHandler(
         path, maxBytes=1_048_576, backupCount=3, encoding="utf-8", delay=True
     )
     handler.setFormatter(_FORMATTER)

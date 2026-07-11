@@ -351,12 +351,12 @@ def test_storage_logs_lifecycle_events(tmp_path) -> None:
 
     content = log_path.read_text()
     assert "vault initialized" in content
-    assert "credential saved" in content
+    assert "credential saved (id=1)" in content
     assert "vault closed" in content
-    # Never log secrets
+    # Never log secrets or identifying metadata
     assert "master-pw" not in content
-    assert "'GH'" in content  # service name is fine
-    assert "'u'" in content   # username is fine
+    assert "'GH'" not in content  # service name must NOT appear
+    assert "'u'" not in content   # username must NOT appear
 
 
 def test_storage_export_is_logged(tmp_path) -> None:

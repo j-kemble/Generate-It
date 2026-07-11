@@ -855,8 +855,9 @@ class StorageManager:
             (service, username, encrypted_password, encrypted_note, 1 if note_is_hidden else 0)
         )
         conn.commit()
-        _log.info("credential saved: service=%r username=%r", service, username)
-        return int(cursor.lastrowid or 0)
+        cred_id = int(cursor.lastrowid or 0)
+        _log.info("credential saved (id=%d)", cred_id)
+        return cred_id
 
     def _save_credential_v2(
         self, service: str, username: str, password: str, note: str, note_is_hidden: bool
@@ -874,8 +875,9 @@ class StorageManager:
             (credential_uuid, service, username, encrypted_password, encrypted_note, 1 if note_is_hidden else 0),
         )
         conn.commit()
-        _log.info("credential saved: service=%r username=%r", service, username)
-        return int(cursor.lastrowid or 0)
+        cred_id = int(cursor.lastrowid or 0)
+        _log.info("credential saved (id=%d)", cred_id)
+        return cred_id
 
     def list_credential_metadata(self) -> list[dict]:
         """Return metadata for all credentials without decrypting passwords/notes.
