@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Dict, Iterable, Mapping, Sequence, Tuple
 
 IMPORT_FORMATS: tuple[str, ...] = ("auto", "generic", "bitwarden", "apple", "nordpass")
-EXPORT_FORMATS: tuple[str, ...] = ("generic", "bitwarden", "apple", "nordpass")
+EXPORT_FORMATS: tuple[str, ...] = ("generic", "spreadsheet-safe", "bitwarden", "apple", "nordpass")
 
 IMPORT_FORMAT_LABELS: Dict[str, str] = {
     "auto": "Auto-detect",
@@ -15,6 +15,7 @@ IMPORT_FORMAT_LABELS: Dict[str, str] = {
 
 EXPORT_FORMAT_LABELS: Dict[str, str] = {
     "generic": "Generic/Browser CSV",
+    "spreadsheet-safe": "Spreadsheet-Safe CSV",
     "bitwarden": "Bitwarden",
     "apple": "Apple Passwords",
     "nordpass": "NordPass",
@@ -41,6 +42,9 @@ _EXPORT_FORMAT_ALIASES: Dict[str, str] = {
     "generic": "generic",
     "browser": "generic",
     "default": "generic",
+    "spreadsheet_safe": "spreadsheet-safe",
+    "spreadsheet": "spreadsheet-safe",
+    "safe": "spreadsheet-safe",
     "bitwarden": "bitwarden",
     "bw": "bitwarden",
     "apple": "apple",
@@ -81,6 +85,7 @@ _IMPORT_FIELD_ALIASES: Dict[str, Dict[str, Sequence[str]]] = {
 
 _EXPORT_HEADERS: Dict[str, list[str]] = {
     "generic": ["name", "url", "username", "password", "note"],
+    "spreadsheet-safe": ["name", "url", "username", "password", "note"],
     "bitwarden": [
         "folder",
         "favorite",
@@ -123,6 +128,25 @@ _EXPORT_HEADERS: Dict[str, list[str]] = {
 
 def normalize_header_name(value: str) -> str:
     return value.strip().lower().replace(" ", "_").replace("-", "_")
+
+
+_FORMULA_TRIGGERS: frozenset[str] = frozenset({"=", "+", "-", "@"})
+
+
+def _escape_formula(value: str) -> str:
+    """Prefix values that start with formula-triggering characters with a single quote.
+
+    Spreadsheet applications like Excel, LibreOffice, and Google Sheets interpret
+    cells starting with ``=``, ``+``, ``-``, or ``@`` as formulas.  Prepending a
+    single-quote character escapes the cell so it is treated as literal text.
+
+    Leading whitespace is stripped before checking for triggers, per the CSV
+    Injection Prevention OWASP guidance.
+    """
+    stripped = value.lstrip()
+    if stripped and stripped[0] in _FORMULA_TRIGGERS:
+        return "'" + value
+    return value
 
 
 def normalize_import_format(value: str) -> str:
@@ -209,6 +233,15 @@ def build_export_row(
 
     if normalized == "generic":
         return [service, "", username, password, note]
+
+    if normalized == "spreadsheet-safe":
+        return [
+            _escape_formula(service),
+            "",
+            _escape_formula(username),
+            _escape_formula(password),
+            _escape_formula(note),
+        ]
 
     if normalized == "bitwarden":
         return [

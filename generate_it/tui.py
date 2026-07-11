@@ -492,7 +492,7 @@ def _prompt_csv_format(
         normalizer = csv_formats.normalize_import_format
         default_value = "auto"
     else:
-        prompt = "Format (generic/bitwarden/apple/nordpass):"
+        prompt = "Format (generic/spreadsheet-safe/bitwarden/apple/nordpass):"
         title = "EXPORT FORMAT"
         normalizer = csv_formats.normalize_export_format
         default_value = "generic"
