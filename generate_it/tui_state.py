@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 import time
 
 from .storage import StorageManager
+from ._bounded_set import BoundedSet
 
 
 @dataclass
@@ -27,7 +28,7 @@ class AppState:
     username_add_numbers: bool = True
 
     output: str = ""
-    seen_passphrases: set[str] = field(default_factory=set)
+    seen_passphrases: BoundedSet[str] = field(default_factory=BoundedSet)
     seen_usernames: set[str] = field(default_factory=set)
 
     message: str = "Press Enter (or g) to generate."
