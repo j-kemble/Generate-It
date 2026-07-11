@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import functools
+import math
 import os
 import secrets
 import string
@@ -68,6 +69,28 @@ DEFAULT_WORDLIST = [
     "yellow",
     "zephyr",
 ]
+
+# Minimum entropy the wordlist must provide for a 4-word passphrase.
+_MIN_PASSPHRASE_ENTROPY_BITS = 50.0
+
+
+class WordlistSecurityError(ValueError):
+    """Raised when a custom wordlist is too small for secure passphrases."""
+    pass
+
+
+def _ordered_sample_entropy_bits(n: int, k: int) -> float:
+    """Entropy (bits) of selecting k items without replacement from n.
+    
+    bits = log2(n! / (n-k)!) = sum(log2(i)) for i in range(n-k+1, n+1)
+    """
+    if k > n or n <= 0 or k <= 0:
+        return 0.0
+    total = 0.0
+    for i in range(n - k + 1, n + 1):
+        total += math.log2(i)
+    return total
+
 
 # Adjectives for username generation.
 DEFAULT_ADJECTIVES = [
@@ -335,13 +358,17 @@ def load_wordlist(path: Path | None = None) -> list[str]:
     3) packaged default (generate_it/wordlist.txt)
 
     Lines starting with `#` and blank lines are ignored.
-    Falls back to a small built-in list if the file is missing or too small.
+    Custom wordlists (explicit path or env var) are validated against
+    a 50-bit entropy floor at 4 words.
     """
+
+    is_custom = path is not None
 
     if path is None:
         env_path = os.environ.get("GENERATE_IT_WORDLIST")
         if env_path:
             path = Path(env_path).expanduser()
+            is_custom = True
         else:
             path = PACKAGED_WORDLIST_PATH
 
@@ -357,8 +384,18 @@ def load_wordlist(path: Path | None = None) -> list[str]:
 
     words = _dedupe_preserve_order(words)
 
-    # If the file is empty or nearly empty, fall back to the built-in list.
-    return words if len(words) >= 10 else DEFAULT_WORDLIST
+    # Validate custom wordlists against the entropy floor.
+    if is_custom:
+        bits = _ordered_sample_entropy_bits(len(words), 4)
+        if bits < _MIN_PASSPHRASE_ENTROPY_BITS:
+            raise WordlistSecurityError(
+                f"Custom wordlist has only {len(words)} unique words, "
+                f"providing {bits:.1f} bits of entropy for a 4-word passphrase. "
+                f"Minimum required: {_MIN_PASSPHRASE_ENTROPY_BITS:.0f} bits. "
+                f"Need at least ~5,800 unique words."
+            )
+
+    return words
 
 
 def generate_character_password(

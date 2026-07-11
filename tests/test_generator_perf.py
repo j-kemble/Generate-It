@@ -76,14 +76,14 @@ def test_lru_cache_distinguishes_paths(tmp_path: Path):
     """The cache keys by path, not globally: a custom path yields different words."""
     custom = tmp_path / "wl.txt"
     custom.write_text(
-        "\n".join([f"word{n}" for n in range(20)]) + "\n", encoding="utf-8"
+        "\n".join([f"word{n}" for n in range(6000)]) + "\n", encoding="utf-8"
     )
 
     generator.load_wordlist.cache_clear()
 
     # The custom file returns its own unique words (not the built-in fallback).
     custom_words = generator.load_wordlist(custom)
-    assert custom_words == [f"word{n}" for n in range(20)]
+    assert custom_words == [f"word{n}" for n in range(6000)]
 
     # A repeat of the *same* custom path is served from the cache (hit).
     hits_after_custom = generator.load_wordlist.cache_info().hits
