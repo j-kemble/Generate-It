@@ -141,3 +141,74 @@ def test_details_modal_masks_password_by_default(monkeypatch) -> None:
     assert "my-secret-password" not in all_text, (
         f"Raw password appeared in details modal without reveal: {all_text}"
     )
+
+
+def test_lock_vault_clears_unchanged_clipboard(monkeypatch):
+    """Locking must clear the clipboard when the secret hasn't changed."""
+    state = tui.AppState()
+    state.storage = MagicMock(name="StorageManager")
+    state.vault_unlocked = True
+    state.clipboard_clear_expected = "secret-value"
+    state.clipboard_clear_due_at = float('inf')
+
+    clipboard_state = {"value": "secret-value"}
+
+    def fake_paste():
+        return clipboard_state["value"]
+
+    def fake_copy(val):
+        clipboard_state["value"] = val
+
+    monkeypatch.setattr(tui.pyperclip, "paste", fake_paste)
+    monkeypatch.setattr(tui.pyperclip, "copy", fake_copy)
+
+    tui._lock_vault(state)
+
+    assert clipboard_state["value"] == ""  # cleared
+    assert state.clipboard_clear_expected is None
+    assert state.clipboard_clear_due_at is None
+
+
+def test_lock_vault_does_not_clear_newer_clipboard(monkeypatch):
+    """Locking must NOT clear newer clipboard content placed by the user."""
+    state = tui.AppState()
+    state.storage = MagicMock(name="StorageManager")
+    state.vault_unlocked = True
+    state.clipboard_clear_expected = "secret-value"
+    state.clipboard_clear_due_at = float('inf')
+
+    clipboard_state = {"value": "user-copied-something-else"}
+
+    def fake_paste():
+        return clipboard_state["value"]
+
+    def fake_copy(val):
+        clipboard_state["value"] = val
+
+    monkeypatch.setattr(tui.pyperclip, "paste", fake_paste)
+    monkeypatch.setattr(tui.pyperclip, "copy", fake_copy)
+
+    tui._lock_vault(state)
+
+    assert clipboard_state["value"] == "user-copied-something-else"  # preserved
+    assert state.clipboard_clear_expected is None  # tracking reset
+
+
+def test_revoke_clipboard_handles_pyperclip_error(monkeypatch):
+    """Clipboard backend failure must not prevent vault lock."""
+    from pyperclip import PyperclipException
+
+    state = tui.AppState()
+    state.storage = MagicMock(name="StorageManager")
+    state.vault_unlocked = True
+    state.clipboard_clear_expected = "secret"
+    state.clipboard_clear_due_at = float('inf')
+
+    monkeypatch.setattr(tui.pyperclip, "paste", MagicMock(side_effect=PyperclipException))
+    monkeypatch.setattr(tui.pyperclip, "copy", MagicMock())
+
+    # Must not raise
+    tui._lock_vault(state)
+
+    assert not state.vault_unlocked
+    assert state.clipboard_clear_expected is None

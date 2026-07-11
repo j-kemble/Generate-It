@@ -710,7 +710,29 @@ def _maybe_auto_clear_clipboard(state: AppState, now: float | None = None) -> bo
         return False
     return True
 
+def _revoke_clipboard(state: AppState) -> None:
+    """Clear clipboard if it still contains the application's secret.
+
+    If the clipboard has been changed by the user since we copied to it,
+    we do NOT clear it — we respect newer clipboard content.
+    """
+    expected = state.clipboard_clear_expected
+    state.clipboard_clear_due_at = None
+    state.clipboard_clear_expected = None
+
+    if expected is None:
+        return
+
+    try:
+        current_clip = pyperclip.paste()
+        if current_clip == expected:
+            pyperclip.copy("")
+    except PyperclipException:
+        pass
+
+
 def _lock_vault(state: AppState) -> None:
+    _revoke_clipboard(state)
     if state.storage:
         state.storage.close()
     state.vault_unlocked = False
@@ -1526,6 +1548,7 @@ def run() -> int:
                             key=key, last_esc_at=last_esc_quit_at
                         )
                         if should_quit:
+                            _revoke_clipboard(state)
                             return 0
                         state.message = "Press Esc again to quit."
                         continue
@@ -1533,7 +1556,7 @@ def run() -> int:
                     if key in (ord("q"), ord("Q")):
                         state.message = "Press Esc twice to quit."
                     continue
-    
+
                 footer_h = 2
                 body_y = header_end
                 body_h = max(1, h - body_y - footer_h)
@@ -1646,6 +1669,7 @@ def run() -> int:
                     key=key, last_esc_at=last_esc_quit_at
                 )
                 if should_quit:
+                    _revoke_clipboard(state)
                     return 0
                 state.message = "Press Esc again to quit."
                 continue
@@ -1985,6 +2009,7 @@ def run() -> int:
                     if activate and focus_id in {"char_length", "word_count", "username_length", "username_word_count"}:
                         _generate(state, words)
 
+        _revoke_clipboard(state)
         return 0
 
     try:
