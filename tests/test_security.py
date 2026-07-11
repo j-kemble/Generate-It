@@ -188,7 +188,7 @@ class TestPassphraseEntropy:
 
         # Collect first words from many passphrases
         first_words = []
-        for _ in range(200):
+        for _ in range(300):
             pp = generator.generate_passphrase(
                 3, add_numbers=False, add_special=False, words=wordlist
             )
@@ -196,8 +196,8 @@ class TestPassphraseEntropy:
 
         # Check for diversity in word selection
         unique_words = len(set(first_words))
-        # Expect at least 30% unique words (accounting for randomness)
-        assert unique_words >= 50, (
+        # Expect at least 25% unique words (accounting for randomness)
+        assert unique_words >= 75, (
             f"Only {unique_words} unique first words out of 200, "
             f"selection may not be random enough"
         )
@@ -229,12 +229,12 @@ class TestUsernameEntropy:
 
         usernames = [
             generator.generate_username_words(2, add_numbers=False, words=wordlist)
-            for _ in range(25)
+            for _ in range(50)
         ]
 
         # Check that we're getting different word combinations
         unique_usernames = len(set(usernames))
-        assert unique_usernames >= 15, (
+        assert unique_usernames >= 25, (
             f"Only {unique_usernames} unique usernames out of 25, "
             f"selection may not be random enough"
         )
