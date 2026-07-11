@@ -20,7 +20,7 @@ import curses
 
 from . import csv_formats
 from . import tui_modal
-from .storage import StorageManager
+from .storage import StorageManager, StorageError
 from .tui_state import AppState
 
 if TYPE_CHECKING:
@@ -108,7 +108,7 @@ def export_vault_csv(
         if skipped:
             state.message += f" ({len(skipped)} skipped)"
         _log.info("exported %d credentials to %s", exported, csv_path)
-    except Exception as e:
+    except StorageError as e:
         tui_modal._run_modal(stdscr, theme, "ERROR", f"Export failed: {e}")
         state.message = "Export failed."
 
@@ -194,7 +194,7 @@ def import_vault_csv(
 
         return (imported, skipped_num, duplicates)
 
-    except Exception as e:
+    except StorageError as e:
         tui_modal._run_modal(stdscr, theme, "ERROR", f"Import failed: {e}")
         state.message = "Import failed."
         return (0, 0, [])

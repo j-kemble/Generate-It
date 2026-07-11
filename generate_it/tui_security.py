@@ -6,7 +6,7 @@ from typing import Optional
 from . import tui
 from . import tui_modal
 from .tui_state import AppState
-from .storage import StorageManager, InvalidPasswordError
+from .storage import StorageManager, InvalidPasswordError, StorageError
 
 
 def _prompt_unlock_vault(
@@ -42,7 +42,7 @@ def _prompt_unlock_vault(
             return True
         except InvalidPasswordError:
             tui_modal._run_modal(stdscr, theme, "ERROR", "Invalid master password.")
-        except Exception as e:
+        except StorageError as e:
             tui_modal._run_modal(stdscr, theme, "ERROR", f"Unlock failed: {e}")
             state.message = "Vault locked."
             return False

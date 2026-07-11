@@ -27,6 +27,7 @@ import time
 from pathlib import Path
 import textwrap
 import pyperclip
+from pyperclip import PyperclipException
 
 from . import generator
 from . import tui_files
@@ -34,7 +35,7 @@ from . import tui_modal
 from . import tui_security
 from . import csv_formats
 from . import tui_csv
-from .storage import StorageManager, InvalidPasswordError
+from .storage import StorageManager, InvalidPasswordError, StorageError
 from .tui_state import AppState
 from .tui_helpers import (
     _truncate_middle,
@@ -280,7 +281,7 @@ def _run_file_browser_modal(
 
         try:
             raw_entries = list(current_dir.iterdir())
-        except Exception:
+        except OSError:
             raw_entries = []
 
         dirs: list[Path] = []
@@ -291,7 +292,7 @@ def _run_file_browser_modal(
                     dirs.append(entry)
                 else:
                     files.append(entry)
-            except Exception:
+            except OSError:
                 continue
 
         dirs.sort(key=lambda p: p.name.lower())
@@ -633,7 +634,7 @@ def _persist_security_settings(state: AppState) -> None:
             SETTING_KEY_AUTO_LOCK_INDEX,
             str(state.auto_lock_index),
         )
-    except Exception:
+    except StorageError:
         pass
 
 def _load_security_settings(state: AppState) -> None:
@@ -658,7 +659,7 @@ def _load_security_settings(state: AppState) -> None:
             len(AUTO_LOCK_OPTIONS),
             default=0,
         )
-    except Exception:
+    except StorageError:
         state.clipboard_auto_clear_index = 0
         state.auto_lock_index = 0
 
@@ -705,7 +706,7 @@ def _maybe_auto_clear_clipboard(state: AppState, now: float | None = None) -> bo
         current_clip = pyperclip.paste()
         if expected is None or current_clip == expected:
             pyperclip.copy("")
-    except Exception:
+    except PyperclipException:
         return False
     return True
 
@@ -929,7 +930,7 @@ def _run_save_generated_flow(
         else:
             state.message = "Save cancelled."
 
-    except Exception as e:
+    except StorageError as e:
         state.message = f"Error saving: {e}"
 
 def _run_details_modal(
@@ -1036,7 +1037,7 @@ def _run_details_modal(
                 feedback_attr = theme.ok
                 feedback_until = time.monotonic() + 0.5
                 state.message = msg
-            except Exception:
+            except (StorageError, PyperclipException):
                 pass
 
         elif key in (ord('u'), ord('U')):
@@ -1046,7 +1047,7 @@ def _run_details_modal(
                 feedback_attr = theme.ok
                 feedback_until = time.monotonic() + 0.5
                 state.message = msg
-            except Exception:
+            except (StorageError, PyperclipException):
                 pass
 
         elif key in (ord('n'), ord('N')):
@@ -1057,7 +1058,7 @@ def _run_details_modal(
                     feedback_attr = theme.ok
                     feedback_until = time.monotonic() + 0.5
                     state.message = msg
-                except Exception:
+                except (StorageError, PyperclipException):
                     pass
             else:
                 feedback_text = "       NO NOTE TO COPY!      "
@@ -1081,7 +1082,7 @@ def _run_details_modal(
                         state.vault_credentials = state.storage.list_credentials()
                     credential = next((c for c in state.vault_credentials if c['id'] == cred_id), credential)
                     break
-                except Exception as e:
+                except StorageError as e:
                     feedback_text = f"     ERROR: {str(e)[:20]}    "
                     feedback_attr = theme.warn
                     feedback_until = time.monotonic() + 1.0
@@ -1347,7 +1348,7 @@ def _run_vault_modal(
                     state.vault_scroll_y = 0
 
                     tui_modal._run_modal(stdscr, theme, "SUCCESS", "Credential updated.")
-                except Exception as e:
+                except StorageError as e:
                     tui_modal._run_modal(stdscr, theme, "ERROR", f"Update failed: {e}")
         
         elif key in (ord('c'), ord('C')):
@@ -1356,7 +1357,7 @@ def _run_vault_modal(
                 try:
                     msg = tui_flow._copy_to_clipboard_with_policy(state, cred['password'])
                     tui_modal._run_modal(stdscr, theme, "SUCCESS", msg)
-                except Exception as e:
+                except (StorageError, PyperclipException) as e:
                     tui_modal._run_modal(stdscr, theme, "ERROR", f"Copy failed: {e}")
 
         elif key in (ord('u'), ord('U')):
@@ -1365,7 +1366,7 @@ def _run_vault_modal(
                 try:
                     msg = tui_flow._copy_to_clipboard_with_policy(state, cred['username'])
                     tui_modal._run_modal(stdscr, theme, "SUCCESS", msg)
-                except Exception as e:
+                except (StorageError, PyperclipException) as e:
                     tui_modal._run_modal(stdscr, theme, "ERROR", f"Copy failed: {e}")
 
         elif key in (curses.KEY_ENTER, 10, 13):
@@ -1384,7 +1385,7 @@ def _run_vault_modal(
                         refreshed_filtered = _filter_vault_credentials(state.vault_credentials, vault_filter)
                         if state.vault_selected_idx >= len(refreshed_filtered):
                             state.vault_selected_idx = max(0, len(refreshed_filtered) - 1)
-                    except Exception as e:
+                    except StorageError as e:
                         tui_modal._run_modal(stdscr, theme, "ERROR", f"Delete failed: {e}")
 
 # --- Main loop --------------------------------------------------------------
@@ -1394,7 +1395,7 @@ def run() -> int:
 
     try:
         locale.setlocale(locale.LC_ALL, "")
-    except Exception:
+    except locale.Error:
         pass
 
     def _main(stdscr: curses.window) -> int:
@@ -1414,7 +1415,7 @@ def run() -> int:
         # --- Storage Initialization ---
         try:
             state.storage = StorageManager()
-        except Exception as e:
+        except (StorageError, OSError) as e:
             # If we can't create the storage manager (e.g. permission error on folder),
             # we should display it and exit or fallback.
             # Since we are in curses, we can show a modal.
@@ -1458,7 +1459,7 @@ def run() -> int:
                         state.storage.initialize_vault(pwd)
                         state.vault_unlocked = True
                         break
-                    except Exception as e:
+                    except StorageError as e:
                         tui_modal._run_modal(stdscr, theme, "ERROR", f"Init failed: {e}. Press Enter.")
                 else:
                     tui_modal._run_modal(stdscr, theme, "ERROR", "Passwords do not match. Press Enter.")
@@ -1850,7 +1851,7 @@ def run() -> int:
                         state.message = f"Overwrote credential for {service}."
                     else:
                         state.message = "Add cancelled."
-                except Exception as e:
+                except StorageError as e:
                     tui_modal._run_modal(stdscr, theme, "ERROR", f"Add failed: {e}")
                     state.message = "Add failed."
                 stdscr.clear()

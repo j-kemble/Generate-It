@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import time
 import pyperclip
+from pyperclip import PyperclipException
 from typing import TYPE_CHECKING
 
 from . import tui
@@ -40,7 +41,7 @@ def _handle_double_esc_quit(
 def _copy_to_clipboard_with_policy(state: AppState, value: str) -> str:
     try:
         pyperclip.copy(value)
-    except Exception:
+    except PyperclipException:
         # Fallback for systems (like headless Linux) without a clipboard manager
         return "Clipboard error: Install 'xclip' or 'xsel'."
 
