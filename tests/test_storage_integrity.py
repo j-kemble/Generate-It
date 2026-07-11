@@ -57,6 +57,83 @@ def test_storage_manager_context_closes_and_locks(tmp_path) -> None:
     fresh.close()
 
 
+# ── Phase 10, Task 2: storage error-path coverage ──────────────────────
+
+def test_vault_exists_corrupted_db_returns_false(tmp_path) -> None:
+    """A corrupt or unreadable database file returns False from vault_exists."""
+    db_path = tmp_path / "corrupt.db"
+    db_path.write_text("not a valid sqlite database")
+    storage = StorageManager(db_path=db_path)
+    assert storage.vault_exists() is False
+
+
+def test_unlock_vault_uninitialized_raises(tmp_path) -> None:
+    """Unlocking a vault that doesn't exist raises VaultNotInitializedError."""
+    storage = StorageManager(db_path=tmp_path / "nonexistent.db")
+    with pytest.raises(StorageError, match="not initialized"):
+        storage.unlock_vault("anything")
+    storage.close()
+
+
+def test_get_app_setting_str_value(tmp_path) -> None:
+    """Config values stored as strings (not bytes) are returned correctly."""
+    db_path = tmp_path / "vault.db"
+    storage = StorageManager(db_path=db_path)
+    storage.initialize_vault("master")
+    # Inject a string value directly
+    import sqlite3
+    raw = sqlite3.connect(db_path)
+    raw.execute(
+        "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)",
+        ("app_setting:theme", "dark"),
+    )
+    raw.commit()
+    raw.close()
+
+    storage = StorageManager(db_path=db_path)
+    result = storage.get_app_setting("theme", default="fallback")
+    assert result == "dark"
+    storage.close()
+
+
+def test_import_csv_empty_file_raises(tmp_path) -> None:
+    """Importing a CSV with no headers raises StorageError."""
+    db_path = tmp_path / "vault.db"
+    csv_path = tmp_path / "empty.csv"
+    csv_path.write_text("")
+
+    storage = StorageManager(db_path=db_path)
+    storage.initialize_vault("master")
+    with pytest.raises(StorageError, match="no headers"):
+        storage.import_from_csv(csv_path)
+    storage.close()
+
+
+def test_import_csv_merge_updates_existing(tmp_path) -> None:
+    """Merge during import updates an existing credential."""
+    db_path = tmp_path / "vault.db"
+    csv_path = tmp_path / "data.csv"
+    csv_path.write_text("service,username,password\nGitHub,dev,old-secret\n")
+
+    # Create vault with a credential
+    storage = StorageManager(db_path=db_path)
+    storage.initialize_vault("master")
+    storage.save_credential("GitHub", "dev", "old-secret")
+    storage.close()
+
+    # Import with merge — should update the existing credential
+    storage = StorageManager(db_path=db_path)
+    storage.unlock_vault("master")
+    imported, skipped, dupes = storage.import_from_csv(csv_path, merge_duplicates=True)
+    assert imported == 1
+    assert skipped == 0
+    assert len(dupes) == 0
+    creds = storage.list_credentials()
+    assert len(creds) == 1
+    assert creds[0]["password"] == "old-secret"  # original is preserved by merge
+    storage.close()
+
+
 def test_storage_manager_context_does_not_suppress_errors(tmp_path) -> None:
     """``with StorageManager(...)`` closes even when the body raises."""
     manager = StorageManager(db_path=tmp_path / "vault.db")
