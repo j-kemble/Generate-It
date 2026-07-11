@@ -881,7 +881,7 @@ def _run_save_generated_flow(
                 theme,
                 "SAVE",
                 f"Enter Password for {final_username}:",
-                is_password=False,
+                is_password=True,
                 generator_func=_gen_pwd,
             )
         else:
