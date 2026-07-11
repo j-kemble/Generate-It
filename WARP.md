@@ -44,7 +44,7 @@ Tests cover generation invariants (`tests/test_generator.py`), storage/encryptio
 ### Storage & Security
 `generate_it/storage.py` handles the local SQLite database and encryption:
 - **Location**: Uses `platformdirs` to store `vault.db` in standard user data paths.
-- **Encryption**: Uses `cryptography.fernet`. The key is derived from the Master Password + a unique salt using **PBKDF2HMAC** (100k iterations).
+- **Encryption**: Uses `cryptography.fernet`. The key is derived from the Master Password + a unique salt using **PBKDF2HMAC** (480k iterations for new vaults; legacy vaults remain at 100k).
 - **Data**: Credentials (service, username, password, note) are stored as encrypted blobs.
 - **App settings**: non-sensitive preferences are persisted in the `config` table via keys prefixed `app_setting:`.
 

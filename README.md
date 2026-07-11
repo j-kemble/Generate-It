@@ -57,7 +57,7 @@ generate-it
 
 ### Secure Vault
 Generate It includes an encrypted local vault to store your generated credentials.
-- **Encryption**: Uses AES-256 (via `cryptography`) to secure your data locally.
+- **Encryption**: Uses Fernet (AES-128-CBC + HMAC-SHA256 via `cryptography`) to secure your data locally.
 - **Master Password**: You create a master password on first run. This key is never stored; it unlocks your vault each session.
 - **Offline**: Your data stays on your machine:
   - Linux: `~/.local/share/generate-it/`
