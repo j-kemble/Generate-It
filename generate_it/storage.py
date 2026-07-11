@@ -56,6 +56,11 @@ _WEAK_PASSWORDS: frozenset[str] = frozenset({
 
 _MAX_MASTER_PASSWORD_LENGTH = 1024
 
+# CSV import resource limits
+_MAX_CSV_FILE_BYTES = 10 * 1024 * 1024  # 10 MB
+_MAX_CSV_ROWS = 10_000
+_MAX_CSV_FIELD_BYTES = 500
+
 
 def _validate_master_password(password: str) -> None:
     """Validate a master password against the security policy.
@@ -526,85 +531,114 @@ class StorageManager:
         imported = 0
         skipped = 0
         duplicates = []
-        
-        with open(csv_path, 'r', newline='', encoding='utf-8-sig') as f:
-            reader = csv.DictReader(f)
-            
-            if not reader.fieldnames:
-                raise StorageError("CSV file has no headers.")
 
-            resolved_format = csv_formats.resolve_import_format(
-                reader.fieldnames,
-                requested_format=requested_format,
+        # Resource limit: file size
+        file_size = csv_path.stat().st_size
+        if file_size > _MAX_CSV_FILE_BYTES:
+            raise StorageError(
+                f"CSV file too large ({file_size} bytes). "
+                f"Maximum: {_MAX_CSV_FILE_BYTES} bytes."
             )
-            missing_headers = csv_formats.missing_required_headers(
-                reader.fieldnames,
-                import_format=resolved_format,
-            )
-            if missing_headers:
-                raise StorageError(f"CSV missing required columns: {', '.join(missing_headers)}")
-            for row_num, row in enumerate(reader, start=2):  # Start at 2 (header is row 1)
-                parsed, parse_issue = csv_formats.parse_import_row(
-                    row,
-                    import_format=resolved_format,
-                    row_num=row_num,
+
+        # Wrap the import in a transaction for atomicity
+        conn.execute("BEGIN")
+        try:
+            with open(csv_path, 'r', newline='', encoding='utf-8-sig') as f:
+                reader = csv.DictReader(f)
+
+                if not reader.fieldnames:
+                    raise StorageError("CSV file has no headers.")
+
+                resolved_format = csv_formats.resolve_import_format(
+                    reader.fieldnames,
+                    requested_format=requested_format,
                 )
-                
-                if parse_issue:
-                    row_service, row_username = csv_formats.extract_row_identity(
+                missing_headers = csv_formats.missing_required_headers(
+                    reader.fieldnames,
+                    import_format=resolved_format,
+                )
+                if missing_headers:
+                    raise StorageError(f"CSV missing required columns: {', '.join(missing_headers)}")
+                for row_num, row in enumerate(reader, start=2):  # Start at 2 (header is row 1)
+                    parsed, parse_issue = csv_formats.parse_import_row(
                         row,
                         import_format=resolved_format,
+                        row_num=row_num,
                     )
-                    skipped += 1
-                    duplicates.append({
-                        'service': row_service or '(unknown)',
-                        'username': row_username or '(unknown)',
-                        'reason': parse_issue,
-                    })
-                    continue
 
-                if not parsed:
-                    continue
-
-                service = parsed["service"]
-                username = parsed["username"]
-                password = parsed["password"]
-                note = parsed.get("note", "")
-                
-                # Check for duplicates
-                key = (service.lower(), username.lower())
-                if key in existing_keys:
-                    if merge_duplicates and not dry_run:
-                        # Update existing credential
-                        cred_id = existing_map[key]
-                        fernet = self._require_unlocked()
-                        encrypted_password, encrypted_note = self._encrypt_credential_fields(fernet, password, note)
-                        cursor.execute(
-                            "UPDATE credentials SET encrypted_password = ?, encrypted_note = ?, note_is_hidden = 0 WHERE id = ?",
-                            (encrypted_password, encrypted_note, cred_id)
+                    if parse_issue:
+                        row_service, row_username = csv_formats.extract_row_identity(
+                            row,
+                            import_format=resolved_format,
                         )
-                        imported += 1
-                    else:
                         skipped += 1
                         duplicates.append({
-                            'service': service,
-                            'username': username,
-                            'reason': 'Duplicate (not merged)'
+                            'service': row_service or '(unknown)',
+                            'username': row_username or '(unknown)',
+                            'reason': parse_issue,
                         })
-                else:
-                    # Insert new credential
-                    if not dry_run:
-                        fernet = self._require_unlocked()
-                        encrypted_password, encrypted_note = self._encrypt_credential_fields(fernet, password, note)
-                        cursor.execute(
-                            "INSERT INTO credentials (service, username, encrypted_password, encrypted_note, note_is_hidden) VALUES (?, ?, ?, ?, ?)",
-                            (service, username, encrypted_password, encrypted_note, 0)
-                        )
-                        existing_map[key] = cursor.lastrowid
-                    imported += 1
-                    # Add to existing keys to avoid duplicate inserts in the same import
-                    existing_keys.add(key)
-        
-        conn.commit()
+                        continue
+
+                    if not parsed:
+                        continue
+
+                    # Row limit
+                    if imported + skipped > _MAX_CSV_ROWS:
+                        raise StorageError(f"CSV exceeds maximum row count ({_MAX_CSV_ROWS}).")
+
+                    # Field length limits
+                    for field_name, value in parsed.items():
+                        if len(value.encode('utf-8')) > _MAX_CSV_FIELD_BYTES:
+                            raise StorageError(
+                                f"Field '{field_name}' in row {row_num} exceeds "
+                                f"{_MAX_CSV_FIELD_BYTES} bytes."
+                            )
+
+                    service = parsed["service"]
+                    username = parsed["username"]
+                    password = parsed["password"]
+                    note = parsed.get("note", "")
+
+                    # Check for duplicates
+                    key = (service.lower(), username.lower())
+                    if key in existing_keys:
+                        if merge_duplicates and not dry_run:
+                            # Update existing credential
+                            cred_id = existing_map[key]
+                            fernet = self._require_unlocked()
+                            encrypted_password, encrypted_note = self._encrypt_credential_fields(fernet, password, note)
+                            cursor.execute(
+                                "UPDATE credentials SET encrypted_password = ?, encrypted_note = ?, note_is_hidden = 0 WHERE id = ?",
+                                (encrypted_password, encrypted_note, cred_id)
+                            )
+                            imported += 1
+                        else:
+                            skipped += 1
+                            duplicates.append({
+                                'service': service,
+                                'username': username,
+                                'reason': 'Duplicate (not merged)'
+                            })
+                    else:
+                        # Insert new credential
+                        if not dry_run:
+                            fernet = self._require_unlocked()
+                            encrypted_password, encrypted_note = self._encrypt_credential_fields(fernet, password, note)
+                            cursor.execute(
+                                "INSERT INTO credentials (service, username, encrypted_password, encrypted_note, note_is_hidden) VALUES (?, ?, ?, ?, ?)",
+                                (service, username, encrypted_password, encrypted_note, 0)
+                            )
+                            existing_map[key] = cursor.lastrowid
+                        imported += 1
+                        # Add to existing keys to avoid duplicate inserts in the same import
+                        existing_keys.add(key)
+
+            if not dry_run:
+                conn.commit()
+        except BaseException:
+            if not dry_run:
+                conn.rollback()
+            raise
+
         _log.info("imported %d credentials from %s", imported, csv_path)
         return imported, skipped, duplicates

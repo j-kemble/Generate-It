@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
 
 from generate_it import generator
+from generate_it.storage import StorageError, StorageManager
 
 
 def test_cwd_wordlist_is_ignored(
@@ -97,3 +99,70 @@ def test_packaged_list_meets_threshold() -> None:
     # (the entropy check only applies to custom wordlists),
     # but we verify it's at least a reasonable size.
     assert bits >= 39.0, f"Packaged list only provides {bits:.1f} bits at 4 words"
+
+
+def test_import_rejects_oversized_file(tmp_path: Path) -> None:
+    """Files exceeding the size limit must be rejected."""
+    db_path = tmp_path / "vault.db"
+    csv_path = tmp_path / "big.csv"
+    # Create a CSV larger than 10 MB
+    with open(csv_path, 'wb') as f:
+        f.write(b"name,username,password\n")
+        # Write enough rows to exceed 10 MB
+        row = b"service,user,pass123456\n"
+        target = 11 * 1024 * 1024
+        written = len(b"name,username,password\n")
+        while written < target:
+            f.write(row)
+            written += len(row)
+
+    storage = StorageManager(db_path=db_path)
+    try:
+        storage.initialize_vault("a-strong-master-password")
+        with pytest.raises(StorageError, match="too large"):
+            storage.import_from_csv(csv_path)
+    finally:
+        storage.close()
+
+
+def test_import_rejects_oversized_fields(tmp_path: Path) -> None:
+    """Fields exceeding the byte limit must be rejected."""
+    db_path = tmp_path / "vault.db"
+    csv_path = tmp_path / "long.csv"
+    long_field = "x" * 600  # > 500 bytes
+    csv_path.write_text(
+        f"name,username,password\nservice,user,{long_field}\n",
+        encoding="utf-8",
+    )
+
+    storage = StorageManager(db_path=db_path)
+    try:
+        storage.initialize_vault("a-strong-master-password")
+        with pytest.raises(StorageError, match="exceeds"):
+            storage.import_from_csv(csv_path)
+    finally:
+        storage.close()
+
+
+def test_import_rolls_back_on_failure(tmp_path: Path) -> None:
+    """A failed import must not leave partial writes."""
+    db_path = tmp_path / "vault.db"
+    csv_path = tmp_path / "bad.csv"
+    # First row is valid, second has an oversized field to trigger failure
+    long_field = "x" * 600
+    csv_path.write_text(
+        f"name,username,password\nGitHub,dev,validpass\nBadSvc,baduser,{long_field}\n",
+        encoding="utf-8",
+    )
+
+    storage = StorageManager(db_path=db_path)
+    try:
+        storage.initialize_vault("a-strong-master-password")
+        with pytest.raises(StorageError):
+            storage.import_from_csv(csv_path)
+
+        # Verify no rows were committed
+        creds = storage.list_credentials()
+        assert len(creds) == 0, f"Partial import left {len(creds)} rows"
+    finally:
+        storage.close()
