@@ -3,7 +3,7 @@ import sqlite3
 import base64
 import csv
 from pathlib import Path
-from typing import List, Optional, Dict, Tuple
+from typing import List, Literal, Optional, Dict, Tuple
 
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
@@ -222,6 +222,13 @@ class StorageManager:
             self._db_connection.close()
             self._db_connection = None
         self._fernet = None
+
+    def __enter__(self) -> "StorageManager":
+        return self
+
+    def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> Literal[False]:
+        self.close()
+        return False
 
     def _require_unlocked(self) -> Fernet:
         if self._fernet is None:
