@@ -169,3 +169,125 @@ class TestExportSecurity:
                 storage.export_to_csv(dir_path)
         finally:
             storage.close()
+
+
+class TestKdfValidation:
+    """Task 4.2: Malformed KDF parameters must be rejected, not silently ignored."""
+
+    def test_absent_kdf_params_use_legacy(self, tmp_path):
+        """Vaults without persisted params unlock with legacy defaults."""
+        from generate_it.storage import StorageManager
+        import sqlite3
+        import os
+        db_path = tmp_path / "vault.db"
+        storage = StorageManager(db_path=db_path)
+
+        # Build a vault whose verification token was actually derived at
+        # legacy 100k, then manually delete the pbkdf2_iterations row to
+        # simulate the stored form of a real pre-persistence vault.
+        password = "legacy-vault-without-params"
+        salt = os.urandom(32)
+        key = storage._derive_key(password, salt, 100_000)
+        fernet = __import__("cryptography.fernet", fromlist=["Fernet"]).Fernet(key)
+        verification = fernet.encrypt(b"VERIFICATION_TOKEN")
+
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("CREATE TABLE config (key TEXT PRIMARY KEY, value BLOB)")
+        conn.execute("INSERT INTO config (key, value) VALUES (?, ?)", ("salt", salt))
+        conn.execute("INSERT INTO config (key, value) VALUES (?, ?)", ("verification", verification))
+        conn.commit()
+        conn.close()
+
+        storage.close()
+
+        # pbkdf2_iterations is absent -> falls back to legacy 100_000.
+        storage2 = StorageManager(db_path=db_path)
+        try:
+            storage2.unlock_vault(password)
+            assert storage2._fernet is not None
+        finally:
+            storage2.close()
+
+    def test_zero_iterations_rejected(self, tmp_path):
+        """Zero iterations must be rejected as corruption."""
+        from generate_it.storage import StorageManager, StorageError
+        import sqlite3
+        db_path = tmp_path / "vault.db"
+        storage = StorageManager(db_path=db_path)
+        storage.initialize_vault("a-strong-master-password")
+        storage.close()
+
+        raw = sqlite3.connect(db_path)
+        raw.execute("UPDATE config SET value='0' WHERE key='pbkdf2_iterations'")
+        raw.commit()
+        raw.close()
+
+        storage2 = StorageManager(db_path=db_path)
+        try:
+            with pytest.raises(StorageError, match="pbkdf2"):
+                storage2.unlock_vault("a-strong-master-password")
+        finally:
+            storage2.close()
+
+    def test_negative_iterations_rejected(self, tmp_path):
+        """Negative iterations must be rejected."""
+        from generate_it.storage import StorageManager, StorageError
+        import sqlite3
+        db_path = tmp_path / "vault.db"
+        storage = StorageManager(db_path=db_path)
+        storage.initialize_vault("a-strong-master-password")
+        storage.close()
+
+        raw = sqlite3.connect(db_path)
+        raw.execute("UPDATE config SET value='-100' WHERE key='pbkdf2_iterations'")
+        raw.commit()
+        raw.close()
+
+        storage2 = StorageManager(db_path=db_path)
+        try:
+            with pytest.raises(StorageError, match="pbkdf2"):
+                storage2.unlock_vault("a-strong-master-password")
+        finally:
+            storage2.close()
+
+    def test_malformed_iterations_rejected(self, tmp_path):
+        """Malformed iteration values must raise StorageError."""
+        from generate_it.storage import StorageManager, StorageError
+        import sqlite3
+        db_path = tmp_path / "vault.db"
+        storage = StorageManager(db_path=db_path)
+        storage.initialize_vault("a-strong-master-password")
+        storage.close()
+
+        raw = sqlite3.connect(db_path)
+        raw.execute("UPDATE config SET value='not_a_number' WHERE key='pbkdf2_iterations'")
+        raw.commit()
+        raw.close()
+
+        storage2 = StorageManager(db_path=db_path)
+        try:
+            with pytest.raises(StorageError, match="malformed"):
+                storage2.unlock_vault("a-strong-master-password")
+        finally:
+            storage2.close()
+
+    def test_excessive_iterations_rejected(self, tmp_path):
+        """Excessive iteration count must be rejected."""
+        from generate_it.storage import StorageManager, StorageError
+        import sqlite3
+        db_path = tmp_path / "vault.db"
+        storage = StorageManager(db_path=db_path)
+        storage.initialize_vault("a-strong-master-password")
+        storage.close()
+
+        raw = sqlite3.connect(db_path)
+        raw.execute("UPDATE config SET value='50000000' WHERE key='pbkdf2_iterations'")
+        raw.commit()
+        raw.close()
+
+        storage2 = StorageManager(db_path=db_path)
+        try:
+            with pytest.raises(StorageError, match="exceed"):
+                storage2.unlock_vault("a-strong-master-password")
+        finally:
+            storage2.close()

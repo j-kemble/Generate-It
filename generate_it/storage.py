@@ -156,23 +156,32 @@ class StorageManager:
             return default
         return str(value)
 
-    def _read_int_config(self, cursor: sqlite3.Cursor, key: str, default: int) -> int:
-        """Read an integer-valued config entry, falling back to `default` if absent."""
+    def _read_optional_int_config(self, cursor: sqlite3.Cursor, key: str) -> Optional[int]:
+        """Read an integer config value, returning None if absent.
+
+        Raises StorageError when the value is present but malformed, so callers
+        can distinguish "genuinely absent → use legacy default" from "present
+        but corrupt → refuse to proceed".
+        """
+        cursor.execute("SELECT value FROM config WHERE key=?", (key,))
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        raw = row["value"]
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
         try:
-            cursor.execute("SELECT value FROM config WHERE key=?", (key,))
-            row = cursor.fetchone()
-            if row is None:
-                return default
-            raw = row["value"]
-            if isinstance(raw, bytes):
-                raw = raw.decode("utf-8")
             return int(str(raw))
-        except (sqlite3.OperationalError, TypeError, ValueError):
-            return default
+        except (TypeError, ValueError):
+            raise StorageError(f"Config key '{key}' has malformed value: {raw!r}")
 
     def _derive_key(self, password: str, salt: bytes, iterations: Optional[int] = None) -> bytes:
         """Derives a url-safe base64-encoded key from the password and salt."""
         iters = iterations if iterations is not None else _DEFAULT_PBKDF2_ITERATIONS
+        if iters < 1:
+            raise StorageError(f"Invalid iterations: {iters}. Value must be >= 1.")
+        if iters > 10_000_000:
+            raise StorageError(f"Iterations too high: {iters}. Maximum is 10,000,000.")
         kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(),
             length=32,
@@ -271,7 +280,15 @@ class StorageManager:
         # Read the iteration count persisted for this vault. Fall back to the
         # legacy default (100k) for vaults created before this value was stored,
         # so existing vaults keep unlocking.
-        stored_iters = self._read_int_config(cursor, "pbkdf2_iterations", _LEGACY_PBKDF2_ITERATIONS)
+        stored_iters_raw = self._read_optional_int_config(cursor, "pbkdf2_iterations")
+        if stored_iters_raw is None:
+            stored_iters = _LEGACY_PBKDF2_ITERATIONS  # genuinely absent → legacy
+        else:
+            if stored_iters_raw < 1:
+                raise StorageError(f"Invalid pbkdf2_iterations: {stored_iters_raw}. Value must be >= 1.")
+            if stored_iters_raw > 10_000_000:
+                raise StorageError(f"pbkdf2_iterations {stored_iters_raw} exceeds maximum (10,000,000).")
+            stored_iters = stored_iters_raw
 
         key = self._derive_key(master_password, salt, stored_iters)
         fernet = Fernet(key)
