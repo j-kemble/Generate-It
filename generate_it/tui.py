@@ -950,6 +950,7 @@ def _run_details_modal(
     feedback_text = ""
     feedback_attr = theme.dim
     feedback_until = 0.0
+    password_revealed = False
     
     while True:
         if _maybe_auto_clear_clipboard(state):
@@ -995,7 +996,11 @@ def _run_details_modal(
                 row += 1
         
         win.addstr(row, 2, "Password:", label_attr)
-        win.addstr(row, 12, credential['password'][:box_w-14], val_attr)
+        if password_revealed:
+            win.addstr(row, 12, credential['password'][:box_w-14], val_attr)
+        else:
+            masked = "*" * min(len(credential['password']), 20)
+            win.addstr(row, 12, masked[:box_w-14], val_attr)
         row += 2
         
         win.addstr(row, 2, "Created:", label_attr)
@@ -1005,6 +1010,7 @@ def _run_details_modal(
         line1 = "c: Copy Pass  u: Copy User"
         if note_text:
             line1 += "  n: Copy Note"
+        line1 += "  r: Hide" if password_revealed else "  r: Reveal"
         
         line2_parts = []
         if note_text:
@@ -1029,6 +1035,9 @@ def _run_details_modal(
         
         if key in (27, ord('q'), ord('Q')): # Esc/q
             return
+            
+        elif key in (ord('r'), ord('R')):
+            password_revealed = not password_revealed
             
         elif key in (ord('c'), ord('C')):
             try:

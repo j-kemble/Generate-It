@@ -679,7 +679,7 @@ def _render_vault_box(
     list_y = y + 1
     
     # Headers
-    headers = f"{'Service':<20} {'Username':<20} {'Password'}"
+    headers = f"{'Service':<20} {'Username':<20}"
     _addstr_safe(stdscr, list_y, list_x, headers[:inner_w], theme.dim | curses.A_UNDERLINE)
     list_y += 1
     inner_h -= 1
@@ -710,12 +710,8 @@ def _render_vault_box(
         # Format row
         s_serv = cred['service']
         s_user = cred['username']
-        # Mask password partially for display safety? Or just show it? 
-        # Usually password managers hide it until requested, but here we can just show it 
-        # or maybe mask it. Let's show it for now as per requirements "list and retrieve".
-        s_pass = cred['password']
         
-        row_str = f"{s_serv:<20} {s_user:<20} {s_pass}"
+        row_str = f"{s_serv:<20} {s_user:<20}"
         _addstr_safe(stdscr, list_y + (i - start_idx), list_x, row_str[:inner_w], attr)
 
     # Scrollbar hint if needed
