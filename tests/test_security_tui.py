@@ -228,3 +228,56 @@ def test_fresh_state_defaults_to_secure_auto_lock():
     assert state.auto_lock_index == 2  # 5 minutes
     setting = tui._auto_lock_setting(state)
     assert setting == 300  # 5 * 60
+
+
+# --- Terminal text sanitization ---------------------------------------------
+
+def test_sanitize_replaces_control_characters():
+    """C0/C1 controls must be replaced with visible escaped forms."""
+    # Newline, tab, carriage return, ESC, backspace
+    dirty = "hello\nworld\ttab\rCR\x1bESC\x08BS"
+    clean = tui_render._sanitize_terminal_text(dirty)
+    assert "\n" not in clean
+    assert "\t" not in clean
+    assert "\r" not in clean
+    assert "\x1b" not in clean
+    assert "\x08" not in clean
+    # Should contain visible representations
+    assert "\\n" in clean
+    assert "\\t" in clean
+    assert "\\e" in clean
+
+
+def test_sanitize_replaces_c1_controls():
+    """C1 controls (0x80-0x9F) must be replaced with \\xNN form."""
+    dirty = "test\x80\x9fend"
+    clean = tui_render._sanitize_terminal_text(dirty)
+    assert "\x80" not in clean
+    assert "\x9f" not in clean
+    assert "\\x80" in clean
+    assert "\\x9f" in clean
+
+
+def test_sanitize_preserves_printable_unicode():
+    """Ordinary text including non-ASCII must remain readable."""
+    text = "café résumé 日本語"
+    clean = tui_render._sanitize_terminal_text(text)
+    assert clean == text
+
+
+def test_sanitize_applied_in_addstr_safe():
+    """_addstr_safe must sanitize before passing to curses."""
+    fake_stdscr = MagicMock(name="stdscr")
+    fake_stdscr.getmaxyx.return_value = (40, 120)
+    # Call _addstr_safe with control characters
+    tui_render._addstr_safe(fake_stdscr, 0, 0, "hello\nworld")
+    # Verify addstr was called with sanitized text
+    call_text = fake_stdscr.addstr.call_args[0][2]
+    assert "\n" not in call_text
+    assert "\\n" in call_text
+
+
+def test_sanitize_handles_empty_and_ascii():
+    """Empty string and clean ASCII should pass through unchanged."""
+    assert tui_render._sanitize_terminal_text("") == ""
+    assert tui_render._sanitize_terminal_text("hello world") == "hello world"

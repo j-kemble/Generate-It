@@ -996,11 +996,11 @@ def _run_details_modal(
         val_attr = curses.A_BOLD
         
         win.addstr(row, 2, "Service:", label_attr)
-        win.addstr(row, 12, credential['service'][:box_w-14], val_attr)
+        win.addstr(row, 12, R._sanitize_terminal_text(credential['service'][:box_w-14]), val_attr)
         row += 2
-        
+
         win.addstr(row, 2, "Username:", label_attr)
-        win.addstr(row, 12, credential['username'][:box_w-14], val_attr)
+        win.addstr(row, 12, R._sanitize_terminal_text(credential['username'][:box_w-14]), val_attr)
         row += 2
         
         # Note
@@ -1014,19 +1014,19 @@ def _run_details_modal(
             import textwrap
             wrapped_note = textwrap.wrap(display_note, width=box_w-14)
             for line in wrapped_note:
-                win.addstr(row, 2, line[:box_w-14], val_attr)
+                win.addstr(row, 2, R._sanitize_terminal_text(line[:box_w-14]), val_attr)
                 row += 1
-        
+
         win.addstr(row, 2, "Password:", label_attr)
         if password_revealed:
-            win.addstr(row, 12, credential['password'][:box_w-14], val_attr)
+            win.addstr(row, 12, R._sanitize_terminal_text(credential['password'][:box_w-14]), val_attr)
         else:
             masked = "*" * min(len(credential['password']), 20)
             win.addstr(row, 12, masked[:box_w-14], val_attr)
         row += 2
         
         win.addstr(row, 2, "Created:", label_attr)
-        win.addstr(row, 12, str(credential['created_at'])[:box_w-14])
+        win.addstr(row, 12, R._sanitize_terminal_text(str(credential['created_at'])[:box_w-14]))
         
         # Footer - stacked on two lines for better readability
         line1 = "c: Copy Pass  u: Copy User"
@@ -1239,7 +1239,7 @@ def _run_vault_modal(
                 
                 line = f"{s_serv:<20} {s_user:<20}"
                 try:
-                    win.addstr(list_y + (i - start), 2, line[:inner_w], attr)
+                    win.addstr(list_y + (i - start), 2, R._sanitize_terminal_text(line[:inner_w]), attr)
                 except curses.error:
                     pass
 
