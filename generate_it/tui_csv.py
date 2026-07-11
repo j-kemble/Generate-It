@@ -12,6 +12,10 @@ import datetime as _dt
 from pathlib import Path
 from typing import TYPE_CHECKING, Tuple
 
+from .logging import get_logger
+
+_log = get_logger("tui")
+
 import curses
 
 from . import csv_formats
@@ -103,6 +107,7 @@ def export_vault_csv(
         state.message = f"Exported {exported} credential(s) as {format_label} to {csv_path}."
         if skipped:
             state.message += f" ({len(skipped)} skipped)"
+        _log.info("exported %d credentials to %s", exported, csv_path)
     except Exception as e:
         tui_modal._run_modal(stdscr, theme, "ERROR", f"Export failed: {e}")
         state.message = "Export failed."
@@ -182,6 +187,7 @@ def import_vault_csv(
             import_format,
         )
         state.message = f"Imported {imported} credential(s) via {format_label}. ({skipped_num} skipped)"
+        _log.info("imported %d credentials from %s", imported, csv_path)
 
         # Refresh vault list
         state.vault_credentials = storage.list_credentials()
