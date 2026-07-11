@@ -247,3 +247,64 @@ def test_get_app_setting_propagates_unexpected_error(monkeypatch, tmp_path) -> N
     with pytest.raises(RuntimeError, match="disk failure"):
         storage.get_app_setting("theme", default="fallback")
     storage.close()
+
+
+# ── Phase 7, Task 2: logging wired into StorageManager ────────────────
+
+def test_storage_logs_lifecycle_events(tmp_path) -> None:
+    """Vault lifecycle events are logged without leaking secrets."""
+    import logging
+    from generate_it.logging import init_logging, _reset_logging
+
+    _reset_logging()
+    log_path = tmp_path / "test.log"
+    init_logging(log_path=log_path, level=logging.INFO)
+
+    db_path = tmp_path / "vault.db"
+    storage = StorageManager(db_path=db_path)
+    storage.initialize_vault("master-pw")
+    storage.save_credential("GH", "u", "p")
+    storage.close()
+
+    root = logging.getLogger()
+    for h in root.handlers[:]:
+        h.flush()
+        h.close()
+        root.removeHandler(h)
+
+    content = log_path.read_text()
+    assert "vault initialized" in content
+    assert "credential saved" in content
+    assert "vault closed" in content
+    # Never log secrets
+    assert "master-pw" not in content
+    assert "'GH'" in content  # service name is fine
+    assert "'u'" in content   # username is fine
+
+
+def test_storage_export_is_logged(tmp_path) -> None:
+    """CSV export summary is logged."""
+    import logging
+    from generate_it.logging import init_logging, _reset_logging
+
+    _reset_logging()
+    log_path = tmp_path / "test.log"
+    init_logging(log_path=log_path, level=logging.INFO)
+
+    db_path = tmp_path / "vault.db"
+    csv_path = tmp_path / "out.csv"
+
+    storage = StorageManager(db_path=db_path)
+    storage.initialize_vault("master")
+    storage.save_credential("GH", "u", "p")
+    storage.export_to_csv(csv_path)
+
+    root = logging.getLogger()
+    for h in root.handlers[:]:
+        h.flush()
+        h.close()
+        root.removeHandler(h)
+
+    content = log_path.read_text()
+    assert "exported 1" in content
+    storage.close()

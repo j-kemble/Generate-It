@@ -10,6 +10,9 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from platformdirs import user_data_dir
 from . import csv_formats
+from .logging import get_logger
+
+_log = get_logger("storage")
 
 APP_NAME = "generate-it"
 APP_AUTHOR = "j-kemble"
@@ -163,9 +166,10 @@ class StorageManager:
         cursor.execute("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", ("salt_length", str(_DEFAULT_SALT_LENGTH)))
         
         conn.commit()
-        
+
         # Automatically unlock after initialization
         self._fernet = fernet
+        _log.info("vault initialized at %s", self.db_path)
 
     def vault_exists(self) -> bool:
         if not self.db_path.exists():
@@ -213,14 +217,16 @@ class StorageManager:
             raise InvalidPasswordError("Invalid master password.")
         except sqlite3.Error as e:
             raise StorageError(f"Failed to decrypt vault verification: {e}") from e
-        
+
         self._fernet = fernet
+        _log.info("vault unlocked")
 
     def close(self):
         if self._db_connection:
             self._db_connection.close()
             self._db_connection = None
         self._fernet = None
+        _log.info("vault closed")
 
     def __enter__(self) -> "StorageManager":
         return self
@@ -275,6 +281,7 @@ class StorageManager:
             (service, username, encrypted_password, encrypted_note, 1 if note_is_hidden else 0)
         )
         conn.commit()
+        _log.info("credential saved: service=%r username=%r", service, username)
         return int(cursor.lastrowid or 0)
 
     def list_credentials(self) -> List[dict]:
@@ -319,6 +326,7 @@ class StorageManager:
         cursor = conn.cursor()
         cursor.execute("DELETE FROM credentials WHERE id = ?", (credential_id,))
         conn.commit()
+        _log.info("credential deleted: id=%d", credential_id)
 
     def update_credential(self, credential_id: int, service: str, username: str, password: str, note: str = "", note_is_hidden: bool = False) -> None:
         """Update an existing credential by id."""
@@ -335,6 +343,7 @@ class StorageManager:
         if cursor.rowcount == 0:
             raise StorageError(f"Credential with id {credential_id} not found.")
         conn.commit()
+        _log.info("credential updated: id=%d", credential_id)
 
     def export_to_csv(
         self,
@@ -383,7 +392,8 @@ class StorageManager:
                         'username': row["username"],
                         'error': "Unable to decrypt credential"
                     })
-        
+
+        _log.info("exported %d credentials to %s", exported, csv_path)
         return exported, skipped
 
     def import_from_csv(
@@ -509,4 +519,5 @@ class StorageManager:
                     existing_keys.add(key)
         
         conn.commit()
+        _log.info("imported %d credentials from %s", imported, csv_path)
         return imported, skipped, duplicates
