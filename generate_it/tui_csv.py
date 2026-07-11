@@ -81,6 +81,17 @@ def export_vault_csv(
         state.message = "Export cancelled."
         return
 
+    # Warn that the export will be plaintext.
+    warn_confirm = tui_modal._run_modal(
+        stdscr, theme, "SECURITY WARNING",
+        "CSV exports are plaintext and NOT encrypted.\n"
+        "Anyone with filesystem access can read them.\n"
+        "Type 'yes' to confirm:"
+    )
+    if not warn_confirm or warn_confirm.lower() != 'yes':
+        state.message = "Export cancelled."
+        return
+
     # Check if file exists and confirm overwrite
     if csv_path.exists():
         confirm = tui_modal._run_modal(stdscr, theme, "CONFIRM", f"File exists. Overwrite? (type 'yes'):")

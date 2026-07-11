@@ -109,3 +109,63 @@ class TestVaultPermissions:
             assert mode_after == 0o600, f"Expected 0600 after reopen, got {oct(mode_after)}"
         finally:
             storage2.close()
+
+
+class TestExportSecurity:
+    """Task 2.2: Export operations must be atomic and private."""
+
+    def test_new_export_is_0600(self, tmp_path):
+        """New exports must be created with 0600 permissions."""
+        if not hasattr(os, "chmod"):
+            pytest.skip("POSIX permissions not supported on this platform")
+
+        from generate_it.storage import StorageManager
+        db_path = tmp_path / "vault.db"
+        csv_path = tmp_path / "export.csv"
+
+        storage = StorageManager(db_path=db_path)
+        try:
+            storage.initialize_vault("a-strong-master-password")
+            storage.save_credential("GitHub", "dev", "secret123456")
+            exported, skipped = storage.export_to_csv(csv_path)
+            assert exported == 1
+            assert skipped == []
+
+            mode = stat.S_IMODE(os.stat(csv_path).st_mode)
+            assert mode == 0o600, f"Export permissions: expected 0600, got {oct(mode)}"
+        finally:
+            storage.close()
+
+    def test_export_rejects_symlink(self, tmp_path):
+        """Export must reject symlink targets."""
+        from generate_it.storage import StorageManager, StorageError
+        db_path = tmp_path / "vault.db"
+        real_csv = tmp_path / "real.csv"
+        symlink_csv = tmp_path / "link.csv"
+        real_csv.write_text("")  # Create the real file
+        symlink_csv.symlink_to(real_csv)
+
+        storage = StorageManager(db_path=db_path)
+        try:
+            storage.initialize_vault("a-strong-master-password")
+            storage.save_credential("GitHub", "dev", "secret123456")
+            with pytest.raises(StorageError, match="symlink"):
+                storage.export_to_csv(symlink_csv)
+        finally:
+            storage.close()
+
+    def test_export_rejects_non_regular_file(self, tmp_path):
+        """Export must reject non-regular file targets like directories."""
+        from generate_it.storage import StorageManager, StorageError
+        db_path = tmp_path / "vault.db"
+        dir_path = tmp_path / "adir"
+        dir_path.mkdir()
+
+        storage = StorageManager(db_path=db_path)
+        try:
+            storage.initialize_vault("a-strong-master-password")
+            storage.save_credential("GitHub", "dev", "secret123456")
+            with pytest.raises(StorageError, match="regular file"):
+                storage.export_to_csv(dir_path)
+        finally:
+            storage.close()

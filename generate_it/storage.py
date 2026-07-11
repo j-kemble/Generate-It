@@ -424,36 +424,61 @@ class StorageManager:
         except ValueError as e:
             raise StorageError(str(e))
 
+        # Reject symlink and non-regular-file targets for security.
+        if csv_path.exists():
+            if csv_path.is_symlink():
+                raise StorageError("Export path is a symlink — refused for security.")
+            if not csv_path.is_file():
+                raise StorageError("Export path exists but is not a regular file.")
+
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute("SELECT id, service, username, encrypted_password, encrypted_note, created_at FROM credentials ORDER BY service")
-        
+
         exported = 0
         skipped = []
 
-        with open(csv_path, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f)
-            writer.writerow(csv_formats.get_export_headers(normalized_format))
-            
-            for row in cursor.fetchall():
-                try:
-                    password, _note = self._decrypt_credential_fields(row, fernet)
-                    writer.writerow(
-                        csv_formats.build_export_row(
-                            normalized_format,
-                            service=row["service"],
-                            username=row["username"],
-                            password=password,
-                            note=_note,
+        # Write to a private temporary file, then atomically replace.
+        tmp_path = csv_path.with_suffix(".tmp" + csv_path.suffix)
+        try:
+            with open(tmp_path, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                writer.writerow(csv_formats.get_export_headers(normalized_format))
+
+                for row in cursor.fetchall():
+                    try:
+                        password, _note = self._decrypt_credential_fields(row, fernet)
+                        writer.writerow(
+                            csv_formats.build_export_row(
+                                normalized_format,
+                                service=row["service"],
+                                username=row["username"],
+                                password=password,
+                                note=_note,
+                            )
                         )
-                    )
-                    exported += 1
-                except (InvalidToken, UnicodeDecodeError):
-                    skipped.append({
-                        'service': row["service"],
-                        'username': row["username"],
-                        'error': "Unable to decrypt credential"
-                    })
+                        exported += 1
+                    except (InvalidToken, UnicodeDecodeError):
+                        skipped.append({
+                            'service': row["service"],
+                            'username': row["username"],
+                            'error': "Unable to decrypt credential"
+                        })
+
+            # Enforce owner-only permissions on the temp file.
+            if hasattr(os, "chmod"):
+                os.chmod(str(tmp_path), 0o600)
+
+            # Atomic replacement.
+            tmp_path.replace(csv_path)
+        except BaseException:
+            # Clean up temp file on any failure.
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
+            raise
 
         _log.info("exported %d credentials to %s", exported, csv_path)
         return exported, skipped
