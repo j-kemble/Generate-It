@@ -131,6 +131,10 @@ When you generate a credential you will:
   - During export, unsupported provider fields (folder, notes, TOTP, cards, custom fields, etc.) are emitted as empty/default values.
   - During import, unsupported/non-credential rows are ignored with a reason.
 
+> **⚠️ Security:** CSV exports are plaintext — they are not encrypted and anyone with filesystem access can read them.
+> Do not open raw credential exports in spreadsheet software, as malicious values starting with `=`, `+`, `-`, or `@`
+> may be interpreted as formulas. Use a text editor to inspect exported files.
+
 ## How it works
 
 ### Random passwords (characters)
