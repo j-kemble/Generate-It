@@ -838,3 +838,189 @@ class TestVaultV2EdgeCases:
         with pytest.raises(StorageError, match="Unsupported vault format version"):
             storage2.unlock_vault("a-strong-master-password")
         storage2.close()
+
+
+# ---------------------------------------------------------------------------
+# Task 10: Config validation tests
+# ---------------------------------------------------------------------------
+
+
+class TestValidateKdfConfig:
+    """Pre-crypto KDF config validation."""
+
+    def _valid_args(self):
+        from generate_it._crypto_v2 import KDF_ARGON2ID, DEFAULT_ARGON2_MEMORY, DEFAULT_ARGON2_TIME, DEFAULT_ARGON2_PARALLELISM, SALT_LEN
+        import os
+        return (KDF_ARGON2ID, DEFAULT_ARGON2_MEMORY, DEFAULT_ARGON2_TIME, DEFAULT_ARGON2_PARALLELISM, os.urandom(SALT_LEN))
+
+    def test_valid_config_passes(self) -> None:
+        from generate_it._crypto_v2 import _validate_kdf_config
+        _validate_kdf_config(*self._valid_args())  # should not raise
+
+    def test_missing_kdf_algorithm_is_none(self) -> None:
+        from generate_it._crypto_v2 import _validate_kdf_config
+        with pytest.raises(ValueError, match="Unknown KDF algorithm"):
+            _validate_kdf_config("", 65536, 3, 4, b"x" * 32)
+
+    def test_unknown_kdf_algorithm(self) -> None:
+        from generate_it._crypto_v2 import _validate_kdf_config, SALT_LEN
+        import os
+        with pytest.raises(ValueError, match="Unknown KDF algorithm"):
+            _validate_kdf_config("pbkdf2-sha256", 65536, 3, 4, os.urandom(SALT_LEN))
+
+    @pytest.mark.parametrize("memory", [0, -1, 10**8])
+    def test_memory_out_of_range(self, memory: int) -> None:
+        from generate_it._crypto_v2 import _validate_kdf_config, KDF_ARGON2ID, SALT_LEN
+        import os
+        with pytest.raises(ValueError, match="memory cost"):
+            _validate_kdf_config(KDF_ARGON2ID, memory, 3, 4, os.urandom(SALT_LEN))
+
+    @pytest.mark.parametrize("time", [0, -1, 1000])
+    def test_time_out_of_range(self, time: int) -> None:
+        from generate_it._crypto_v2 import _validate_kdf_config, KDF_ARGON2ID, SALT_LEN
+        import os
+        with pytest.raises(ValueError, match="time cost"):
+            _validate_kdf_config(KDF_ARGON2ID, 65536, time, 4, os.urandom(SALT_LEN))
+
+    @pytest.mark.parametrize("parallelism", [0, -1, 256])
+    def test_parallelism_out_of_range(self, parallelism: int) -> None:
+        from generate_it._crypto_v2 import _validate_kdf_config, KDF_ARGON2ID, SALT_LEN
+        import os
+        with pytest.raises(ValueError, match="parallelism"):
+            _validate_kdf_config(KDF_ARGON2ID, 65536, 3, parallelism, os.urandom(SALT_LEN))
+
+    def test_salt_not_32_bytes(self) -> None:
+        from generate_it._crypto_v2 import _validate_kdf_config, KDF_ARGON2ID
+        with pytest.raises(ValueError, match="salt must be exactly"):
+            _validate_kdf_config(KDF_ARGON2ID, 65536, 3, 4, b"too-short")
+
+    def test_scrypt_algorithm_accepted(self) -> None:
+        from generate_it._crypto_v2 import _validate_kdf_config, KDF_SCRYPT, SALT_LEN
+        import os
+        _validate_kdf_config(KDF_SCRYPT, 65536, 3, 4, os.urandom(SALT_LEN))  # should not raise
+
+
+class TestValidateVaultMetadata:
+    """Pre-crypto vault metadata validation."""
+
+    def test_valid_metadata_passes(self) -> None:
+        from generate_it._crypto_v2 import _validate_vault_metadata, AEAD_AES_256_GCM, WRAPPED_DEK_LEN, VAULT_UUID_LEN, NONCE_LEN
+        import os
+        vault_uuid = os.urandom(VAULT_UUID_LEN)
+        wrapped_dek = os.urandom(WRAPPED_DEK_LEN)
+        verification_ct = os.urandom(NONCE_LEN + 16 + 10)  # enough bytes
+        _validate_vault_metadata(vault_uuid, wrapped_dek, AEAD_AES_256_GCM, verification_ct)
+
+    def test_vault_uuid_wrong_length(self) -> None:
+        from generate_it._crypto_v2 import _validate_vault_metadata, AEAD_AES_256_GCM, WRAPPED_DEK_LEN, NONCE_LEN
+        import os
+        with pytest.raises(ValueError, match="Vault UUID must be exactly"):
+            _validate_vault_metadata(b"short", os.urandom(WRAPPED_DEK_LEN), AEAD_AES_256_GCM, os.urandom(NONCE_LEN + 16 + 10))
+
+    def test_wrapped_dek_wrong_length(self) -> None:
+        from generate_it._crypto_v2 import _validate_vault_metadata, AEAD_AES_256_GCM, VAULT_UUID_LEN, NONCE_LEN
+        import os
+        with pytest.raises(ValueError, match="Wrapped DEK must be exactly"):
+            _validate_vault_metadata(os.urandom(VAULT_UUID_LEN), b"bad", AEAD_AES_256_GCM, os.urandom(NONCE_LEN + 16 + 10))
+
+    def test_unknown_aead_algorithm(self) -> None:
+        from generate_it._crypto_v2 import _validate_vault_metadata, WRAPPED_DEK_LEN, VAULT_UUID_LEN, NONCE_LEN
+        import os
+        with pytest.raises(ValueError, match="Unknown AEAD algorithm"):
+            _validate_vault_metadata(os.urandom(VAULT_UUID_LEN), os.urandom(WRAPPED_DEK_LEN), "aes-128-gcm", os.urandom(NONCE_LEN + 16 + 10))
+
+    def test_verification_ct_too_short(self) -> None:
+        from generate_it._crypto_v2 import _validate_vault_metadata, AEAD_AES_256_GCM, WRAPPED_DEK_LEN, VAULT_UUID_LEN, NONCE_LEN
+        import os
+        # Just 12 bytes (nonce only, no tag)
+        with pytest.raises(ValueError, match="too short"):
+            _validate_vault_metadata(os.urandom(VAULT_UUID_LEN), os.urandom(WRAPPED_DEK_LEN), AEAD_AES_256_GCM, os.urandom(NONCE_LEN))
+
+    def test_verification_ct_exactly_minimum(self) -> None:
+        from generate_it._crypto_v2 import _validate_vault_metadata, AEAD_AES_256_GCM, WRAPPED_DEK_LEN, VAULT_UUID_LEN, NONCE_LEN
+        import os
+        # Minimum valid: 12 + 16 = 28 bytes
+        _validate_vault_metadata(os.urandom(VAULT_UUID_LEN), os.urandom(WRAPPED_DEK_LEN), AEAD_AES_256_GCM, os.urandom(NONCE_LEN + 16))
+
+
+class TestGetAeadExactAllowlisting:
+    """_get_aead() raises on unknown algorithms instead of silently defaulting."""
+
+    def test_unknown_aead_raises(self) -> None:
+        from generate_it._crypto_v2 import _get_aead
+        import os
+        dek = os.urandom(32)
+        with pytest.raises(ValueError, match="Unknown AEAD algorithm"):
+            _get_aead(dek, "aes-128-gcm")
+
+    def test_invalid_aead_not_defaulted(self) -> None:
+        from generate_it._crypto_v2 import _get_aead
+        import os
+        dek = os.urandom(32)
+        # Empty string must also raise.
+        with pytest.raises(ValueError, match="Unknown AEAD algorithm"):
+            _get_aead(dek, "")
+
+
+class TestConfigValidationAtUnlock:
+    """Validation catches malformed config before expensive Argon2id."""
+
+    def test_kdf_config_rejected_at_unlock(self, tmp_path) -> None:
+        """A v2 vault with out-of-range KDF memory raises StorageError."""
+        db_path = tmp_path / "vault.db"
+        pw = "a-strong-master-password"
+
+        storage = StorageManager(db_path=db_path)
+        storage.initialize_vault_v2(pw)
+        storage.close()
+
+        import sqlite3
+        raw = sqlite3.connect(db_path)
+        raw.execute("UPDATE config SET value='0' WHERE key='kdf_memory_cost'")
+        raw.commit()
+        raw.close()
+
+        storage2 = StorageManager(db_path=db_path)
+        with pytest.raises(StorageError, match="Invalid KDF configuration"):
+            storage2.unlock_vault(pw)
+        storage2.close()
+
+    def test_vault_metadata_rejected_at_unlock(self, tmp_path) -> None:
+        """A v2 vault with wrong-sized vault_uuid raises StorageError."""
+        db_path = tmp_path / "vault.db"
+        pw = "a-strong-master-password"
+
+        storage = StorageManager(db_path=db_path)
+        storage.initialize_vault_v2(pw)
+        storage.close()
+
+        import sqlite3
+        raw = sqlite3.connect(db_path)
+        raw.execute("UPDATE config SET value=? WHERE key='vault_uuid'", (b"too-short",))
+        raw.commit()
+        raw.close()
+
+        storage2 = StorageManager(db_path=db_path)
+        with pytest.raises(StorageError, match="Invalid vault metadata"):
+            storage2.unlock_vault(pw)
+        storage2.close()
+
+    def test_unknown_aead_rejected_at_unlock(self, tmp_path) -> None:
+        """A v2 vault with unknown AEAD raises StorageError."""
+        db_path = tmp_path / "vault.db"
+        pw = "a-strong-master-password"
+
+        storage = StorageManager(db_path=db_path)
+        storage.initialize_vault_v2(pw)
+        storage.close()
+
+        import sqlite3
+        raw = sqlite3.connect(db_path)
+        raw.execute("UPDATE config SET value='aes-128-gcm' WHERE key='aead_algorithm'")
+        raw.commit()
+        raw.close()
+
+        storage2 = StorageManager(db_path=db_path)
+        with pytest.raises(StorageError, match="Invalid vault metadata"):
+            storage2.unlock_vault(pw)
+        storage2.close()

@@ -43,9 +43,23 @@ DEFAULT_ARGON2_TIME: int = 3
 DEFAULT_ARGON2_PARALLELISM: int = 4
 SALT_LEN: int = 32
 
+# Argon2id min/max bounds for config validation.
+MIN_ARGON2_MEMORY: int = 4096     # 4 MiB
+MAX_ARGON2_MEMORY: int = 1048576  # 1 GiB
+MIN_ARGON2_TIME: int = 1
+MAX_ARGON2_TIME: int = 100
+MIN_ARGON2_PARALLELISM: int = 1
+MAX_ARGON2_PARALLELISM: int = 64
+
+# Recognised KDF algorithms.
+KDF_ARGON2ID: str = "argon2id"
+KDF_SCRYPT: str = "scrypt"
+_VALID_KDF_ALGORITHMS: frozenset[str] = frozenset({KDF_ARGON2ID, KDF_SCRYPT})
+
 # AEAD algorithms recognised by the vault config.
 AEAD_AES_256_GCM: str = "aes-256-gcm"
 AEAD_CHACHA20_POLY1305: str = "chacha20-poly1305"
+_VALID_AEAD_ALGORITHMS: frozenset[str] = frozenset({AEAD_AES_256_GCM, AEAD_CHACHA20_POLY1305})
 
 # Verification associated-data field name.
 _VERIFICATION_FIELD_NAME: str = "verification"
@@ -56,6 +70,94 @@ _VERIFICATION_CREDENTIAL_UUID: bytes = b"\x00" * CREDENTIAL_UUID_LEN
 # Maximum plaintext sizes.
 MAX_PASSWORD_BYTES: int = 1024
 MAX_NOTE_BYTES: int = 64 * 1024
+
+
+# ---------------------------------------------------------------------------
+# Config validation
+# ---------------------------------------------------------------------------
+
+
+def _validate_kdf_config(
+    kdf_algorithm: str,
+    memory: int,
+    time: int,
+    parallelism: int,
+    salt: bytes,
+) -> None:
+    """Validate KDF configuration before expensive key derivation.
+
+    Checks all KDF parameters are within acceptable ranges so that a
+    malformed or tampered vault config is caught before Argon2id runs.
+
+    Raises:
+        ValueError: if any parameter is out of range or unrecognised.
+    """
+    if kdf_algorithm not in _VALID_KDF_ALGORITHMS:
+        raise ValueError(
+            f"Unknown KDF algorithm: {kdf_algorithm!r}. "
+            f"Valid choices: {', '.join(sorted(_VALID_KDF_ALGORITHMS))}"
+        )
+
+    if kdf_algorithm == KDF_ARGON2ID:
+        if not (MIN_ARGON2_MEMORY <= memory <= MAX_ARGON2_MEMORY):
+            raise ValueError(
+                f"KDF memory cost {memory} out of range "
+                f"[{MIN_ARGON2_MEMORY}, {MAX_ARGON2_MEMORY}]"
+            )
+        if not (MIN_ARGON2_TIME <= time <= MAX_ARGON2_TIME):
+            raise ValueError(
+                f"KDF time cost {time} out of range "
+                f"[{MIN_ARGON2_TIME}, {MAX_ARGON2_TIME}]"
+            )
+        if not (MIN_ARGON2_PARALLELISM <= parallelism <= MAX_ARGON2_PARALLELISM):
+            raise ValueError(
+                f"KDF parallelism {parallelism} out of range "
+                f"[{MIN_ARGON2_PARALLELISM}, {MAX_ARGON2_PARALLELISM}]"
+            )
+
+    if len(salt) != SALT_LEN:
+        raise ValueError(
+            f"KDF salt must be exactly {SALT_LEN} bytes, got {len(salt)}"
+        )
+
+
+def _validate_vault_metadata(
+    vault_uuid: bytes,
+    wrapped_dek: bytes,
+    aead_algorithm: str,
+    verification_ct: bytes,
+) -> None:
+    """Validate vault metadata before expensive crypto operations.
+
+    Checks sizes of vault UUID, wrapped DEK, and verification ciphertext
+    so that obviously-corrupt or tampered vaults are caught before
+    Argon2id key derivation or AEAD construction.
+
+    Raises:
+        ValueError: if any field is wrong-sized or unrecognised.
+    """
+    if len(vault_uuid) != VAULT_UUID_LEN:
+        raise ValueError(
+            f"Vault UUID must be exactly {VAULT_UUID_LEN} bytes, got {len(vault_uuid)}"
+        )
+
+    if len(wrapped_dek) != WRAPPED_DEK_LEN:
+        raise ValueError(
+            f"Wrapped DEK must be exactly {WRAPPED_DEK_LEN} bytes, got {len(wrapped_dek)}"
+        )
+
+    if aead_algorithm not in _VALID_AEAD_ALGORITHMS:
+        raise ValueError(
+            f"Unknown AEAD algorithm: {aead_algorithm!r}. "
+            f"Valid choices: {', '.join(sorted(_VALID_AEAD_ALGORITHMS))}"
+        )
+
+    # Ciphertext must be at least nonce (12) + tag (16) = 28 bytes.
+    if len(verification_ct) < NONCE_LEN + 16:
+        raise ValueError(
+            f"Verification ciphertext too short: {len(verification_ct)} bytes "
+            f"(minimum {NONCE_LEN + 16})"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -167,11 +269,19 @@ def _make_verification_associated_data(vault_uuid: bytes) -> bytes:
 
 
 def _get_aead(dek: bytes, aead_algorithm: str) -> AESGCM | ChaCha20Poly1305:
-    """Return the AEAD cipher for *aead_algorithm* keyed with *dek*."""
+    """Return the AEAD cipher for *aead_algorithm* keyed with *dek*.
+
+    Raises:
+        ValueError: if *aead_algorithm* is not a recognised AEAD algorithm.
+    """
+    if aead_algorithm == AEAD_AES_256_GCM:
+        return AESGCM(dek)
     if aead_algorithm == AEAD_CHACHA20_POLY1305:
         return ChaCha20Poly1305(dek)
-    # Default to AES-256-GCM (the primary algorithm).
-    return AESGCM(dek)
+    raise ValueError(
+        f"Unknown AEAD algorithm: {aead_algorithm!r}. "
+        f"Valid choices: {', '.join(sorted(_VALID_AEAD_ALGORITHMS))}"
+    )
 
 
 def encrypt_field(

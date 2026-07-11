@@ -506,11 +506,11 @@ class StorageManager:
 
             cursor.execute("SELECT value FROM config WHERE key = 'aead_algorithm'")
             aead_row = cursor.fetchone()
-            aead_algorithm = (
-                aead_row["value"].decode("utf-8")
-                if aead_row and isinstance(aead_row["value"], bytes)
-                else _crypto_v2.AEAD_AES_256_GCM
-            ) if aead_row else _crypto_v2.AEAD_AES_256_GCM
+            if aead_row is None:
+                aead_algorithm = _crypto_v2.AEAD_AES_256_GCM
+            else:
+                raw = aead_row["value"]
+                aead_algorithm = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
 
             cursor.execute("SELECT value FROM config WHERE key = 'verification'")
             verification_ct = cursor.fetchone()["value"]
@@ -529,6 +529,22 @@ class StorageManager:
             parallelism_raw if parallelism_raw is not None
             else _crypto_v2.DEFAULT_ARGON2_PARALLELISM
         )
+
+        # Validate KDF config before running expensive Argon2id.
+        try:
+            _crypto_v2._validate_kdf_config(
+                kdf_algorithm, memory, time, parallelism, kdf_salt,
+            )
+        except ValueError as exc:
+            raise StorageError(f"Invalid KDF configuration: {exc}") from exc
+
+        # Validate vault metadata before crypto operations.
+        try:
+            _crypto_v2._validate_vault_metadata(
+                vault_uuid, wrapped_dek, aead_algorithm, verification_ct,
+            )
+        except ValueError as exc:
+            raise StorageError(f"Invalid vault metadata: {exc}") from exc
 
         # Derive KEK.
         kek = _crypto_v2.derive_kek(
@@ -625,7 +641,8 @@ class StorageManager:
                 )
 
             # 5. Re-encrypt all credentials with v2 AEAD.
-            assert self._fernet is not None  # v1 is unlocked
+            if self._fernet is None:
+                raise StorageError("v1 Fernet is not available; vault may not be unlocked as v1.")
             fernet = self._fernet
             cursor.execute(
                 "SELECT id, credential_uuid, encrypted_password, encrypted_note"
@@ -787,8 +804,10 @@ class StorageManager:
 
     def _decrypt_fields_v2(self, row: sqlite3.Row) -> tuple[str, str]:
         """Decrypt using v2 AEAD with associated data binding."""
-        assert self._dek is not None
-        assert self._vault_uuid is not None
+        if self._dek is None:
+            raise StorageError("Vault DEK is not available.")
+        if self._vault_uuid is None:
+            raise StorageError("Vault UUID is not available.")
 
         credential_uuid: bytes = row["credential_uuid"]
 
@@ -844,8 +863,10 @@ class StorageManager:
         self, password: str, note: str, credential_uuid: bytes
     ) -> tuple[bytes, bytes | None]:
         """Encrypt using v2 AEAD with associated data binding to *credential_uuid*."""
-        assert self._dek is not None
-        assert self._vault_uuid is not None
+        if self._dek is None:
+            raise StorageError("Vault DEK is not available.")
+        if self._vault_uuid is None:
+            raise StorageError("Vault UUID is not available.")
 
         password_ad = _crypto_v2.make_associated_data(
             self._vault_uuid, credential_uuid, "password"
