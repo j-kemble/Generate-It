@@ -65,3 +65,88 @@ def test_storage_manager_context_does_not_suppress_errors(tmp_path) -> None:
             raise RuntimeError("boom")
     assert manager._db_connection is None
     assert manager._fernet is None
+
+
+# ── Phase 4, Task 3: centralized decryption + narrow corruption handling ──
+
+def test_list_credentials_corrupted_row_placeholder(tmp_path) -> None:
+    """Corrupted ciphertext yields <DECRYPTION_ERROR> placeholders, not a crash."""
+    db_path = tmp_path / "vault.db"
+
+    storage = StorageManager(db_path=db_path)
+    storage.initialize_vault("master")
+    storage.save_credential("GitHub", "dev", "secret", note="a note")
+    storage.close()
+
+    # Corrupt the encrypted_password column directly via raw sqlite3.
+    import sqlite3
+    raw = sqlite3.connect(db_path)
+    raw.execute("UPDATE credentials SET encrypted_password = ? WHERE service = ?",
+                (b"!!not-valid-fernet-token!!", "GitHub"))
+    raw.commit()
+    raw.close()
+
+    storage = StorageManager(db_path=db_path)
+    storage.unlock_vault("master")
+    results = storage.list_credentials()
+    storage.close()
+
+    assert len(results) == 1
+    assert results[0]["service"] == "GitHub"
+    assert results[0]["password"] == "<DECRYPTION_ERROR>"
+    assert results[0]["note"] == "<DECRYPTION_ERROR>"
+
+
+def test_export_to_csv_skips_corrupted_row(tmp_path) -> None:
+    """Corrupted ciphertext is skipped during export with a stable, non-leaking label."""
+    db_path = tmp_path / "vault.db"
+    csv_path = tmp_path / "out.csv"
+
+    storage = StorageManager(db_path=db_path)
+    storage.initialize_vault("master")
+    storage.save_credential("GitHub", "dev", "secret")
+    storage.close()
+
+    import sqlite3
+    raw = sqlite3.connect(db_path)
+    raw.execute("UPDATE credentials SET encrypted_password = ? WHERE service = ?",
+                (b"!!not-valid-fernet-token!!", "GitHub"))
+    raw.commit()
+    raw.close()
+
+    storage = StorageManager(db_path=db_path)
+    storage.unlock_vault("master")
+    exported, skipped = storage.export_to_csv(csv_path, export_format="generic")
+    storage.close()
+
+    assert exported == 0
+    assert len(skipped) == 1
+    assert skipped[0]["service"] == "GitHub"
+    assert skipped[0]["username"] == "dev"
+    assert skipped[0]["error"] == "Unable to decrypt credential"
+
+    # The CSV body must contain only the header row (no data).
+    lines = csv_path.read_text().strip().splitlines()
+    assert len(lines) == 1  # header only
+
+
+def test_list_credentials_propagates_unexpected_error(monkeypatch, tmp_path) -> None:
+    """Unexpected errors are not swallowed — only known crypto/corruption errors are."""
+    db_path = tmp_path / "vault.db"
+
+    storage = StorageManager(db_path=db_path)
+    storage.initialize_vault("master")
+    storage.save_credential("GitHub", "dev", "secret")
+    storage.close()
+
+    # Patch the yet-to-exist internal helper so it raises a non-crypto error.
+    monkeypatch.setattr(
+        "generate_it.storage.StorageManager._decrypt_credential_fields",
+        lambda self, row, fernet: (_ for _ in ()).throw(RuntimeError("unexpected")),
+    )
+
+    storage = StorageManager(db_path=db_path)
+    storage.unlock_vault("master")
+    with pytest.raises(RuntimeError, match="unexpected"):
+        storage.list_credentials()
+    storage.close()

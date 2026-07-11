@@ -235,6 +235,23 @@ class StorageManager:
             raise StorageError("Vault is locked.")
         return self._fernet
 
+    def _decrypt_credential_fields(
+        self, row: sqlite3.Row, fernet: Fernet
+    ) -> tuple[str, str]:
+        """Decrypt password and note from a credential row.
+
+        Raises:
+            InvalidToken: if ciphertext is corrupted or tampered with.
+            UnicodeDecodeError: if decrypted bytes are not valid UTF-8.
+        """
+        password = fernet.decrypt(row["encrypted_password"]).decode()
+        note = (
+            fernet.decrypt(row["encrypted_note"]).decode()
+            if row["encrypted_note"]
+            else ""
+        )
+        return password, note
+
     def save_credential(self, service: str, username: str, password: str, note: str = "", note_is_hidden: bool = False) -> int:
         fernet = self._require_unlocked()
 
@@ -261,8 +278,7 @@ class StorageManager:
         results = []
         for row in cursor.fetchall():
             try:
-                password = fernet.decrypt(row["encrypted_password"]).decode()
-                note = fernet.decrypt(row["encrypted_note"]).decode() if row["encrypted_note"] else ""
+                password, note = self._decrypt_credential_fields(row, fernet)
                 note_is_hidden = bool(row["note_is_hidden"]) if row["note_is_hidden"] is not None else False
                 results.append({
                     "id": row["id"],
@@ -273,8 +289,7 @@ class StorageManager:
                     "note_is_hidden": note_is_hidden,
                     "created_at": row["created_at"]
                 })
-            except Exception:
-                # If a single password fails to decrypt (corruption?), skip or mark it
+            except (InvalidToken, UnicodeDecodeError):
                 results.append({
                     "id": row["id"],
                     "service": row["service"],
@@ -335,31 +350,29 @@ class StorageManager:
         
         exported = 0
         skipped = []
-        fernet = self._require_unlocked()
 
         with open(csv_path, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             writer.writerow(csv_formats.get_export_headers(normalized_format))
             
             for row in cursor.fetchall():
-                fernet = self._require_unlocked()
                 try:
-                    password = fernet.decrypt(row["encrypted_password"]).decode()
+                    password, _note = self._decrypt_credential_fields(row, fernet)
                     writer.writerow(
                         csv_formats.build_export_row(
                             normalized_format,
                             service=row["service"],
                             username=row["username"],
                             password=password,
-                            note=(fernet.decrypt(row["encrypted_note"]).decode() if row["encrypted_note"] else ""),
+                            note=_note,
                         )
                     )
                     exported += 1
-                except Exception as e:
+                except (InvalidToken, UnicodeDecodeError):
                     skipped.append({
                         'service': row["service"],
                         'username': row["username"],
-                        'error': str(e)
+                        'error': "Unable to decrypt credential"
                     })
         
         return exported, skipped
