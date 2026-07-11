@@ -10,16 +10,28 @@ This guide walks through the process of publishing Generate-It to PyPI (Python P
 2. Create a new account with your username and password
 3. Verify your email address
 
-### 2. Create API Token (recommended over password)
+### 2. Set Up OIDC Trusted Publishing
 
-This is more secure than using your password directly.
+This project uses PyPI OIDC trusted publishing instead of long-lived API tokens.
+Trusted publishing allows PyPI to verify the GitHub Actions workflow identity directly,
+without needing a secret token.
 
 1. Log in to https://pypi.org
-2. Go to Account Settings → API tokens
-3. Click "Add API token"
-4. Name it something like "Generate-It Release Token"
-5. Scope: "Entire account"
-6. Copy the token (starts with `pypi-`)
+2. Go to your project → Settings → Publishing
+3. Click "Add a new publisher"
+4. Fill in:
+   - **Owner:** `j-kemble`
+   - **Repository:** `Generate-It`
+   - **Workflow name:** `publish.yml`
+   - **Environment name:** `pypi`
+5. Click "Add"
+
+No API token is needed — PyPI verifies the OIDC identity of the GitHub Actions workflow
+at upload time. The `publish.yml` workflow uses the `pypi` GitHub Environment, which can
+be configured to require manual approval before releases.
+
+> **Important:** The tag pushed must match the version in `pyproject.toml` (e.g., tag `v0.2.2`
+> requires `version = "0.2.2"` in `pyproject.toml`). The `validate` job enforces this.
 
 ### 3. Install Build Tools
 
@@ -61,33 +73,15 @@ This creates:
 - `dist/generate_it-0.2.2.tar.gz` (source distribution)
 - `dist/generate_it-0.2.2-py3-none-any.whl` (wheel distribution)
 
-### 4. Upload to PyPI
+### 4. Push the Tag to Trigger Publishing
 
-Using your API token (replace `YOUR_TOKEN_HERE`):
+Pushing a version tag (e.g., `v0.2.2`) triggers the `publish.yml` workflow automatically.
+No manual upload is needed — the workflow validates the tag, runs tests and security scans,
+builds the distribution, and publishes to PyPI via OIDC trusted publishing.
 
-```bash
-python -m twine upload dist/generate_it-0.2.2.tar.gz dist/generate_it-0.2.2-py3-none-any.whl \
-  --username __token__ \
-  --password YOUR_TOKEN_HERE
-```
-
-Or create a `~/.pypirc` file for easier uploads:
-
-```ini
-[distutils]
-index-servers =
-    pypi
-
-[pypi]
-username = __token__
-password = pypi-YOUR_TOKEN_HERE
-```
-
-Then simply:
-
-```bash
-twine upload dist/*
-```
+> **Note:** The publish workflow requires approval via the `pypi` GitHub Environment if
+> you have configured it with required reviewers. Check the "Actions" tab on GitHub for
+> pending approvals.
 
 ### 5. Verify
 
@@ -103,11 +97,12 @@ generate-it
 
 ## Notes
 
-- Keep your API token private—never commit it to git
-- Test in a fresh virtual environment before publishing to ensure all dependencies are correct
+- This project uses PyPI OIDC trusted publishing — no API token is needed or stored
+- Test in a fresh virtual environment before tagging a release to ensure all dependencies are correct
 - You can also publish to TestPyPI first to test the workflow: https://test.pypi.org
-- To use TestPyPI, add the extra index in setup: `twine upload --repository testpypi dist/*`
-- For stronger security, consider migrating to PyPI trusted publishing (OIDC) instead of long-lived API tokens.
+- For TestPyPI trusted publishing, add the `testpypi` environment with `twine upload --repository testpypi dist/*`
+- The publish workflow verifies that the git tag matches `pyproject.toml` version before proceeding
+- The `pypi` GitHub Environment can be configured with required reviewers for manual release approval
 
 ## GitHub Actions (Already Set Up)
 
@@ -117,13 +112,15 @@ Automated workflows are configured in `.github/workflows/`:
 
 **test.yml**: Runs a focused main-branch package validation (pytest + sdist/wheel build + `twine check`) on pushes/PRs targeting main.
 
-**publish.yml**: Automatically builds and publishes to PyPI when you push a version tag (e.g., `git push origin v0.2.2`).
+**publish.yml**: Validates the tag matches `pyproject.toml`, runs test and security gates, then builds and publishes to PyPI via OIDC trusted publishing when a version tag is pushed (e.g., `v0.2.2`).
 
 ### Setting Up Automated Publishing
 
-1. Go to your GitHub repository Settings → Secrets and variables → Actions
-2. Create a new secret named `PYPI_API_TOKEN` with your PyPI API token value
-3. Now whenever you create a version tag, the workflow will automatically build and publish to PyPI
+1. Set up PyPI OIDC trusted publishing on your PyPI project (see "One-time Setup" above)
+2. In your GitHub repository, go to Settings → Environments
+3. Create an environment named `pypi`
+4. Optionally, add required reviewers to the `pypi` environment for manual release approval
+5. No API token or GitHub secret is needed — OIDC handles authentication automatically
 
 ### Usage
 
@@ -142,9 +139,10 @@ git push origin v0.2.2
 ```
 
 The GitHub Actions workflow will automatically:
-1. Run tests across all platforms
-2. Build the distribution packages
-3. Validate the package
-4. Upload to PyPI
+1. Validate the tag matches the version in `pyproject.toml`
+2. Run test suite and security scan (`bandit`)
+3. Build the distribution packages
+4. Validate the package with `twine check`
+5. Publish to PyPI via OIDC trusted publishing
 
 You can monitor progress in the "Actions" tab on GitHub.
