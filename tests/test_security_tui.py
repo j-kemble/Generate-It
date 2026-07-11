@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from generate_it import tui
+from generate_it import tui_helpers
 from generate_it import tui_modal
 from generate_it import tui_render
 
@@ -236,7 +237,7 @@ def test_sanitize_replaces_control_characters():
     """C0/C1 controls must be replaced with visible escaped forms."""
     # Newline, tab, carriage return, ESC, backspace
     dirty = "hello\nworld\ttab\rCR\x1bESC\x08BS"
-    clean = tui_render._sanitize_terminal_text(dirty)
+    clean = tui_helpers._sanitize_terminal_text(dirty)
     assert "\n" not in clean
     assert "\t" not in clean
     assert "\r" not in clean
@@ -251,7 +252,7 @@ def test_sanitize_replaces_control_characters():
 def test_sanitize_replaces_c1_controls():
     """C1 controls (0x80-0x9F) must be replaced with \\xNN form."""
     dirty = "test\x80\x9fend"
-    clean = tui_render._sanitize_terminal_text(dirty)
+    clean = tui_helpers._sanitize_terminal_text(dirty)
     assert "\x80" not in clean
     assert "\x9f" not in clean
     assert "\\x80" in clean
@@ -261,7 +262,7 @@ def test_sanitize_replaces_c1_controls():
 def test_sanitize_preserves_printable_unicode():
     """Ordinary text including non-ASCII must remain readable."""
     text = "café résumé 日本語"
-    clean = tui_render._sanitize_terminal_text(text)
+    clean = tui_helpers._sanitize_terminal_text(text)
     assert clean == text
 
 
@@ -279,8 +280,8 @@ def test_sanitize_applied_in_addstr_safe():
 
 def test_sanitize_handles_empty_and_ascii():
     """Empty string and clean ASCII should pass through unchanged."""
-    assert tui_render._sanitize_terminal_text("") == ""
-    assert tui_render._sanitize_terminal_text("hello world") == "hello world"
+    assert tui_helpers._sanitize_terminal_text("") == ""
+    assert tui_helpers._sanitize_terminal_text("hello world") == "hello world"
 
 
 # ---------------------------------------------------------------------------
@@ -367,3 +368,355 @@ def test_small_terminal_clamp_does_not_crash(monkeypatch):
             assert 1 <= w_call <= w_, f"width {w_call} > screen {w_}"
             assert y_call >= 0, f"y={y_call} is negative"
             assert x_call >= 0, f"x={x_call} is negative"
+
+
+def test_lock_clears_generated_output():
+    """Locking the vault must clear state.output (generated credentials)."""
+    state = tui.AppState()
+    state.storage = MagicMock(name="StorageManager")
+    state.vault_unlocked = True
+    state.output = "supersecretgeneratedpassword123!"
+
+    tui._lock_vault(state)
+
+    assert state.output == "", (
+        f"Expected output to be cleared on lock, got {state.output!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Modal terminal sanitization tests
+# ---------------------------------------------------------------------------
+
+def _collect_addstr_calls(window: MagicMock) -> list[str]:
+    """Extract all addstr string args from a mocked curses window."""
+    texts: list[str] = []
+    for call in window.method_calls:
+        if call[0] == "addstr" and call.args and len(call.args) >= 3:
+            texts.append(str(call.args[2]))
+    return texts
+
+
+def _all_chars_in_addstr_calls(window: MagicMock) -> str:
+    """Concatenate all addstr string args for inspection."""
+    return "".join(_collect_addstr_calls(window))
+
+
+def test_run_modal_sanitizes_control_chars_in_title(monkeypatch) -> None:
+    """_run_modal must sanitize ESC, newline, tab, C0 in the title."""
+    import curses
+
+    stdscr = MagicMock(name="stdscr")
+    stdscr.getmaxyx.return_value = (30, 100)
+
+    theme = SimpleNamespace(title=0, dim=0, ok=1, warn=2, border=0, accent=0, focus=0, bad=0)
+
+    newwin = MagicMock(name="newwin")
+    win_instance = MagicMock(name="win_instance")
+    win_instance.getch.return_value = 27  # ESC to exit immediately
+    newwin.return_value = win_instance
+
+    monkeypatch.setattr(curses, "newwin", newwin)
+    monkeypatch.setattr(curses, "napms", MagicMock())
+
+    # Title containing control characters
+    tui_modal._run_modal(
+        stdscr, theme,
+        title="Evil\x1bESC\nNewline\tTab\x08BS\x00NULL",
+        prompt="Prompt:",
+    )
+
+    all_text = _all_chars_in_addstr_calls(win_instance)
+    # No raw control characters should reach addstr
+    assert "\x1b" not in all_text, f"Raw ESC in addstr: {all_text!r}"
+    assert "\n" not in all_text, f"Raw newline in addstr: {all_text!r}"
+    assert "\t" not in all_text, f"Raw tab in addstr: {all_text!r}"
+    assert "\x08" not in all_text, f"Raw backspace in addstr: {all_text!r}"
+    assert "\x00" not in all_text, f"Raw NUL in addstr: {all_text!r}"
+    # Escaped forms should appear
+    assert "\\e" in all_text, f"Expected \\\\e in addstr: {all_text!r}"
+    assert "\\n" in all_text, f"Expected \\\\n in addstr: {all_text!r}"
+    assert "\\t" in all_text, f"Expected \\\\t in addstr: {all_text!r}"
+    assert "\\b" in all_text, f"Expected \\\\b in addstr: {all_text!r}"
+
+
+def test_run_modal_sanitizes_control_chars_in_prompt(monkeypatch) -> None:
+    """_run_modal must sanitize control characters in the prompt text."""
+    import curses
+
+    stdscr = MagicMock(name="stdscr")
+    stdscr.getmaxyx.return_value = (30, 100)
+
+    theme = SimpleNamespace(title=0, dim=0, ok=1, warn=2, border=0, accent=0, focus=0, bad=0)
+
+    newwin = MagicMock(name="newwin")
+    win_instance = MagicMock(name="win_instance")
+    win_instance.getch.return_value = 27  # ESC to exit immediately
+    newwin.return_value = win_instance
+
+    monkeypatch.setattr(curses, "newwin", newwin)
+    monkeypatch.setattr(curses, "napms", MagicMock())
+
+    tui_modal._run_modal(
+        stdscr, theme,
+        title="Safe Title",
+        prompt="Evil\x1bPrompt\nWith\tTabs\rReturn",
+    )
+
+    all_text = _all_chars_in_addstr_calls(win_instance)
+    assert "\x1b" not in all_text, f"Raw ESC in addstr: {all_text!r}"
+    assert "\n" not in all_text, f"Raw newline in addstr: {all_text!r}"
+    # Tab in prompt is expanded to spaces by textwrap.wrap() before sanitization
+    assert "\r" not in all_text, f"Raw CR in addstr: {all_text!r}"
+    assert "\\e" in all_text, f"Expected \\\\e in addstr: {all_text!r}"
+
+
+def test_run_modal_sanitizes_control_chars_in_initial_value(monkeypatch) -> None:
+    """_run_modal must sanitize control characters in the prefilled input."""
+    import curses
+
+    stdscr = MagicMock(name="stdscr")
+    stdscr.getmaxyx.return_value = (30, 100)
+
+    theme = SimpleNamespace(title=0, dim=0, ok=1, warn=2, border=0, accent=0, focus=0, bad=0)
+
+    newwin = MagicMock(name="newwin")
+    win_instance = MagicMock(name="win_instance")
+    # Return Enter to accept immediately (don't return ESC so we see the input display)
+    win_instance.getch.return_value = 10  # Enter
+    newwin.return_value = win_instance
+
+    monkeypatch.setattr(curses, "newwin", newwin)
+    monkeypatch.setattr(curses, "napms", MagicMock())
+
+    tui_modal._run_modal(
+        stdscr, theme,
+        title="Test",
+        prompt="Prompt:",
+        initial_value="evil\x1bESC\x00NULL\x7fDEL",
+    )
+
+    all_text = _all_chars_in_addstr_calls(win_instance)
+    assert "\x1b" not in all_text, f"Raw ESC in addstr: {all_text!r}"
+    assert "\x00" not in all_text, f"Raw NUL in addstr: {all_text!r}"
+    assert "\x7f" not in all_text, f"Raw DEL in addstr: {all_text!r}"
+    assert "\\e" in all_text, f"Expected \\\\e in addstr: {all_text!r}"
+
+
+def test_run_modal_sanitizes_c1_controls(monkeypatch) -> None:
+    """_run_modal must sanitize C1 control characters (0x80–0x9F) in all inputs."""
+    import curses
+
+    stdscr = MagicMock(name="stdscr")
+    stdscr.getmaxyx.return_value = (30, 100)
+
+    theme = SimpleNamespace(title=0, dim=0, ok=1, warn=2, border=0, accent=0, focus=0, bad=0)
+
+    newwin = MagicMock(name="newwin")
+    win_instance = MagicMock(name="win_instance")
+    win_instance.getch.return_value = 27  # ESC to exit
+    newwin.return_value = win_instance
+
+    monkeypatch.setattr(curses, "newwin", newwin)
+    monkeypatch.setattr(curses, "napms", MagicMock())
+
+    tui_modal._run_modal(
+        stdscr, theme,
+        title="Title\x80C1\x9fEnd",
+        prompt="Prompt\x85C1\x90End",
+    )
+
+    all_text = _all_chars_in_addstr_calls(win_instance)
+    assert "\x80" not in all_text, f"Raw 0x80 in addstr: {all_text!r}"
+    assert "\x85" not in all_text, f"Raw 0x85 in addstr: {all_text!r}"
+    assert "\x90" not in all_text, f"Raw 0x90 in addstr: {all_text!r}"
+    assert "\x9f" not in all_text, f"Raw 0x9f in addstr: {all_text!r}"
+    assert "\\x80" in all_text, f"Expected \\\\x80 in addstr: {all_text!r}"
+    assert "\\x9f" in all_text, f"Expected \\\\x9f in addstr: {all_text!r}"
+
+
+def test_run_scrollable_modal_sanitizes_title(monkeypatch) -> None:
+    """_run_scrollable_modal must sanitize control characters in the title."""
+    import curses
+
+    stdscr = MagicMock(name="stdscr")
+    stdscr.getmaxyx.return_value = (30, 100)
+
+    theme = SimpleNamespace(title=0, dim=0, ok=1, warn=2, border=0, accent=0, focus=0, bad=0)
+
+    newwin = MagicMock(name="newwin")
+    win_instance = MagicMock(name="win_instance")
+    win_instance.getch.return_value = 27  # ESC to exit
+    newwin.return_value = win_instance
+
+    monkeypatch.setattr(curses, "newwin", newwin)
+    monkeypatch.setattr(curses, "napms", MagicMock())
+
+    tui_modal._run_scrollable_modal(
+        stdscr, theme,
+        title="Evil\x1bTitle\nBreak",
+        lines=["safe line 1", "safe line 2"],
+    )
+
+    all_text = _all_chars_in_addstr_calls(win_instance)
+    assert "\x1b" not in all_text, f"Raw ESC in addstr: {all_text!r}"
+    assert "\n" not in all_text, f"Raw newline in addstr: {all_text!r}"
+    assert "\\e" in all_text, f"Expected \\\\e in addstr: {all_text!r}"
+    assert "\\n" in all_text, f"Expected \\\\n in addstr: {all_text!r}"
+
+
+def test_run_scrollable_modal_sanitizes_content_lines(monkeypatch) -> None:
+    """_run_scrollable_modal must sanitize control characters in content lines."""
+    import curses
+
+    stdscr = MagicMock(name="stdscr")
+    stdscr.getmaxyx.return_value = (30, 100)
+
+    theme = SimpleNamespace(title=0, dim=0, ok=1, warn=2, border=0, accent=0, focus=0, bad=0)
+
+    newwin = MagicMock(name="newwin")
+    win_instance = MagicMock(name="win_instance")
+    win_instance.getch.return_value = 27  # ESC to exit
+    newwin.return_value = win_instance
+
+    monkeypatch.setattr(curses, "newwin", newwin)
+    monkeypatch.setattr(curses, "napms", MagicMock())
+
+    tui_modal._run_scrollable_modal(
+        stdscr, theme,
+        title="Safe",
+        lines=[
+            "regular line",
+            "evil\x1bline\x00with\x7fcontrols",
+            "c1: \x80\x9f end",
+        ],
+    )
+
+    all_text = _all_chars_in_addstr_calls(win_instance)
+    assert "\x1b" not in all_text, f"Raw ESC in addstr: {all_text!r}"
+    assert "\x00" not in all_text, f"Raw NUL in addstr: {all_text!r}"
+    assert "\x7f" not in all_text, f"Raw DEL in addstr: {all_text!r}"
+    assert "\x80" not in all_text, f"Raw 0x80 in addstr: {all_text!r}"
+    assert "\x9f" not in all_text, f"Raw 0x9f in addstr: {all_text!r}"
+    assert "\\e" in all_text, f"Expected \\\\e in addstr: {all_text!r}"
+    assert "\\x00" in all_text, f"Expected \\\\x00 in addstr: {all_text!r}"
+    assert "\\x7f" in all_text, f"Expected \\\\x7f in addstr: {all_text!r}"
+    assert "\\x80" in all_text, f"Expected \\\\x80 in addstr: {all_text!r}"
+
+
+def test_run_modal_no_false_positives_on_clean_input(monkeypatch) -> None:
+    """_run_modal must not alter clean printable text."""
+    import curses
+
+    stdscr = MagicMock(name="stdscr")
+    stdscr.getmaxyx.return_value = (30, 100)
+
+    theme = SimpleNamespace(title=0, dim=0, ok=1, warn=2, border=0, accent=0, focus=0, bad=0)
+
+    newwin = MagicMock(name="newwin")
+    win_instance = MagicMock(name="win_instance")
+    win_instance.getch.return_value = 27  # ESC to exit
+    newwin.return_value = win_instance
+
+    monkeypatch.setattr(curses, "newwin", newwin)
+    monkeypatch.setattr(curses, "napms", MagicMock())
+
+    clean_title = "Service Name"
+    clean_prompt = "Enter the service name (e.g., github.com):"
+
+    tui_modal._run_modal(stdscr, theme, title=clean_title, prompt=clean_prompt)
+
+    all_text = _all_chars_in_addstr_calls(win_instance)
+    # The clean title and prompt should appear verbatim within the output
+    # at least somewhere (in the sanitized title text or prompt lines)
+    # Since sanitization doesn't alter clean text, we check for key substrings
+    assert "Service Name" in all_text, f"Clean title not found: {all_text!r}"
+    assert "Enter the service name" in all_text, f"Clean prompt not found: {all_text!r}"
+
+
+def test_run_modal_sanitizes_generated_value(monkeypatch) -> None:
+    """_run_modal must sanitize the result of generator_func (Tab key)."""
+    import curses
+
+    stdscr = MagicMock(name="stdscr")
+    stdscr.getmaxyx.return_value = (30, 100)
+
+    theme = SimpleNamespace(title=0, dim=0, ok=1, warn=2, border=0, accent=0, focus=0, bad=0)
+
+    newwin = MagicMock(name="newwin")
+    win_instance = MagicMock(name="win_instance")
+    # First Tab (generates dirty value), then Enter to accept
+    win_instance.getch.side_effect = [9, 10]  # Tab, then Enter
+    newwin.return_value = win_instance
+
+    monkeypatch.setattr(curses, "newwin", newwin)
+    monkeypatch.setattr(curses, "napms", MagicMock())
+
+    def dirty_generator() -> str:
+        return "gen\x1bval\x00dirty"
+
+    tui_modal._run_modal(
+        stdscr, theme,
+        title="Test",
+        prompt="Hit Tab:",
+        generator_func=dirty_generator,
+    )
+
+    all_text = _all_chars_in_addstr_calls(win_instance)
+    assert "\x1b" not in all_text, f"Raw ESC from generator in addstr: {all_text!r}"
+    assert "\x00" not in all_text, f"Raw NUL from generator in addstr: {all_text!r}"
+    assert "\\e" in all_text, f"Expected escaped ESC from generator: {all_text!r}"
+
+
+def test_run_modal_sanitization_comprehensive(monkeypatch) -> None:
+    """All addstr calls across both modals: no raw control char (ord < 32 or 0x7f-0x9f) except hardcoded helpers."""
+    import curses
+
+    stdscr = MagicMock(name="stdscr")
+    stdscr.getmaxyx.return_value = (40, 120)
+
+    theme = SimpleNamespace(title=0, dim=0, ok=1, warn=2, border=0, accent=0, focus=0, bad=0)
+
+    # --- Test _run_modal ---
+    newwin = MagicMock(name="newwin")
+    win_instance = MagicMock(name="win_instance")
+    win_instance.getch.return_value = 27  # ESC to exit
+    newwin.return_value = win_instance
+
+    monkeypatch.setattr(curses, "newwin", newwin)
+    monkeypatch.setattr(curses, "napms", MagicMock())
+
+    tui_modal._run_modal(
+        stdscr, theme,
+        title="T\x01\x02\x1b\x7f\x9f",
+        prompt="P\x03\x04\x0a\x0d\x08",
+        initial_value="V\x05\x06\x09\x80\x1b",
+    )
+
+    all_text = _all_chars_in_addstr_calls(win_instance)
+    for ch in all_text:
+        cp = ord(ch)
+        assert not (cp < 32 or 0x7F <= cp <= 0x9F), (
+            f"Raw control char U+{cp:04X} found in addstr output: {all_text!r}"
+        )
+
+    # --- Test _run_scrollable_modal ---
+    newwin2 = MagicMock(name="newwin2")
+    win_instance2 = MagicMock(name="win_instance2")
+    win_instance2.getch.return_value = 27  # ESC to exit
+    newwin2.return_value = win_instance2
+
+    monkeypatch.setattr(curses, "newwin", newwin2)
+
+    tui_modal._run_scrollable_modal(
+        stdscr, theme,
+        title="S\x1b\x00\x7f\x9f",
+        lines=["L1\x01\x80", "L2\x1b\x9f", "L3\x0a\x7f"],
+    )
+
+    all_text2 = _all_chars_in_addstr_calls(win_instance2)
+    for ch in all_text2:
+        cp = ord(ch)
+        assert not (cp < 32 or 0x7F <= cp <= 0x9F), (
+            f"Raw control char U+{cp:04X} found in scrollable addstr output: {all_text2!r}"
+        )

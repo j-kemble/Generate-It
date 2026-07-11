@@ -7,6 +7,8 @@ from typing import Callable, TYPE_CHECKING
 import curses
 import textwrap
 
+from .tui_helpers import _sanitize_terminal_text
+
 if TYPE_CHECKING:
     from . import tui
 
@@ -91,7 +93,7 @@ def _run_modal(
         win.erase()
         win.box()
         # Title
-        title_text = f" {title} "
+        title_text = f" {_sanitize_terminal_text(title)} "
         try:
             win.addstr(0, 2, title_text[: max(0, box_w - 4)], theme.title)
         except curses.error:
@@ -100,12 +102,12 @@ def _run_modal(
         # Prompt (wrapped)
         for i, line in enumerate(prompt_lines):
             try:
-                win.addstr(2 + i, 2, line[:inner_w], theme.accent)
+                win.addstr(2 + i, 2, _sanitize_terminal_text(line)[:inner_w], theme.accent)
             except curses.error:
                 pass
         # Input field
         field_attr = curses.A_REVERSE | theme.dim
-        display_str = "*" * len(input_str) if is_password else input_str
+        display_str = "*" * len(input_str) if is_password else _sanitize_terminal_text(input_str)
         # Cursor simulation
         display_str += " "
         if len(display_str) > inner_w:
@@ -180,14 +182,14 @@ def _run_scrollable_modal(
         win.erase()
         win.box()
         # Title
-        title_text = f" {title} "
+        title_text = f" {_sanitize_terminal_text(title)} "
         win.addstr(0, 2, title_text[:box_w-4], theme.title)
 
         # Content with scrolling
         visible_lines = lines[scroll_pos:scroll_pos + content_h]
         for i, line in enumerate(visible_lines):
             try:
-                win.addstr(2 + i, 2, line[:box_w-4])
+                win.addstr(2 + i, 2, _sanitize_terminal_text(line)[:box_w-4])
             except curses.error:
                 pass
 

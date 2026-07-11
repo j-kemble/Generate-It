@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 
 from . import generator
 from . import tui as _tui
-from .tui_helpers import _estimate_entropy_bits, _strength_label
+from .tui_helpers import _estimate_entropy_bits, _sanitize_terminal_text, _strength_label
 
 if TYPE_CHECKING:
     from .tui_state import AppState
@@ -108,34 +108,6 @@ def _pixel_banner(text: str) -> list[str]:
 
 
 # --- Low-level drawing helpers ---------------------------------------------
-
-def _sanitize_terminal_text(text: str) -> str:
-    """Replace control characters with visible escaped representations.
-
-    Prevents control-character injection from user-controlled strings
-    (service, username, note, import results) reaching curses.addstr()
-    unchanged.  Printable Unicode (including non-ASCII) is left alone.
-    """
-    result: list[str] = []
-    for ch in text:
-        cp = ord(ch)
-        if cp == 0x0A:          # \n
-            result.append("\\n")
-        elif cp == 0x09:        # \t
-            result.append("\\t")
-        elif cp == 0x0D:        # \r
-            result.append("\\r")
-        elif cp == 0x08:        # \b (backspace)
-            result.append("\\b")
-        elif cp == 0x1B:        # ESC
-            result.append("\\e")
-        elif cp < 0x20:         # other C0 controls (0x00–0x1F)
-            result.append(f"\\x{cp:02x}")
-        elif 0x7F <= cp <= 0x9F:  # DEL (0x7F) + C1 controls (0x80–0x9F)
-            result.append(f"\\x{cp:02x}")
-        else:
-            result.append(ch)
-    return "".join(result)
 
 
 def _addstr_safe(
