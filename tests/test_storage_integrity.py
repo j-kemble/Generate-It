@@ -205,3 +205,45 @@ def test_encrypt_credential_fields_empty_note(tmp_path) -> None:
     assert isinstance(password_ct, bytes)
     assert note_ct is None
     storage.close()
+
+
+# ── Phase 6, Task 2: narrow storage exception handling ──────────────────
+
+def test_get_app_setting_corrupted_value_returns_default(tmp_path) -> None:
+    """Corrupt bytes in config still return default, not an exception."""
+    db_path = tmp_path / "vault.db"
+    storage = StorageManager(db_path=db_path)
+    storage.initialize_vault("master")
+    storage.set_app_setting("theme", "dark")
+    storage.close()
+
+    # Inject invalid UTF-8 bytes directly
+    import sqlite3
+    raw = sqlite3.connect(db_path)
+    raw.execute("UPDATE config SET value = ? WHERE key = ?",
+                (b"\xff\xfe\x00\x01", "app_setting:theme"))
+    raw.commit()
+    raw.close()
+
+    storage = StorageManager(db_path=db_path)
+    result = storage.get_app_setting("theme", default="fallback")
+    storage.close()
+    assert result == "fallback"
+
+
+def test_get_app_setting_propagates_unexpected_error(monkeypatch, tmp_path) -> None:
+    """Non-decode errors in get_app_setting propagate, not silently swallowed."""
+    db_path = tmp_path / "vault.db"
+    storage = StorageManager(db_path=db_path)
+    storage.initialize_vault("master")
+    storage.set_app_setting("theme", "dark")
+    storage.close()
+
+    storage = StorageManager(db_path=db_path)
+    # Monkeypatch _get_conn to return a broken connection
+    def broken():
+        raise RuntimeError("disk failure")
+    storage._get_conn = broken
+    with pytest.raises(RuntimeError, match="disk failure"):
+        storage.get_app_setting("theme", default="fallback")
+    storage.close()

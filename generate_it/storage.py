@@ -85,7 +85,7 @@ class StorageManager:
         if isinstance(value, bytes):
             try:
                 return value.decode("utf-8")
-            except Exception:
+            except UnicodeDecodeError:
                 return default
         if value is None:
             return default
@@ -211,9 +211,7 @@ class StorageManager:
                 raise InvalidPasswordError("Invalid master password.")
         except (InvalidPasswordError, InvalidToken):
             raise InvalidPasswordError("Invalid master password.")
-        except Exception as e:
-            # Re-raise as storage error if it's not a password validation issue
-            # (e.g., database corruption, connection issues)
+        except sqlite3.Error as e:
             raise StorageError(f"Failed to decrypt vault verification: {e}") from e
         
         self._fernet = fernet
