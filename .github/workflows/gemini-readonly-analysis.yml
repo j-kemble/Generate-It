@@ -1,0 +1,61 @@
+name: "Gemini Read-Only Analysis"
+
+on:
+  issues:
+    types: [opened]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  analyze:
+    if: |
+      (github.event_name == 'issues' && github.event.action == 'opened') ||
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '/gemini'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts/
+            README.md
+
+      - name: Validate event content
+        run: |
+          python3 .github/scripts/validate_issue_content.py
+        env:
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+
+      - name: Generate analysis (read-only)
+        run: |
+          echo "=== Gemini Read-Only Analysis ==="
+          echo ""
+          echo "Event: ${{ github.event_name }}"
+          echo "Action: ${{ github.event.action }}"
+          echo ""
+          if [ -n "$ISSUE_TITLE" ]; then
+            echo "Issue Title: $ISSUE_TITLE"
+          fi
+          echo ""
+          echo "--- Analysis placeholder ---"
+          echo "This job has NO write token. It can only read issue/PR content."
+          echo "In the full implementation, this step would invoke Gemini CLI"
+          echo "with a read-only token to produce an analysis or plan."
+          echo ""
+          echo "The analysis output would be posted as a comment using the"
+          echo "read-only GITHUB_TOKEN (which can only read issues)."
+          echo ""
+          echo "No mutation is possible from this workflow."
+        env:
+          GITHUB_TOKEN: ""  # Explicitly clear — no auth token
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
