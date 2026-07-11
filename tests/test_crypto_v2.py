@@ -594,6 +594,38 @@ class TestVaultV2Migration:
         assert storage4._vault_version == 1
         storage4.close()
 
+    def test_migration_backup_symlink_not_followed(self, tmp_path) -> None:
+        """Pre-created backup-path symlink must not cause writes to the target."""
+        db_path = tmp_path / "vault.db"
+        victim_path = tmp_path / "victim.txt"
+        victim_path.write_text("original victim content")
+
+        # Determine the predictable backup path the *current* code uses.
+        backup_path = db_path.with_suffix(db_path.suffix + ".v1.bak")
+        # Pre-create it as a symlink to victim.txt — this is the attack.
+        backup_path.symlink_to(victim_path)
+
+        pw = "a-strong-master-password"
+        storage = StorageManager(db_path=db_path)
+        try:
+            storage.initialize_vault(pw)
+            storage.save_credential("GitHub", "dev", "secret123456")
+            storage.migrate_v1_to_v2(pw)
+
+            # After the fix: victim.txt must NOT have been overwritten.
+            assert victim_path.read_text() == "original victim content", (
+                "victim.txt was modified — symlink was followed!"
+            )
+
+            # The backup must now be a regular file (not a symlink).
+            assert backup_path.is_file()
+            assert not backup_path.is_symlink()
+
+            # Verify migration succeeded.
+            assert storage._vault_version == 2
+        finally:
+            storage.close()
+
 
 class TestVaultV2AssociatedDataBinding:
     """Verify that AEAD associated data prevents ciphertext substitution."""

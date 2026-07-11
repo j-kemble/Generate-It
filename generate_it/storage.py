@@ -1,3 +1,4 @@
+import tempfile
 import os
 import shutil
 import sqlite3
@@ -124,6 +125,21 @@ class StorageManager:
             os.chmod(str(path), mode)
         except OSError:
             _log.warning("Could not set permissions on %s", path)
+
+    @staticmethod
+    def _secure_temp_file(dir_path: Path, suffix: str) -> Path:
+        """Create a securely-named temp file in *dir_path* with mode 0600.
+
+        Uses :func:`tempfile.mkstemp` to generate an unpredictable name,
+        avoiding symlink-following attacks on predictable temp-file paths.
+        The returned file exists on disk with restricted permissions and
+        an open file descriptor has been closed — callers are responsible
+        for opening and writing to it.
+        """
+        fd, tmp_path = tempfile.mkstemp(suffix=suffix, dir=str(dir_path))
+        os.close(fd)
+        os.chmod(tmp_path, 0o600)
+        return Path(tmp_path)
 
     def _get_conn(self) -> sqlite3.Connection:
         if not self._db_connection:
@@ -556,9 +572,21 @@ class StorageManager:
         if self._vault_version != 1:
             raise StorageError("Migration requires an unlocked v1 vault.")
 
-        # 1. Create backup.
+        # 1. Create a secure backup with an unpredictable name, then atomically
+        #    rename to the predictable .v1.bak path.  This avoids symlink-following
+        #    attacks on the well-known backup filename.
+        backup_tmp = self._secure_temp_file(self.db_path.parent, ".v1.bak")
+        try:
+            shutil.copy2(self.db_path, backup_tmp)
+        except BaseException:
+            if backup_tmp.exists():
+                try:
+                    backup_tmp.unlink()
+                except OSError:
+                    pass
+            raise
         backup_path = self.db_path.with_suffix(self.db_path.suffix + ".v1.bak")
-        shutil.copy2(self.db_path, backup_path)
+        os.replace(str(backup_tmp), str(backup_path))
         _log.info("v1 backup created at %s", backup_path)
 
         conn = self._get_conn()
@@ -1057,8 +1085,8 @@ class StorageManager:
         exported = 0
         skipped = []
 
-        # Write to a private temporary file, then atomically replace.
-        tmp_path = csv_path.with_suffix(".tmp" + csv_path.suffix)
+        # Write to a securely-named temp file, then atomically replace.
+        tmp_path = self._secure_temp_file(csv_path.parent, csv_path.suffix)
         try:
             with open(tmp_path, 'w', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
@@ -1084,12 +1112,14 @@ class StorageManager:
                             'error': "Unable to decrypt credential"
                         })
 
-            # Enforce owner-only permissions on the temp file.
-            if hasattr(os, "chmod"):
-                os.chmod(str(tmp_path), 0o600)
+            # Ensure data is flushed to disk before atomic rename.
+            fd = os.open(str(tmp_path), os.O_RDONLY)
+            os.fsync(fd)
+            os.close(fd)
 
-            # Atomic replacement.
-            tmp_path.replace(csv_path)
+            # Atomic rename (os.replace is atomic on POSIX, fails if
+            # destination exists on Windows but that's a minor edge-case).
+            os.replace(str(tmp_path), str(csv_path))
         except BaseException:
             # Clean up temp file on any failure.
             if tmp_path.exists():

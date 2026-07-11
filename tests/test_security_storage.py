@@ -171,6 +171,52 @@ class TestExportSecurity:
             storage.close()
 
 
+class TestExportTempSymlink:
+    """Task 5: CSV export must not follow symlinks at predictable temp paths."""
+
+    def test_export_temp_symlink_not_followed(self, tmp_path):
+        """Pre-created temp-path symlink must not cause writes to the target."""
+        from generate_it.storage import StorageManager
+
+        db_path = tmp_path / "vault.db"
+        csv_path = tmp_path / "export.csv"
+        victim_path = tmp_path / "victim.txt"
+        victim_path.write_text("original victim content")
+
+        # Determine the predictable temp path the *current* code uses.
+        temp_path = csv_path.with_suffix(".tmp" + csv_path.suffix)
+        # Pre-create it as a symlink to victim.txt — this is the attack.
+        temp_path.symlink_to(victim_path)
+
+        storage = StorageManager(db_path=db_path)
+        try:
+            storage.initialize_vault("a-strong-master-password")
+            storage.save_credential("GitHub", "dev", "secret123456")
+
+            exported, skipped = storage.export_to_csv(csv_path)
+            assert exported == 1
+            assert skipped == []
+
+            # After the fix: victim.txt must NOT have been overwritten.
+            assert victim_path.read_text() == "original victim content", (
+                "victim.txt was modified — symlink was followed!"
+            )
+
+            # Final export.csv must be a regular file with 0600 perms.
+            assert csv_path.is_file()
+            assert not csv_path.is_symlink()
+            if hasattr(os, "chmod"):
+                import stat
+                mode = stat.S_IMODE(os.stat(csv_path).st_mode)
+                assert mode == 0o600, f"Expected 0600, got {oct(mode)}"
+
+            # The old predictable temp-path symlink may still exist — that's fine;
+            # the new code uses an unpredictable temp name and never touches it.
+            # What matters is that victim.txt is unchanged.
+        finally:
+            storage.close()
+
+
 class TestKdfValidation:
     """Task 4.2: Malformed KDF parameters must be rejected, not silently ignored."""
 
