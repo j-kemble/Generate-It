@@ -1627,6 +1627,7 @@ def run() -> int:
     
                 _render_footer(stdscr, theme, state.message)
                 stdscr.refresh()
+                redraw = False
 
             key = stdscr.getch()
             redraw = (key != -1)
@@ -1647,6 +1648,7 @@ def run() -> int:
                 continue
                 return 0
             if key == curses.KEY_RESIZE:
+                redraw = True
                 continue
 
             # Navigation
