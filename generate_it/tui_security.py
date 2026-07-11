@@ -36,7 +36,7 @@ def _prompt_unlock_vault(
         try:
             state.storage.unlock_vault(pwd)
             state.vault_unlocked = True
-            state.vault_credentials = state.storage.list_credentials()
+            state.vault_credentials = state.storage.list_credential_metadata()
             tui._record_user_activity(state)
             state.message = "Vault unlocked."
             return True

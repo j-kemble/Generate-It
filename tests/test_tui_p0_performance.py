@@ -111,7 +111,7 @@ def test_vault_modal_reuses_window_and_refilters_after_credentials_refresh(monke
     ]
     state = tui.AppState()
     state.vault_unlocked = True
-    state.storage = SimpleNamespace(list_credentials=lambda: credentials)
+    state.storage = SimpleNamespace(list_credential_metadata=lambda: credentials)
     refreshed_credentials = list(credentials)
     window = _window_with_keys(-1, tui.curses.KEY_DOWN, 27)
     newwin = MagicMock(return_value=window)

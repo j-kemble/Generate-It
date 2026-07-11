@@ -135,6 +135,9 @@ def test_save_credential_duplicate_safe_saves_when_no_duplicate(monkeypatch) -> 
                 creds.append({"id": i, "service": item[0], "username": item[1], "password": item[2]})
             return creds
 
+        def list_credential_metadata(self):
+            return [{"id": c["id"], "service": c["service"], "username": c["username"]} for c in self.list_credentials()]
+
         def save_credential(self, service: str, username: str, password: str, note: str = "", note_is_hidden: bool = False) -> int:
             self.saved.append((service, username, password, note, note_is_hidden))
             return 99
@@ -176,6 +179,9 @@ def test_save_credential_duplicate_safe_allows_same_service_different_username(m
                 creds.append({"id": i, "service": item[0], "username": item[1], "password": item[2]})
             return creds
 
+        def list_credential_metadata(self):
+            return [{"id": c["id"], "service": c["service"], "username": c["username"]} for c in self.list_credentials()]
+
         def save_credential(self, service: str, username: str, password: str, note: str = "", note_is_hidden: bool = False) -> int:
             self.saved.append((service, username, password, note, note_is_hidden))
             return 99
@@ -212,6 +218,9 @@ def test_save_credential_duplicate_safe_overwrites_on_confirmation(monkeypatch) 
         def list_credentials(self):
             return [{"id": 42, "service": "GitHub", "username": "dev", "password": "old"}]
 
+        def list_credential_metadata(self):
+            return [{"id": 42, "service": "GitHub", "username": "dev"}]
+
         def save_credential(self, service: str, username: str, password: str, note: str = "", note_is_hidden: bool = False) -> int:
             raise AssertionError("save_credential should not be called for duplicates")
 
@@ -246,6 +255,9 @@ def test_save_credential_duplicate_safe_cancels_without_overwrite(monkeypatch) -
 
         def list_credentials(self):
             return [{"id": 42, "service": "GitHub", "username": "dev", "password": "old"}]
+
+        def list_credential_metadata(self):
+            return [{"id": 42, "service": "GitHub", "username": "dev"}]
 
         def save_credential(self, service: str, username: str, password: str, note: str = "") -> int:
             self.saved.append((service, username, password, note))

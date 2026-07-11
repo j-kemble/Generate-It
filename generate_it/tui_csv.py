@@ -201,7 +201,7 @@ def import_vault_csv(
         _log.info("imported %d credentials from %s", imported, csv_path)
 
         # Refresh vault list
-        state.vault_credentials = storage.list_credentials()
+        state.vault_credentials = storage.list_credential_metadata()
 
         return (imported, skipped_num, duplicates)
 

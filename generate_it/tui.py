@@ -89,7 +89,7 @@ def _save_credential_duplicate_safe(
         raise RuntimeError("Vault is unavailable.")
 
     existing = _find_duplicate_credential(
-        state.storage.list_credentials(),
+        state.storage.list_credential_metadata(),
         service,
         username,
     )
@@ -105,11 +105,11 @@ def _save_credential_duplicate_safe(
             return "cancelled"
 
         state.storage.update_credential(existing["id"], service, username, password, note, note_is_hidden)
-        state.vault_credentials = state.storage.list_credentials()
+        state.vault_credentials = state.storage.list_credential_metadata()
         return "overwritten"
 
     state.storage.save_credential(service, username, password, note, note_is_hidden)
-    state.vault_credentials = state.storage.list_credentials()
+    state.vault_credentials = state.storage.list_credential_metadata()
     return "saved"
 
 def _resolve_start_dir(path_text: str) -> Path:
@@ -739,6 +739,8 @@ def _lock_vault(state: AppState) -> None:
     state.vault_credentials = []
     state.vault_selected_idx = 0
     state.vault_scroll_y = 0
+    state.revealed_secret = None
+    state.revealed_secret_id = None
 
 def _focus_items(state: AppState) -> list[str]:
     items = ["mode_chars", "mode_words", "mode_username"]
@@ -973,6 +975,11 @@ def _run_details_modal(
     feedback_attr = theme.dim
     feedback_until = 0.0
     password_revealed = False
+
+    # Load secret on demand
+    if state.storage and state.revealed_secret_id != credential['id']:
+        state.revealed_secret = state.storage.get_credential_secret(credential['id'])
+        state.revealed_secret_id = credential['id']
     
     while True:
         if _maybe_auto_clear_clipboard(state):
@@ -1004,8 +1011,8 @@ def _run_details_modal(
         row += 2
         
         # Note
-        note_text = credential.get('note', '')
-        note_is_hidden = credential.get('note_is_hidden', False)
+        note_text = state.revealed_secret.get('note', '') if state.revealed_secret else ''
+        note_is_hidden = state.revealed_secret.get('note_is_hidden', False) if state.revealed_secret else False
         display_note = "*" * len(note_text) if note_is_hidden and note_text else note_text
         if display_note:
             win.addstr(row, 2, "Note:", label_attr)
@@ -1018,11 +1025,12 @@ def _run_details_modal(
                 row += 1
 
         win.addstr(row, 2, "Password:", label_attr)
-        if password_revealed:
-            win.addstr(row, 12, R._sanitize_terminal_text(credential['password'][:box_w-14]), val_attr)
-        else:
-            masked = "*" * min(len(credential['password']), 20)
-            win.addstr(row, 12, masked[:box_w-14], val_attr)
+        if state.revealed_secret:
+            if password_revealed:
+                win.addstr(row, 12, R._sanitize_terminal_text(state.revealed_secret['password'][:box_w-14]), val_attr)
+            else:
+                masked = "*" * min(len(state.revealed_secret['password']), 20)
+                win.addstr(row, 12, masked[:box_w-14], val_attr)
         row += 2
         
         win.addstr(row, 2, "Created:", label_attr)
@@ -1063,11 +1071,12 @@ def _run_details_modal(
             
         elif key in (ord('c'), ord('C')):
             try:
-                msg = tui_flow._copy_to_clipboard_with_policy(state, credential['password'])
-                feedback_text = "       COPIED PASSWORD!       "
-                feedback_attr = theme.ok
-                feedback_until = time.monotonic() + 0.5
-                state.message = msg
+                if state.revealed_secret:
+                    msg = tui_flow._copy_to_clipboard_with_policy(state, state.revealed_secret['password'])
+                    feedback_text = "       COPIED PASSWORD!       "
+                    feedback_attr = theme.ok
+                    feedback_until = time.monotonic() + 0.5
+                    state.message = msg
             except (StorageError, PyperclipException):
                 pass
 
@@ -1100,17 +1109,18 @@ def _run_details_modal(
             if note_text:
                 try:
                     cred_id = credential['id']
-                    current_hidden = credential.get('note_is_hidden', False)
-                    if state.storage:
+                    current_hidden = note_is_hidden
+                    if state.storage and state.revealed_secret:
                         state.storage.update_credential(
                             cred_id,
                             credential['service'],
                             credential['username'],
-                            credential['password'],
-                            note_text,
+                            state.revealed_secret['password'],
+                            state.revealed_secret['note'],
                             not current_hidden
                         )
-                        state.vault_credentials = state.storage.list_credentials()
+                        state.vault_credentials = state.storage.list_credential_metadata()
+                        state.revealed_secret['note_is_hidden'] = not current_hidden
                     credential = next((c for c in state.vault_credentials if c['id'] == cred_id), credential)
                     break
                 except StorageError as e:
@@ -1135,7 +1145,7 @@ def _run_vault_modal(
         return
         
     # Reload credentials
-    state.vault_credentials = state.storage.list_credentials()
+    state.vault_credentials = state.storage.list_credential_metadata()
     vault_filter = ""
     search_mode = start_in_search
     window_cache = tui_modal._WindowCache()
@@ -1365,7 +1375,7 @@ def _run_vault_modal(
                     note_is_hidden = hide_note.lower() == "y"
                     
                     state.storage.update_credential(cred["id"], service, username, password, note, note_is_hidden)
-                    state.vault_credentials = state.storage.list_credentials()
+                    state.vault_credentials = state.storage.list_credential_metadata()
 
                     refreshed_filtered = _filter_vault_credentials(state.vault_credentials, vault_filter)
                     found_idx = next(
@@ -1386,8 +1396,10 @@ def _run_vault_modal(
             if filtered_credentials:
                 cred = filtered_credentials[state.vault_selected_idx]
                 try:
-                    msg = tui_flow._copy_to_clipboard_with_policy(state, cred['password'])
-                    tui_modal._run_modal(stdscr, theme, "SUCCESS", msg)
+                    if state.storage:
+                        secret = state.storage.get_credential_secret(cred['id'])
+                        msg = tui_flow._copy_to_clipboard_with_policy(state, secret['password'])
+                        tui_modal._run_modal(stdscr, theme, "SUCCESS", msg)
                 except (StorageError, PyperclipException) as e:
                     tui_modal._run_modal(stdscr, theme, "ERROR", f"Copy failed: {e}")
 
@@ -1412,7 +1424,7 @@ def _run_vault_modal(
                 if confirm and confirm.lower() == 'yes':
                     try:
                         state.storage.delete_credential(cred['id'])
-                        state.vault_credentials = state.storage.list_credentials()
+                        state.vault_credentials = state.storage.list_credential_metadata()
                         refreshed_filtered = _filter_vault_credentials(state.vault_credentials, vault_filter)
                         if state.vault_selected_idx >= len(refreshed_filtered):
                             state.vault_selected_idx = max(0, len(refreshed_filtered) - 1)
@@ -1517,7 +1529,7 @@ def run() -> int:
 
         # Load initial credentials
         if state.vault_unlocked and state.storage:
-            state.vault_credentials = state.storage.list_credentials()
+            state.vault_credentials = state.storage.list_credential_metadata()
             _load_security_settings(state)
             _record_user_activity(state)
 

@@ -368,6 +368,48 @@ class StorageManager:
         _log.info("credential saved: service=%r username=%r", service, username)
         return int(cursor.lastrowid or 0)
 
+    def list_credential_metadata(self) -> list[dict]:
+        """Return metadata for all credentials without decrypting passwords/notes.
+
+        Returns list of dicts with keys: id, service, username, created_at
+        """
+        self._require_unlocked()
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, service, username, created_at FROM credentials ORDER BY service"
+        )
+        return [
+            {
+                "id": row["id"],
+                "service": row["service"],
+                "username": row["username"],
+                "created_at": row["created_at"],
+            }
+            for row in cursor.fetchall()
+        ]
+
+    def get_credential_secret(self, credential_id: int) -> dict:
+        """Decrypt and return the password and note for one credential.
+
+        Returns dict with keys: password, note, note_is_hidden
+        """
+        fernet = self._require_unlocked()
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT encrypted_password, encrypted_note, note_is_hidden FROM credentials WHERE id=?",
+            (credential_id,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            raise StorageError(f"Credential {credential_id} not found.")
+        password, note = self._decrypt_credential_fields(row, fernet)
+        note_is_hidden = bool(row["note_is_hidden"]) if row["note_is_hidden"] is not None else False
+        return {"password": password, "note": note, "note_is_hidden": note_is_hidden}
+
+    # Kept for CSV export/import and tests. Prefer list_credential_metadata()
+    # + get_credential_secret() for UI operations.
     def list_credentials(self) -> List[dict]:
         """Returns a list of credentials with decrypted passwords and notes."""
         fernet = self._require_unlocked()

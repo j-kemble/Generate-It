@@ -105,12 +105,12 @@ def test_details_modal_masks_password_by_default(monkeypatch) -> None:
     state = tui.AppState()
     state.vault_unlocked = True
     state.storage = MagicMock(name="StorageManager")
+    state.storage.get_credential_secret.return_value = {"password": "my-secret-password", "note": "", "note_is_hidden": False}
     
     credential = {
         "id": 1,
         "service": "GitHub",
         "username": "dev",
-        "password": "my-secret-password",
         "note": "",
         "note_is_hidden": False,
         "created_at": "2026-01-01",

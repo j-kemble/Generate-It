@@ -49,3 +49,8 @@ class AppState:
     clipboard_clear_expected: str | None = None
     last_activity_at: float = field(default_factory=time.monotonic)
     last_tick_at: float = field(default_factory=time.monotonic)
+
+    # Transient: currently revealed credential secret (password + note).
+    # Cleared on lock, modal close, or selection change.
+    revealed_secret: dict | None = None
+    revealed_secret_id: int | None = None

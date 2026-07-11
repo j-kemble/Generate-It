@@ -10,12 +10,13 @@ from generate_it import tui
 
 def test_details_copy_feedback_is_rendered_on_next_frame_without_sleep(monkeypatch) -> None:
     state = tui.AppState()
+    state.storage = MagicMock(name="StorageManager")
+    state.storage.get_credential_secret.return_value = {"password": "secret", "note": "", "note_is_hidden": False}
     theme = SimpleNamespace(title=0, dim=0, ok=1, warn=2)
     credential = {
         "id": 1,
         "service": "GitHub",
         "username": "octocat",
-        "password": "secret",
         "created_at": "2026-07-10",
     }
     stdscr = MagicMock(name="stdscr")
