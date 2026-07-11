@@ -146,18 +146,14 @@ def test_load_wordlist_ignores_comments_blanks_and_dedupes(tmp_path: Path) -> No
     ]
 
 
-def test_load_wordlist_precedence_env_over_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_load_wordlist_env_var(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     env_wl = tmp_path / "env_wordlist.txt"
     env_wl.write_text("\n".join([f"env{i}" for i in range(12)]) + "\n", encoding="utf-8")
 
-    cwd_dir = tmp_path / "cwd"
-    cwd_dir.mkdir()
-    (cwd_dir / "wordlist.txt").write_text(
-        "\n".join([f"cwd{i}" for i in range(12)]) + "\n", encoding="utf-8"
-    )
-
-    monkeypatch.chdir(cwd_dir)
     monkeypatch.setenv("GENERATE_IT_WORDLIST", str(env_wl))
+
+    # Clear cache to test the actual lookup path.
+    generator.load_wordlist.cache_clear()
 
     words = generator.load_wordlist()
     assert words[0] == "env0"

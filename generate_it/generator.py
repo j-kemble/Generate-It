@@ -35,9 +35,8 @@ USERNAME_SEPARATORS = frozenset(["_", "-"])
 
 # Wordlist lookup order:
 # 1) explicit `path` argument
-# 2) $GENERATE_IT_WORDLIST
-# 3) ./wordlist.txt (current working directory)
-# 4) packaged default: generate_it/wordlist.txt
+# 2) $GENERATE_IT_WORDLIST env var
+# 3) packaged default: generate_it/wordlist.txt
 PACKAGED_WORDLIST_PATH = Path(__file__).with_name("wordlist.txt")
 
 DEFAULT_WORDLIST = [
@@ -332,9 +331,8 @@ def load_wordlist(path: Path | None = None) -> list[str]:
 
     Source order:
     1) explicit `path`
-    2) $GENERATE_IT_WORDLIST
-    3) ./wordlist.txt (current working directory)
-    4) packaged default (generate_it/wordlist.txt)
+    2) $GENERATE_IT_WORDLIST env var
+    3) packaged default (generate_it/wordlist.txt)
 
     Lines starting with `#` and blank lines are ignored.
     Falls back to a small built-in list if the file is missing or too small.
@@ -345,8 +343,7 @@ def load_wordlist(path: Path | None = None) -> list[str]:
         if env_path:
             path = Path(env_path).expanduser()
         else:
-            cwd_path = Path.cwd() / "wordlist.txt"
-            path = cwd_path if cwd_path.exists() else PACKAGED_WORDLIST_PATH
+            path = PACKAGED_WORDLIST_PATH
 
     if not path.exists():
         return DEFAULT_WORDLIST

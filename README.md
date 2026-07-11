@@ -188,10 +188,9 @@ All security checks run automatically on every commit via GitHub Actions.
 
 The included word list contains **~7,700** lowercase words from the [EFF long wordlist](https://www.eff.org/deeplinks/2016/07/new-wordlists-random-passphrases) (sourced for high security).
 
-Override the word list in one of these ways (highest priority first):
+Override the word list with the `GENERATE_IT_WORDLIST` environment variable:
 
 1) Set `GENERATE_IT_WORDLIST` to a file path
-2) Put a `wordlist.txt` in your current working directory
 
 Otherwise, Generate It uses the bundled default word list.
 
