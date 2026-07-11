@@ -598,6 +598,8 @@ class StorageManager:
         if self._vault_version != 1:
             raise StorageError("Migration requires an unlocked v1 vault.")
 
+        _validate_master_password(master_password)
+
         # 1. Create a secure backup with an unpredictable name, then atomically
         #    rename to the predictable .v1.bak path.  This avoids symlink-following
         #    attacks on the well-known backup filename.

@@ -1508,7 +1508,7 @@ def run() -> int:
 
                 if pwd == pwd2:
                     try:
-                        state.storage.initialize_vault(pwd)
+                        state.storage.initialize_vault_v2(pwd)
                         state.vault_unlocked = True
                         break
                     except StorageError as e:
