@@ -6,8 +6,8 @@ This document specifies a versioned, breaking migration of the Generate-It crede
 
 **Related documents:**
 
-- `SECURITY_REVIEW.md` — findings M4 (unbound ciphertext), M1 (full-vault decryption), H2 (weak KDF)
-- `SECURITY_REMEDIATION_PLAN.md` — Phase 4, Task 4.3 (this specification) and Task 4.4 (implementation)
+- `review-commit.md` — finding M4 (unbound ciphertext), M1 (full-vault decryption), H2 (weak KDF)
+- `review-commit.md` — Phase 4: vault v2 specification and implementation
 - `generate_it/storage.py` — current v1 `StorageManager` (PBKDF2 + Fernet + SQLite)
 
 ---
@@ -103,7 +103,7 @@ The Key Encryption Key (KEK) is derived from the master password using Argon2id.
 
 **Alternative:** scrypt (N=2^14, r=8, p=1) may be supported as a secondary option, configured at vault creation. The vault config records which KDF was used and its parameters. At unlock, the stored parameters are honored.
 
-**Rationale for Argon2id over PBKDF2:** The current v1 KDF (PBKDF2-HMAC-SHA256, 480k iterations, 32-byte salt) is GPU-friendly and does not impose a memory cost. Argon2id's memory hardness raises the cost of ASIC/GPU cracking by requiring 64 MiB per guess. This is the primary remediation for SECURITY_REVIEW.md finding H2.
+**Rationale for Argon2id over PBKDF2:** The current v1 KDF (PBKDF2-HMAC-SHA256, 480k iterations, 32-byte salt) is GPU-friendly and does not impose a memory cost. Argon2id's memory hardness raises the cost of ASIC/GPU cracking by requiring 64 MiB per guess. This is the primary remediation for finding H2.
 
 **KDF parameter persistence (same pattern as v1):**
 
@@ -211,7 +211,7 @@ associated_data = b"".join([
 - **field_name:** Prevents swapping password and note ciphertext for the same credential.
 - **version:** Prevents ciphertext from being interpreted under a different format's scheme.
 
-This directly remediates SECURITY_REVIEW.md finding M4: "Valid ciphertext is not bound to its row, field, or metadata."
+This directly remediates finding M4: "Valid ciphertext is not bound to its row, field, or metadata."
 
 **Encrypted field wire format:** The AEAD ciphertext is stored as-is (nonce + ciphertext + tag, concatenated by the library). AES-256-GCM produces:
 
