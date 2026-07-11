@@ -1,0 +1,12 @@
+# CI dependencies for Generate-It
+# Runtime
+platformdirs
+cryptography
+pyperclip
+# Dev/test
+pytest
+pytest-cov
+bandit[toml]
+pip-audit
+mypy
+pre-commit

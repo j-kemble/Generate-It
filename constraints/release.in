@@ -1,0 +1,4 @@
+# Release dependencies for Generate-It (CI + build tools)
+-r ci.in
+build
+twine
