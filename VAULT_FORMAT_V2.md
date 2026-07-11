@@ -213,6 +213,67 @@ associated_data = b"".join([
 
 This directly remediates finding M4: "Valid ciphertext is not bound to its row, field, or metadata."
 
+### 2.5.1 AAD v2 — Metadata-Bound (aad_version=2)
+
+AAD v2 extends the associated data binding to include the credential's
+metadata (service and username).  This prevents an attacker from
+re-labelling a credential without re-encrypting its fields — the
+ciphertext is now bound to **what** the credential represents, not
+just **which UUID** it has.
+
+**AAD v2 wire format:**
+
+```text
+uint16: aad_version = 2
+uint8:  vault_uuid length (16)
+bytes:  vault_uuid (16)
+uint8:  credential_uuid length (16)
+bytes:  credential_uuid (16)
+bytes:  field_name (UTF-8, e.g. "password" or "note")
+bytes:  service (UTF-8, normalised: lowercased + stripped)
+bytes:  username (UTF-8, normalised: lowercased + stripped)
+```
+
+**Construction (Python):**
+
+```python
+def make_associated_data_v2(vault_uuid, credential_uuid, field_name, service, username):
+    normalised_service = service.strip().lower()
+    normalised_username = username.strip().lower()
+    parts = [
+        struct.pack(">H", 2),                     # aad_version
+        struct.pack(">B", VAULT_UUID_LEN),        # vault_uuid length
+        vault_uuid,                                # vault_uuid
+        struct.pack(">B", CREDENTIAL_UUID_LEN),   # credential_uuid length
+        credential_uuid,                           # credential_uuid
+        field_name.encode(),                       # field_name
+        normalised_service.encode(),               # service (normalised)
+        normalised_username.encode(),              # username (normalised)
+    ]
+    return b"".join(parts)
+```
+
+**Normalisation rules:** `service` and `username` are lowercased and
+stripped before encoding.  This ensures that metadata changes that
+don't affect the actual identity (trailing spaces, case) do not
+invalidate ciphertext.
+
+**Migration (AAD v1 → v2):** Re-encrypts every credential field with
+AAD v2 and sets ``aad_version = 2`` in the config table.  A backup
+``vault.db.aad_v1.bak`` is created before migration begins.  The old
+AAD v1 vault (``aad_version=1`` or absent) continues to unlock before
+migration.
+
+**AAD version config key:**
+
+| Key | Value | Description |
+|-----|-------|-------------|
+| `aad_version` | `"1"` or absent | Legacy AAD v1 (UUID-only binding) |
+| `aad_version` | `"2"` | AAD v2 (metadata-bound) |
+
+The verification token always uses AAD v1 regardless of ``aad_version``,
+since it has no credential-level metadata to bind.
+
 **Encrypted field wire format:** The AEAD ciphertext is stored as-is (nonce + ciphertext + tag, concatenated by the library). AES-256-GCM produces:
 
 ```text

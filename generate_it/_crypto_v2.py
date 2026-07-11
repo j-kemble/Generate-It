@@ -231,7 +231,7 @@ def make_associated_data(
 ) -> bytes:
     """Build AEAD associated data binding ciphertext to vault + credential + field.
 
-    The associated data is the concatenation of:
+    This is the AAD v1 format (``aad_version`` absent or 1):
 
     * *vault_uuid* — 16 bytes (prevents cross-vault ciphertext substitution).
     * *credential_uuid* — 16 bytes (prevents cross-credential substitution).
@@ -241,7 +241,18 @@ def make_associated_data(
 
     All encryption and decryption in v2 MUST use this function to produce
     consistent associated data.
+
+    For the metadata-bound AAD v2 format, use :func:`make_associated_data_v2`.
     """
+    return _make_aad_v1(vault_uuid, credential_uuid, field_name)
+
+
+def _make_aad_v1(
+    vault_uuid: bytes,
+    credential_uuid: bytes,
+    field_name: str,
+) -> bytes:
+    """Legacy AAD v1 — no metadata binding beyond vault/credential UUIDs."""
     return b"".join(
         [
             vault_uuid,
@@ -250,6 +261,48 @@ def make_associated_data(
             struct.pack(">H", VAULT_VERSION),
         ]
     )
+
+
+def make_associated_data_v2(
+    vault_uuid: bytes,
+    credential_uuid: bytes,
+    field_name: str,
+    service: str,
+    username: str,
+) -> bytes:
+    """Build AAD v2 with length-prefixed fields and metadata binding.
+
+    AAD v2 binds ciphertext to:
+
+    * *vault_uuid* — 16 bytes, length-prefixed
+    * *credential_uuid* — 16 bytes, length-prefixed
+    * *field_name* — UTF-8 encoded (no length prefix; last fixed element)
+    * *service* — normalised (lowercased, stripped), UTF-8 encoded
+    * *username* — normalised (lowercased, stripped), UTF-8 encoded
+
+    The AAD version (uint16 = 2) is prepended so receivers can detect
+    which format was used.
+
+    This prevents:
+    - Cross-vault swaps (vault_uuid binding)
+    - Cross-credential swaps (credential_uuid binding)
+    - Field-name swaps (field_name binding)
+    - Metadata swaps — re-labelling a credential's service or username
+      without re-encrypting (service + username binding)
+    """
+    normalised_service = service.strip().lower()
+    normalised_username = username.strip().lower()
+    parts = [
+        struct.pack(">H", 2),                     # aad_version
+        struct.pack(">B", VAULT_UUID_LEN),        # vault_uuid length
+        vault_uuid,                                # vault_uuid
+        struct.pack(">B", CREDENTIAL_UUID_LEN),   # credential_uuid length
+        credential_uuid,                           # credential_uuid
+        field_name.encode(),                       # field_name
+        normalised_service.encode(),               # service (normalised)
+        normalised_username.encode(),              # username (normalised)
+    ]
+    return b"".join(parts)
 
 
 def _make_verification_associated_data(vault_uuid: bytes) -> bytes:

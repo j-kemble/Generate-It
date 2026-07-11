@@ -109,6 +109,7 @@ class StorageManager:
         self._dek: Optional[bytes] = None
         self._vault_uuid: Optional[bytes] = None
         self._aead_algorithm: str = _crypto_v2.AEAD_AES_256_GCM
+        self._aad_version: int = 1  # 1=legacy, 2=metadata-bound
 
     @staticmethod
     def _ensure_private_permissions(path: Path, mode: int = 0o600) -> None:
@@ -449,6 +450,7 @@ class StorageManager:
             ("kdf_salt", salt),
             ("wrapped_dek", wrapped_dek),
             ("aead_algorithm", aead_algorithm),
+            ("aad_version", "1"),
             ("verification", verification_ct),
             ("dek_generation", "1"),
         ]
@@ -465,6 +467,7 @@ class StorageManager:
         self._dek = dek
         self._vault_uuid = vault_uuid
         self._aead_algorithm = aead_algorithm
+        self._aad_version = 1
         _log.info("vault v2 initialized at %s", self.db_path)
 
     def _unlock_vault_v2(self, master_password: str) -> None:
@@ -546,6 +549,12 @@ class StorageManager:
         except ValueError as exc:
             raise StorageError(f"Invalid vault metadata: {exc}") from exc
 
+        # Read AAD version (default 1 for legacy v2 vaults).
+        aad_version_raw = self._read_optional_int_config(cursor, "aad_version")
+        aad_version = aad_version_raw if aad_version_raw is not None else 1
+        if aad_version not in (1, 2):
+            raise StorageError(f"Unsupported aad_version: {aad_version}")
+
         # Derive KEK.
         kek = _crypto_v2.derive_kek(
             master_password, kdf_salt,
@@ -569,6 +578,7 @@ class StorageManager:
         self._dek = dek
         self._vault_uuid = vault_uuid
         self._aead_algorithm = aead_algorithm
+        self._aad_version = aad_version
         _log.info("vault v2 unlocked")
 
     def migrate_v1_to_v2(self, master_password: str) -> None:
@@ -706,6 +716,7 @@ class StorageManager:
                 ("kdf_salt", salt),
                 ("wrapped_dek", wrapped_dek),
                 ("aead_algorithm", aead_algorithm),
+                ("aad_version", "1"),
                 ("verification", verification_ct),
                 ("dek_generation", "1"),
             ]
@@ -729,6 +740,7 @@ class StorageManager:
             self._dek = dek
             self._vault_uuid = vault_uuid
             self._aead_algorithm = aead_algorithm
+            self._aad_version = 1
             _log.info("vault migrated from v1 to v2")
 
         except BaseException:
@@ -739,6 +751,107 @@ class StorageManager:
                 pass
             # The backup file remains as a safety net.
             _log.exception("v1→v2 migration failed; v1 vault is intact")
+            raise
+
+    def migrate_aad_v1_to_v2(self) -> None:
+        """Migrate a v2 vault from AAD v1 to AAD v2 (metadata-bound).
+
+        Re-encrypts all credential fields using AAD v2 which binds the
+        ciphertext to service and username metadata.  The migration is
+        wrapped in a single SQLite transaction; on failure the vault
+        remains in its original AAD v1 state.
+
+        A backup file ``vault.db.aad_v1.bak`` is created before migration.
+
+        Raises:
+            StorageError: if the vault is not v2, not unlocked, or already
+                at AAD v2.
+        """
+        if self._vault_version != 2:
+            raise StorageError("AAD migration requires an unlocked v2 vault.")
+        if self._aad_version >= 2:
+            raise StorageError("Vault is already at AAD v2.")
+        if self._dek is None or self._vault_uuid is None:
+            raise StorageError("Vault is not fully unlocked.")
+
+        # Create backup.
+        backup_tmp = self._secure_temp_file(self.db_path.parent, ".aad_v1.bak")
+        try:
+            shutil.copy2(self.db_path, backup_tmp)
+        except BaseException:
+            if backup_tmp.exists():
+                try:
+                    backup_tmp.unlink()
+                except OSError:
+                    pass
+            raise
+        backup_path = self.db_path.with_suffix(self.db_path.suffix + ".aad_v1.bak")
+        os.replace(str(backup_tmp), str(backup_path))
+        _log.info("AAD v1 backup created at %s", backup_path)
+
+        conn = self._get_conn()
+        cursor = conn.cursor()
+
+        try:
+            conn.execute("BEGIN EXCLUSIVE")
+
+            # Re-encrypt all credentials with AAD v2.
+            cursor.execute(
+                "SELECT id, credential_uuid, service, username, encrypted_password, encrypted_note"
+                " FROM credentials"
+            )
+            for row in cursor.fetchall():
+                cred_uuid: bytes = row["credential_uuid"]
+                svc: str = row["service"]
+                usr: str = row["username"]
+
+                # Decrypt with current AAD version (v1).
+                old_aad = self._aad_version
+                self._aad_version = 1  # force AAD v1 for decryption
+                password, note = self._decrypt_fields_v2(row)
+                self._aad_version = old_aad  # restore
+
+                # Re-encrypt with AAD v2.
+                new_password_ct = _crypto_v2.encrypt_field(
+                    self._dek,
+                    _crypto_v2.make_associated_data_v2(
+                        self._vault_uuid, cred_uuid, "password", svc, usr,
+                    ),
+                    password,
+                    aead_algorithm=self._aead_algorithm,
+                )
+                new_note_ct: bytes | None = None
+                if note:
+                    new_note_ct = _crypto_v2.encrypt_field(
+                        self._dek,
+                        _crypto_v2.make_associated_data_v2(
+                            self._vault_uuid, cred_uuid, "note", svc, usr,
+                        ),
+                        note,
+                        aead_algorithm=self._aead_algorithm,
+                    )
+
+                cursor.execute(
+                    "UPDATE credentials SET encrypted_password = ?, encrypted_note = ? WHERE id = ?",
+                    (new_password_ct, new_note_ct, row["id"]),
+                )
+
+            # Update aad_version in config.
+            cursor.execute(
+                "INSERT OR REPLACE INTO config (key, value) VALUES ('aad_version', '2')"
+            )
+
+            conn.commit()
+
+            self._aad_version = 2
+            _log.info("vault AAD migrated from v1 to v2")
+
+        except BaseException:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            _log.exception("AAD v1→v2 migration failed; v2 vault is intact")
             raise
 
     def close(self):
@@ -810,10 +923,10 @@ class StorageManager:
             raise StorageError("Vault UUID is not available.")
 
         credential_uuid: bytes = row["credential_uuid"]
+        service: str = row["service"]
+        username: str = row["username"]
 
-        password_ad = _crypto_v2.make_associated_data(
-            self._vault_uuid, credential_uuid, "password"
-        )
+        password_ad = self._make_credential_aad(credential_uuid, "password", service, username)
         password = _crypto_v2.decrypt_field(
             self._dek, password_ad, row["encrypted_password"],
             aead_algorithm=self._aead_algorithm,
@@ -821,9 +934,7 @@ class StorageManager:
 
         note = ""
         if row["encrypted_note"]:
-            note_ad = _crypto_v2.make_associated_data(
-                self._vault_uuid, credential_uuid, "note"
-            )
+            note_ad = self._make_credential_aad(credential_uuid, "note", service, username)
             note = _crypto_v2.decrypt_field(
                 self._dek, note_ad, row["encrypted_note"],
                 aead_algorithm=self._aead_algorithm,
@@ -860,17 +971,20 @@ class StorageManager:
         return encrypted_password, encrypted_note
 
     def _encrypt_fields_v2(
-        self, password: str, note: str, credential_uuid: bytes
+        self, password: str, note: str, credential_uuid: bytes,
+        service: str, username: str,
     ) -> tuple[bytes, bytes | None]:
-        """Encrypt using v2 AEAD with associated data binding to *credential_uuid*."""
+        """Encrypt using v2 AEAD with associated data binding to *credential_uuid*.
+
+        Uses AAD v2 (metadata-bound) when ``self._aad_version >= 2``,
+        otherwise falls back to legacy AAD v1.
+        """
         if self._dek is None:
             raise StorageError("Vault DEK is not available.")
         if self._vault_uuid is None:
             raise StorageError("Vault UUID is not available.")
 
-        password_ad = _crypto_v2.make_associated_data(
-            self._vault_uuid, credential_uuid, "password"
-        )
+        password_ad = self._make_credential_aad(credential_uuid, "password", service, username)
         encrypted_password = _crypto_v2.encrypt_field(
             self._dek, password_ad, password,
             aead_algorithm=self._aead_algorithm,
@@ -878,15 +992,35 @@ class StorageManager:
 
         encrypted_note: bytes | None = None
         if note:
-            note_ad = _crypto_v2.make_associated_data(
-                self._vault_uuid, credential_uuid, "note"
-            )
+            note_ad = self._make_credential_aad(credential_uuid, "note", service, username)
             encrypted_note = _crypto_v2.encrypt_field(
                 self._dek, note_ad, note,
                 aead_algorithm=self._aead_algorithm,
             )
 
         return encrypted_password, encrypted_note
+
+    def _make_credential_aad(
+        self, credential_uuid: bytes, field_name: str, service: str, username: str,
+    ) -> bytes:
+        """Build AEAD associated data for a credential field.
+
+        Dispatches to AAD v2 (metadata-bound) when ``_aad_version >= 2``,
+        otherwise uses legacy AAD v1.
+        """
+        if self._aad_version >= 2:
+            return _crypto_v2.make_associated_data_v2(
+                self._vault_uuid,  # type: ignore[arg-type]
+                credential_uuid,
+                field_name,
+                service,
+                username,
+            )
+        return _crypto_v2.make_associated_data(
+            self._vault_uuid,  # type: ignore[arg-type]
+            credential_uuid,
+            field_name,
+        )
 
     def save_credential(self, service: str, username: str, password: str, note: str = "", note_is_hidden: bool = False) -> int:
         self._require_unlocked()
@@ -914,7 +1048,7 @@ class StorageManager:
         """Save a credential in a v2 vault."""
         credential_uuid = uuid.uuid4().bytes
         encrypted_password, encrypted_note = self._encrypt_fields_v2(
-            password, note, credential_uuid
+            password, note, credential_uuid, service, username
         )
 
         conn = self._get_conn()
@@ -959,7 +1093,7 @@ class StorageManager:
         cursor = conn.cursor()
         if self._vault_version == 2:
             cursor.execute(
-                "SELECT credential_uuid, encrypted_password, encrypted_note, note_is_hidden FROM credentials WHERE id=?",
+                "SELECT credential_uuid, service, username, encrypted_password, encrypted_note, note_is_hidden FROM credentials WHERE id=?",
                 (credential_id,),
             )
         else:
@@ -1062,7 +1196,7 @@ class StorageManager:
         credential_uuid: bytes = row["credential_uuid"]
 
         encrypted_password, encrypted_note = self._encrypt_fields_v2(
-            password, note, credential_uuid
+            password, note, credential_uuid, service, username
         )
 
         cursor.execute(
@@ -1280,7 +1414,7 @@ class StorageManager:
                                 cred_uuid_row = cur_inner.fetchone()
                                 if cred_uuid_row:
                                     encrypted_password, encrypted_note = self._encrypt_fields_v2(
-                                        password, note, cred_uuid_row["credential_uuid"]
+                                        password, note, cred_uuid_row["credential_uuid"], service, username
                                     )
                                     cursor.execute(
                                         "UPDATE credentials SET encrypted_password = ?, encrypted_note = ?, note_is_hidden = 0 WHERE id = ?",
@@ -1306,7 +1440,7 @@ class StorageManager:
                             if self._vault_version == 2:
                                 cred_uuid = uuid.uuid4().bytes
                                 encrypted_password, encrypted_note = self._encrypt_fields_v2(
-                                    password, note, cred_uuid
+                                    password, note, cred_uuid, service, username
                                 )
                                 cursor.execute(
                                     "INSERT INTO credentials (credential_uuid, service, username, encrypted_password, encrypted_note, note_is_hidden) VALUES (?, ?, ?, ?, ?, ?)",
