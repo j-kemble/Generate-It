@@ -57,7 +57,7 @@ generate-it
 
 ### Secure Vault
 Generate It includes an encrypted local vault to store your generated credentials.
-- **Encryption**: Uses Fernet (AES-128-CBC + HMAC-SHA256 via `cryptography`) to secure your data locally.
+- **Encryption**: Uses AES-256-GCM AEAD with Argon2id key derivation by default (vault v2). Legacy v1 vaults use Fernet (AES-128-CBC + HMAC-SHA256) with PBKDF2. Both formats are supported; v1 vaults auto-migrate on unlock.
 - **Master Password**: You create a master password on first run. This key is never stored; it unlocks your vault each session.
 - **Offline**: Your data stays on your machine:
   - Linux: `~/.local/share/generate-it/`
@@ -124,6 +124,7 @@ When you generate a credential you will:
   - Rows with missing required fields or unsupported record types are skipped with an issue report.
 - **Supported formats**:
   - `generic` (browser-style): `name,url,username,password,note`
+  - `spreadsheet-safe`: Same structure as `generic`, but text fields that start with `=`, `+`, `-`, or `@` are automatically prefixed with a single quote (`'`) to prevent formula injection when opened in spreadsheet applications like Excel, LibreOffice, or Google Sheets. Use this when you need to view exported data in a spreadsheet.
   - `bitwarden`: supports login CSV fields (`name`, `login_username`, `login_password`, `type`, etc.). Non-login item types are skipped.
   - `apple`: supports Apple-style title/url/username/password exports (with optional notes/OTP columns).
   - `nordpass`: supports NordPass CSV template columns.
@@ -133,7 +134,8 @@ When you generate a credential you will:
 
 > **⚠️ Security:** CSV exports are plaintext — they are not encrypted and anyone with filesystem access can read them.
 > Do not open raw credential exports in spreadsheet software, as malicious values starting with `=`, `+`, `-`, or `@`
-> may be interpreted as formulas. Use a text editor to inspect exported files.
+> may be interpreted as formulas. Use a text editor to inspect exported files, or export with the
+> `spreadsheet-safe` format to automatically escape formula-triggering characters.
 
 ## How it works
 
@@ -269,7 +271,7 @@ pip install -c constraints/release.txt -e ".[dev]" build twine
    ```
 3. Commit the updated `.txt` files
 
-The CI workflow in `.github/workflows/security.yml` uses `constraints/ci.txt` for reproducible, auditable builds.
+The CI workflow in `.github/workflows/security.yml` uses `constraints/ci.txt` for reproducible hash-locked builds. The publish workflow in `.github/workflows/publish.yml` uses `constraints/release.txt` for hash-locked release tooling.
 
 ## License
 

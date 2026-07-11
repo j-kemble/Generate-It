@@ -108,11 +108,9 @@ generate-it
 
 Automated workflows are configured in `.github/workflows/`:
 
-**ci.yml**: Runs cross-platform tests on Python 3.10/3.12/3.13 across Linux, macOS, and Windows on pushes and pull requests.
+**security.yml**: Runs cross-platform tests on Python 3.10/3.12/3.13 across Linux, macOS, and Windows; includes mypy, Bandit, pip-audit, actionlint, zizmor, TruffleHog, and dependency hash verification on pushes and pull requests.
 
-**test.yml**: Runs a focused main-branch package validation (pytest + sdist/wheel build + `twine check`) on pushes/PRs targeting main.
-
-**publish.yml**: Validates the tag matches `pyproject.toml`, runs test and security gates, then builds and publishes to PyPI via OIDC trusted publishing when a version tag is pushed (e.g., `v0.2.2`).
+**publish.yml**: Three-stage pipeline when a version tag is pushed (e.g., `v0.2.2`): (1) `validate` — confirms the tag matches `pyproject.toml`; (2) `test` — installs hash-locked dependencies, runs full test suite, Bandit, and pip-audit; (3) `build-and-publish` — builds via `python -m build --no-isolation`, validates with `twine check`, and publishes to PyPI via OIDC trusted publishing under the protected `pypi` environment.
 
 ### Setting Up Automated Publishing
 

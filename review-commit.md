@@ -17,10 +17,10 @@ Each finding from the 2026-07 security review, paired with its fix commit.
 | M1 | Full vault decrypted in memory | `list_credential_metadata()` metadata-only listing; `get_credential_secret(id)` decrypts one at a time | `01d2ec9` |
 | M2 | Vault/export permissions | Data dir `0700`, vault `0600`, exports `0600`; symlink rejection; atomic temp-file replacement | `df8da7d` `17bc82c` |
 | M3 | Clipboard survives lock | `_revoke_clipboard()` clears on lock/exit if unchanged; respects newer user clipboard content | `fe58266` |
-| M4 | Ciphertext not bound to row/field | Vault v2: AES-256-GCM AEAD with associated data binding vault UUID + credential UUID + field name + version | `3e84970` |
+| M4 | Ciphertext not bound to row/field | Vault v2: AES-256-GCM AEAD with AAD v2.1 metadata binding (vault UUID + credential UUID + field name + service + username) | `3e84970` `6031c59` |
 | M5 | Security defaults fail-open | Defaults: 30s clipboard auto-clear, 5min auto-lock | `f0a2e4b` |
 | M6 | Control chars reach curses | `_sanitize_terminal_text()` in `_addstr_safe` escapes C0/C1 controls before rendering | `6476343` |
-| M7 | CI controls insufficient | Actions pinned to SHAs; blocking security gates; `persist-credentials: false`; TruffleHog pinned | `385afa4` |
+| M7 | CI controls insufficient | Actions pinned to full commit SHAs; blocking security gates; `persist-credentials: false`; TruffleHog pinned; hash-locked constraints enforced; immutable publish pins | `385afa4` `2697654` |
 | M8 | Any `v*` tag publishes | Tag validated against `pyproject.toml`; test + security gates required; OIDC trusted publishing with protected environment | `a058a56` |
 
 ## Low
@@ -56,6 +56,20 @@ Each finding from the 2026-07 security review, paired with its fix commit.
 ## Full commit log
 
 ```
+581722e feat: make hardened vault v2 the default
+6031c59 feat: bind vault v2 secrets to credential metadata
+441949d fix: validate vault v2 configuration strictly
+26e7edc fix: bound all csv import rows
+03d857e fix: secure export and migration file creation
+a7fa5a9 build: pin contributor hooks immutably
+2697654 ci: repair immutable publish action pins, enforce locked gates
+979f684 fix: clear plaintext ui state promptly
+552583e fix: sanitize all modal rendering
+ad91627 fix: keep logs private and metadata free
+2e1afb7 ci: enforce locked release security gates
+b84e4be ci: repair immutable publish action pins
+ad6c2c4 docs: fix stale review-file references in vault v2 spec
+ef2634b docs: add review-to-commit mapping, remove stale review files
 3a75570 build: add hash-locked ci and release constraint files
 a3711e4 docs: add gemini workflow security design and read-only analysis
 3e84970 feat: implement vault v2 with Argon2id, KEK/DEK, and AEAD

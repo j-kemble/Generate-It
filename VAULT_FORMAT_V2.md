@@ -1,6 +1,6 @@
 # Vault Format v2
 
-## Status: Draft — not yet implemented
+## Status: Implemented
 
 This document specifies a versioned, breaking migration of the Generate-It credential vault from Fernet-based encryption (v1) to contextual AEAD with memory-hard key derivation and KEK/DEK key rotation (v2). It is a design document; no code changes are implied until the specification is independently reviewed and explicitly approved.
 
