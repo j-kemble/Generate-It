@@ -1,15 +1,18 @@
 import os
+import shutil
 import sqlite3
 import base64
 import csv
+import uuid
 from pathlib import Path
 from typing import List, Literal, Optional, Dict, Tuple
 
 from cryptography.fernet import Fernet, InvalidToken
+from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from platformdirs import user_data_dir
-from . import csv_formats
+from . import _crypto_v2, csv_formats
 from .logging import get_logger
 
 _log = get_logger("storage")
@@ -99,6 +102,12 @@ class StorageManager:
         
         self._fernet: Optional[Fernet] = None
         self._db_connection: Optional[sqlite3.Connection] = None
+
+        # v2 state (set on unlock / init for v2 vaults)
+        self._vault_version: Optional[int] = None
+        self._dek: Optional[bytes] = None
+        self._vault_uuid: Optional[bytes] = None
+        self._aead_algorithm: str = _crypto_v2.AEAD_AES_256_GCM
 
     @staticmethod
     def _ensure_private_permissions(path: Path, mode: int = 0o600) -> None:
@@ -245,6 +254,7 @@ class StorageManager:
 
         # Automatically unlock after initialization
         self._fernet = fernet
+        self._vault_version = 1
         _log.info("vault initialized at %s", self.db_path)
 
     def vault_exists(self) -> bool:
@@ -260,12 +270,31 @@ class StorageManager:
             return False
 
     def unlock_vault(self, master_password: str) -> None:
-        """Unlocks the vault with the master password."""
+        """Unlocks the vault with the master password.
+
+        Detects the vault format version from the config table and
+        dispatches to the appropriate unlock routine (v1 PBKDF2+Fernet or
+        v2 Argon2id+AEAD).
+        """
         if not self.vault_exists():
             raise VaultNotInitializedError("Vault not initialized.")
 
         conn = self._get_conn()
         cursor = conn.cursor()
+        version = self._detect_vault_version(cursor)
+
+        if version == 2:
+            self._vault_version = 2  # pre-set so _unlock_vault_v2 can validate
+            self._unlock_vault_v2(master_password)
+            return
+
+        if version != 1:
+            raise StorageError(
+                f"Unsupported vault format version: {version}. "
+                "Only versions 1 and 2 are supported."
+            )
+
+        # ── v1 unlock ────────────────────────────────────────────────
         
         try:
             cursor.execute("SELECT value FROM config WHERE key=?", ("salt",))
@@ -303,13 +332,378 @@ class StorageManager:
             raise StorageError(f"Failed to decrypt vault verification: {e}") from e
 
         self._fernet = fernet
+        self._vault_version = 1
         _log.info("vault unlocked")
+
+    @staticmethod
+    def _detect_vault_version(cursor: sqlite3.Cursor) -> int:
+        """Detect the vault format version from the config table.
+
+        Returns:
+            1 if no ``version`` key exists (v1 baseline).
+            The integer value of ``version`` otherwise.
+
+        Raises:
+            StorageError: if the version value is unrecognised.
+        """
+        cursor.execute("SELECT value FROM config WHERE key = 'version'")
+        row = cursor.fetchone()
+        if row is None:
+            return 1
+        value = row["value"]
+        if isinstance(value, bytes):
+            value = value.decode("utf-8")
+        try:
+            return int(value)
+        except (ValueError, TypeError):
+            raise StorageError(f"Unrecognized vault version: {value!r}")
+
+    def is_v2_vault(self) -> bool:
+        """Return ``True`` if the on-disk vault is format v2.
+
+        Must be called before unlocking (reads the config table).
+        """
+        if not self.vault_exists():
+            return False
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        try:
+            return self._detect_vault_version(cursor) == 2
+        except StorageError:
+            return False
+
+    def initialize_vault_v2(self, master_password: str) -> None:
+        """Create a new v2 vault with Argon2id KDF and KEK/DEK split.
+
+        This is the v2 counterpart of ``initialize_vault``.  It creates the
+        SQLite schema, derives the KEK, generates a random DEK, wraps the
+        DEK with the KEK, and stores all config entries required for v2
+        unlock.
+
+        Raises:
+            VaultAlreadyInitializedError: if a vault already exists.
+            WeakMasterPasswordError: if *master_password* fails the policy.
+        """
+        if self.vault_exists():
+            raise VaultAlreadyInitializedError("Vault already initialized.")
+        _validate_master_password(master_password)
+
+        vault_uuid = uuid.uuid4().bytes
+        salt = os.urandom(_crypto_v2.SALT_LEN)
+        kek = _crypto_v2.derive_kek(master_password, salt)
+        dek = _crypto_v2.generate_dek()
+        wrapped_dek = _crypto_v2.wrap_dek(kek, dek)
+
+        aead_algorithm = _crypto_v2.AEAD_AES_256_GCM
+        verification_ct = _crypto_v2.create_verification_token(
+            dek, vault_uuid, aead_algorithm=aead_algorithm,
+        )
+
+        conn = self._get_conn()
+        cursor = conn.cursor()
+
+        # Create tables (v2 schema has credential_uuid column).
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS config (
+                key TEXT PRIMARY KEY,
+                value BLOB
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS credentials (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                credential_uuid BLOB NOT NULL,
+                service TEXT NOT NULL,
+                username TEXT NOT NULL,
+                encrypted_password BLOB NOT NULL,
+                encrypted_note BLOB,
+                note_is_hidden INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Write v2 config.
+        config_entries: list[tuple[str, object]] = [
+            ("version", "2"),
+            ("vault_uuid", vault_uuid),
+            ("kdf_algorithm", "argon2id"),
+            ("kdf_memory_cost", str(_crypto_v2.DEFAULT_ARGON2_MEMORY)),
+            ("kdf_time_cost", str(_crypto_v2.DEFAULT_ARGON2_TIME)),
+            ("kdf_parallelism", str(_crypto_v2.DEFAULT_ARGON2_PARALLELISM)),
+            ("kdf_salt", salt),
+            ("wrapped_dek", wrapped_dek),
+            ("aead_algorithm", aead_algorithm),
+            ("verification", verification_ct),
+            ("dek_generation", "1"),
+        ]
+        for key, value in config_entries:
+            cursor.execute(
+                "INSERT INTO config (key, value) VALUES (?, ?)", (key, value)
+            )
+
+        conn.commit()
+        self._ensure_private_permissions(self.db_path, 0o600)
+
+        self._fernet = None
+        self._vault_version = 2
+        self._dek = dek
+        self._vault_uuid = vault_uuid
+        self._aead_algorithm = aead_algorithm
+        _log.info("vault v2 initialized at %s", self.db_path)
+
+    def _unlock_vault_v2(self, master_password: str) -> None:
+        """Unlock a v2 vault by deriving the KEK and unwrapping the DEK.
+
+        Reads KDF parameters and wrapped DEK from the config table, derives
+        the KEK from *master_password*, unwraps the DEK, and verifies the
+        verification token.
+
+        Raises:
+            InvalidPasswordError: if *master_password* is wrong.
+            StorageError: if the vault config is missing required keys
+                or the wrapped DEK fails to unwrap.
+        """
+        if self._vault_version != 2:
+            raise StorageError("Vault is not v2; use unlock_vault() instead.")
+
+        conn = self._get_conn()
+        cursor = conn.cursor()
+
+        # Read all required config values.
+        try:
+            cursor.execute("SELECT value FROM config WHERE key = 'kdf_algorithm'")
+            kdf_algorithm_row = cursor.fetchone()
+            kdf_algorithm = (
+                kdf_algorithm_row["value"].decode("utf-8")
+                if isinstance(kdf_algorithm_row["value"], bytes)
+                else str(kdf_algorithm_row["value"])
+            ) if kdf_algorithm_row else "argon2id"
+
+            cursor.execute("SELECT value FROM config WHERE key = 'kdf_salt'")
+            kdf_salt = cursor.fetchone()["value"]
+
+            cursor.execute("SELECT value FROM config WHERE key = 'wrapped_dek'")
+            wrapped_dek = cursor.fetchone()["value"]
+
+            cursor.execute("SELECT value FROM config WHERE key = 'vault_uuid'")
+            vault_uuid = cursor.fetchone()["value"]
+
+            cursor.execute("SELECT value FROM config WHERE key = 'aead_algorithm'")
+            aead_row = cursor.fetchone()
+            aead_algorithm = (
+                aead_row["value"].decode("utf-8")
+                if aead_row and isinstance(aead_row["value"], bytes)
+                else _crypto_v2.AEAD_AES_256_GCM
+            ) if aead_row else _crypto_v2.AEAD_AES_256_GCM
+
+            cursor.execute("SELECT value FROM config WHERE key = 'verification'")
+            verification_ct = cursor.fetchone()["value"]
+        except (TypeError, KeyError) as exc:
+            raise StorageError("Vault v2 configuration corrupted or missing keys.") from exc
+
+        # Read optional KDF parameters.
+        memory_raw = self._read_optional_int_config(cursor, "kdf_memory_cost")
+        memory = memory_raw if memory_raw is not None else _crypto_v2.DEFAULT_ARGON2_MEMORY
+
+        time_raw = self._read_optional_int_config(cursor, "kdf_time_cost")
+        time = time_raw if time_raw is not None else _crypto_v2.DEFAULT_ARGON2_TIME
+
+        parallelism_raw = self._read_optional_int_config(cursor, "kdf_parallelism")
+        parallelism = (
+            parallelism_raw if parallelism_raw is not None
+            else _crypto_v2.DEFAULT_ARGON2_PARALLELISM
+        )
+
+        # Derive KEK.
+        kek = _crypto_v2.derive_kek(
+            master_password, kdf_salt,
+            memory=memory, time=time, parallelism=parallelism,
+        )
+
+        # Unwrap DEK.
+        try:
+            dek = _crypto_v2.unwrap_dek(kek, wrapped_dek)
+        except _crypto_v2.InvalidUnwrap:
+            raise InvalidPasswordError("Invalid master password.")
+
+        # Verify the token.
+        if not _crypto_v2.verify_token(
+            dek, vault_uuid, verification_ct, aead_algorithm=aead_algorithm
+        ):
+            raise InvalidPasswordError("Invalid master password.")
+
+        self._fernet = None
+        self._vault_version = 2
+        self._dek = dek
+        self._vault_uuid = vault_uuid
+        self._aead_algorithm = aead_algorithm
+        _log.info("vault v2 unlocked")
+
+    def migrate_v1_to_v2(self, master_password: str) -> None:
+        """Migrate an existing v1 vault to v2 format.
+
+        The vault must be unlocked as v1 before calling this method.
+        Migration is wrapped in a single SQLite transaction so a crash or
+        interrupt leaves the v1 vault intact.
+
+        A backup file ``vault.db.v1.bak`` is created before migration
+        begins as an additional safety net.
+
+        Raises:
+            StorageError: if the vault is not v1, not unlocked, or
+                migration fails.
+        """
+        if self._vault_version != 1:
+            raise StorageError("Migration requires an unlocked v1 vault.")
+
+        # 1. Create backup.
+        backup_path = self.db_path.with_suffix(self.db_path.suffix + ".v1.bak")
+        shutil.copy2(self.db_path, backup_path)
+        _log.info("v1 backup created at %s", backup_path)
+
+        conn = self._get_conn()
+        cursor = conn.cursor()
+
+        try:
+            # 2. Begin exclusive transaction.
+            conn.execute("BEGIN EXCLUSIVE")
+
+            # 3. Generate v2 key material.
+            vault_uuid = uuid.uuid4().bytes
+            salt = os.urandom(_crypto_v2.SALT_LEN)
+            kek = _crypto_v2.derive_kek(master_password, salt)
+            dek = _crypto_v2.generate_dek()
+            wrapped_dek = _crypto_v2.wrap_dek(kek, dek)
+            aead_algorithm = _crypto_v2.AEAD_AES_256_GCM
+
+            # 4. Add credential_uuid column and backfill.
+            #    Check if column exists (it might from a partially migrated vault).
+            cursor.execute("PRAGMA table_info(credentials)")
+            columns = {row["name"] for row in cursor.fetchall()}
+            if "credential_uuid" not in columns:
+                cursor.execute(
+                    "ALTER TABLE credentials ADD COLUMN credential_uuid BLOB"
+                )
+
+            # Backfill credential_uuid for existing rows.
+            cursor.execute(
+                "SELECT id FROM credentials WHERE credential_uuid IS NULL"
+            )
+            for row in cursor.fetchall():
+                new_uuid = uuid.uuid4().bytes
+                cursor.execute(
+                    "UPDATE credentials SET credential_uuid = ? WHERE id = ?",
+                    (new_uuid, row["id"]),
+                )
+
+            # 5. Re-encrypt all credentials with v2 AEAD.
+            assert self._fernet is not None  # v1 is unlocked
+            fernet = self._fernet
+            cursor.execute(
+                "SELECT id, credential_uuid, encrypted_password, encrypted_note"
+                " FROM credentials"
+            )
+            for row in cursor.fetchall():
+                cred_uuid: bytes = row["credential_uuid"]
+
+                # Decrypt v1 ciphertext.
+                try:
+                    v1_password = fernet.decrypt(row["encrypted_password"]).decode()
+                except Exception:
+                    raise StorageError(
+                        f"Failed to decrypt v1 password for credential id={row['id']}"
+                    )
+
+                v1_note_bytes = row["encrypted_note"]
+                v1_note = ""
+                if v1_note_bytes:
+                    try:
+                        v1_note = fernet.decrypt(v1_note_bytes).decode()
+                    except Exception:
+                        raise StorageError(
+                            f"Failed to decrypt v1 note for credential id={row['id']}"
+                        )
+
+                # Re-encrypt with v2 AEAD.
+                new_password_ct = _crypto_v2.encrypt_field(
+                    dek,
+                    _crypto_v2.make_associated_data(vault_uuid, cred_uuid, "password"),
+                    v1_password,
+                    aead_algorithm=aead_algorithm,
+                )
+                new_note_ct: bytes | None = None
+                if v1_note:
+                    new_note_ct = _crypto_v2.encrypt_field(
+                        dek,
+                        _crypto_v2.make_associated_data(vault_uuid, cred_uuid, "note"),
+                        v1_note,
+                        aead_algorithm=aead_algorithm,
+                    )
+
+                cursor.execute(
+                    "UPDATE credentials SET encrypted_password = ?, encrypted_note = ? WHERE id = ?",
+                    (new_password_ct, new_note_ct, row["id"]),
+                )
+
+            # 6. Create v2 verification token.
+            verification_ct = _crypto_v2.create_verification_token(
+                dek, vault_uuid, aead_algorithm=aead_algorithm,
+            )
+
+            # 7. Write v2 config.
+            v2_config: list[tuple[str, object]] = [
+                ("version", "2"),
+                ("vault_uuid", vault_uuid),
+                ("kdf_algorithm", "argon2id"),
+                ("kdf_memory_cost", str(_crypto_v2.DEFAULT_ARGON2_MEMORY)),
+                ("kdf_time_cost", str(_crypto_v2.DEFAULT_ARGON2_TIME)),
+                ("kdf_parallelism", str(_crypto_v2.DEFAULT_ARGON2_PARALLELISM)),
+                ("kdf_salt", salt),
+                ("wrapped_dek", wrapped_dek),
+                ("aead_algorithm", aead_algorithm),
+                ("verification", verification_ct),
+                ("dek_generation", "1"),
+            ]
+            for key, value in v2_config:
+                cursor.execute(
+                    "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)",
+                    (key, value),
+                )
+
+            # 8. Remove v1 config keys.
+            cursor.execute(
+                "DELETE FROM config WHERE key IN ('salt', 'pbkdf2_iterations', 'salt_length')"
+            )
+
+            # 9. Commit.
+            conn.commit()
+
+            # 10. Transition to v2 state.
+            self._fernet = None
+            self._vault_version = 2
+            self._dek = dek
+            self._vault_uuid = vault_uuid
+            self._aead_algorithm = aead_algorithm
+            _log.info("vault migrated from v1 to v2")
+
+        except BaseException:
+            # Rollback the transaction on any failure.
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            # The backup file remains as a safety net.
+            _log.exception("v1→v2 migration failed; v1 vault is intact")
+            raise
 
     def close(self):
         if self._db_connection:
             self._db_connection.close()
             self._db_connection = None
         self._fernet = None
+        self._vault_version = None
+        self._dek = None
+        self._vault_uuid = None
         _log.info("vault closed")
 
     def __enter__(self) -> "StorageManager":
@@ -320,19 +714,41 @@ class StorageManager:
         return False
 
     def _require_unlocked(self) -> Fernet:
-        if self._fernet is None:
+        """Assert the vault is unlocked (v1 or v2) and return the v1 Fernet.
+
+        For v2 vaults the returned Fernet is ``None`` and callers must use
+        the per-version encrypt/decrypt helpers instead.
+
+        Raises:
+            StorageError: if the vault is locked (neither v1 nor v2 state
+                is active).
+        """
+        if self._vault_version is None:
             raise StorageError("Vault is locked.")
-        return self._fernet
+        # mypy: Fernet may be None for v2 vaults; callers handle this.
+        return self._fernet  # type: ignore[return-value]
 
     def _decrypt_credential_fields(
         self, row: sqlite3.Row, fernet: Fernet
     ) -> tuple[str, str]:
         """Decrypt password and note from a credential row.
 
+        Dispatches to v1 or v2 decryption based on ``self._vault_version``.
+
         Raises:
-            InvalidToken: if ciphertext is corrupted or tampered with.
+            InvalidToken: if v1 ciphertext is corrupted or tampered with.
+            ``cryptography.exceptions.InvalidTag``: if v2 AEAD
+                authentication fails.
             UnicodeDecodeError: if decrypted bytes are not valid UTF-8.
         """
+        if self._vault_version == 2:
+            return self._decrypt_fields_v2(row)
+        return self._decrypt_fields_v1(row, fernet)
+
+    def _decrypt_fields_v1(
+        self, row: sqlite3.Row, fernet: Fernet
+    ) -> tuple[str, str]:
+        """Decrypt using v1 Fernet."""
         password = fernet.decrypt(row["encrypted_password"]).decode()
         note = (
             fernet.decrypt(row["encrypted_note"]).decode()
@@ -341,28 +757,121 @@ class StorageManager:
         )
         return password, note
 
+    def _decrypt_fields_v2(self, row: sqlite3.Row) -> tuple[str, str]:
+        """Decrypt using v2 AEAD with associated data binding."""
+        assert self._dek is not None
+        assert self._vault_uuid is not None
+
+        credential_uuid: bytes = row["credential_uuid"]
+
+        password_ad = _crypto_v2.make_associated_data(
+            self._vault_uuid, credential_uuid, "password"
+        )
+        password = _crypto_v2.decrypt_field(
+            self._dek, password_ad, row["encrypted_password"],
+            aead_algorithm=self._aead_algorithm,
+        )
+
+        note = ""
+        if row["encrypted_note"]:
+            note_ad = _crypto_v2.make_associated_data(
+                self._vault_uuid, credential_uuid, "note"
+            )
+            note = _crypto_v2.decrypt_field(
+                self._dek, note_ad, row["encrypted_note"],
+                aead_algorithm=self._aead_algorithm,
+            )
+
+        return password, note
+
     def _encrypt_credential_fields(
         self, fernet: Fernet, password: str, note: str
     ) -> tuple[bytes, bytes | None]:
         """Encrypt password and note for storage.
 
+        Dispatches to v1 or v2 encryption based on ``self._vault_version``.
+
         Returns (encrypted_password, encrypted_note).  ``encrypted_note`` is
         ``None`` when *note* is empty, matching the existing storage convention.
         """
+        if self._vault_version == 2:
+            # credential_uuid is assigned at save time; here we generate a
+            # temporary one — the caller (save_credential) will overwrite the
+            # result with the real credential_uuid.  For v2, the caller must
+            # supply credential_uuid.
+            raise StorageError(
+                "v2 encryption requires credential_uuid; use _encrypt_fields_v2 directly"
+            )
+        return self._encrypt_fields_v1(fernet, password, note)
+
+    def _encrypt_fields_v1(
+        self, fernet: Fernet, password: str, note: str
+    ) -> tuple[bytes, bytes | None]:
+        """Encrypt using v1 Fernet."""
         encrypted_password = fernet.encrypt(password.encode())
         encrypted_note = fernet.encrypt(note.encode()) if note else None
         return encrypted_password, encrypted_note
 
-    def save_credential(self, service: str, username: str, password: str, note: str = "", note_is_hidden: bool = False) -> int:
-        fernet = self._require_unlocked()
+    def _encrypt_fields_v2(
+        self, password: str, note: str, credential_uuid: bytes
+    ) -> tuple[bytes, bytes | None]:
+        """Encrypt using v2 AEAD with associated data binding to *credential_uuid*."""
+        assert self._dek is not None
+        assert self._vault_uuid is not None
 
-        encrypted_password, encrypted_note = self._encrypt_credential_fields(fernet, password, note)
+        password_ad = _crypto_v2.make_associated_data(
+            self._vault_uuid, credential_uuid, "password"
+        )
+        encrypted_password = _crypto_v2.encrypt_field(
+            self._dek, password_ad, password,
+            aead_algorithm=self._aead_algorithm,
+        )
+
+        encrypted_note: bytes | None = None
+        if note:
+            note_ad = _crypto_v2.make_associated_data(
+                self._vault_uuid, credential_uuid, "note"
+            )
+            encrypted_note = _crypto_v2.encrypt_field(
+                self._dek, note_ad, note,
+                aead_algorithm=self._aead_algorithm,
+            )
+
+        return encrypted_password, encrypted_note
+
+    def save_credential(self, service: str, username: str, password: str, note: str = "", note_is_hidden: bool = False) -> int:
+        self._require_unlocked()
+
+        if self._vault_version == 2:
+            return self._save_credential_v2(service, username, password, note, note_is_hidden)
+
+        fernet = self._require_unlocked()
+        encrypted_password, encrypted_note = self._encrypt_fields_v1(fernet, password, note)
         
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute(
             "INSERT INTO credentials (service, username, encrypted_password, encrypted_note, note_is_hidden) VALUES (?, ?, ?, ?, ?)",
             (service, username, encrypted_password, encrypted_note, 1 if note_is_hidden else 0)
+        )
+        conn.commit()
+        _log.info("credential saved: service=%r username=%r", service, username)
+        return int(cursor.lastrowid or 0)
+
+    def _save_credential_v2(
+        self, service: str, username: str, password: str, note: str, note_is_hidden: bool
+    ) -> int:
+        """Save a credential in a v2 vault."""
+        credential_uuid = uuid.uuid4().bytes
+        encrypted_password, encrypted_note = self._encrypt_fields_v2(
+            password, note, credential_uuid
+        )
+
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO credentials (credential_uuid, service, username, encrypted_password, encrypted_note, note_is_hidden) VALUES (?, ?, ?, ?, ?, ?)",
+            (credential_uuid, service, username, encrypted_password, encrypted_note, 1 if note_is_hidden else 0),
         )
         conn.commit()
         _log.info("credential saved: service=%r username=%r", service, username)
@@ -397,10 +906,16 @@ class StorageManager:
         fernet = self._require_unlocked()
         conn = self._get_conn()
         cursor = conn.cursor()
-        cursor.execute(
-            "SELECT encrypted_password, encrypted_note, note_is_hidden FROM credentials WHERE id=?",
-            (credential_id,),
-        )
+        if self._vault_version == 2:
+            cursor.execute(
+                "SELECT credential_uuid, encrypted_password, encrypted_note, note_is_hidden FROM credentials WHERE id=?",
+                (credential_id,),
+            )
+        else:
+            cursor.execute(
+                "SELECT encrypted_password, encrypted_note, note_is_hidden FROM credentials WHERE id=?",
+                (credential_id,),
+            )
         row = cursor.fetchone()
         if row is None:
             raise StorageError(f"Credential {credential_id} not found.")
@@ -416,7 +931,10 @@ class StorageManager:
 
         conn = self._get_conn()
         cursor = conn.cursor()
-        cursor.execute("SELECT id, service, username, encrypted_password, encrypted_note, note_is_hidden, created_at FROM credentials ORDER BY service")
+        if self._vault_version == 2:
+            cursor.execute("SELECT id, credential_uuid, service, username, encrypted_password, encrypted_note, note_is_hidden, created_at FROM credentials ORDER BY service")
+        else:
+            cursor.execute("SELECT id, service, username, encrypted_password, encrypted_note, note_is_hidden, created_at FROM credentials ORDER BY service")
         
         results = []
         for row in cursor.fetchall():
@@ -432,7 +950,7 @@ class StorageManager:
                     "note_is_hidden": note_is_hidden,
                     "created_at": row["created_at"]
                 })
-            except (InvalidToken, UnicodeDecodeError):
+            except (InvalidToken, InvalidTag, UnicodeDecodeError):
                 results.append({
                     "id": row["id"],
                     "service": row["service"],
@@ -456,9 +974,14 @@ class StorageManager:
 
     def update_credential(self, credential_id: int, service: str, username: str, password: str, note: str = "", note_is_hidden: bool = False) -> None:
         """Update an existing credential by id."""
-        fernet = self._require_unlocked()
+        self._require_unlocked()
 
-        encrypted_password, encrypted_note = self._encrypt_credential_fields(fernet, password, note)
+        if self._vault_version == 2:
+            self._update_credential_v2(credential_id, service, username, password, note, note_is_hidden)
+            return
+
+        fernet = self._require_unlocked()
+        encrypted_password, encrypted_note = self._encrypt_fields_v1(fernet, password, note)
 
         conn = self._get_conn()
         cursor = conn.cursor()
@@ -468,6 +991,33 @@ class StorageManager:
         )
         if cursor.rowcount == 0:
             raise StorageError(f"Credential with id {credential_id} not found.")
+        conn.commit()
+        _log.info("credential updated: id=%d", credential_id)
+
+    def _update_credential_v2(
+        self, credential_id: int, service: str, username: str,
+        password: str, note: str, note_is_hidden: bool,
+    ) -> None:
+        """Update an existing credential in a v2 vault."""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT credential_uuid FROM credentials WHERE id = ?",
+            (credential_id,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            raise StorageError(f"Credential with id {credential_id} not found.")
+        credential_uuid: bytes = row["credential_uuid"]
+
+        encrypted_password, encrypted_note = self._encrypt_fields_v2(
+            password, note, credential_uuid
+        )
+
+        cursor.execute(
+            "UPDATE credentials SET service = ?, username = ?, encrypted_password = ?, encrypted_note = ?, note_is_hidden = ? WHERE id = ?",
+            (service, username, encrypted_password, encrypted_note, 1 if note_is_hidden else 0, credential_id),
+        )
         conn.commit()
         _log.info("credential updated: id=%d", credential_id)
 
@@ -497,7 +1047,10 @@ class StorageManager:
 
         conn = self._get_conn()
         cursor = conn.cursor()
-        cursor.execute("SELECT id, service, username, encrypted_password, encrypted_note, created_at FROM credentials ORDER BY service")
+        if self._vault_version == 2:
+            cursor.execute("SELECT id, credential_uuid, service, username, encrypted_password, encrypted_note, created_at FROM credentials ORDER BY service")
+        else:
+            cursor.execute("SELECT id, service, username, encrypted_password, encrypted_note, created_at FROM credentials ORDER BY service")
 
         exported = 0
         skipped = []
@@ -522,7 +1075,7 @@ class StorageManager:
                             )
                         )
                         exported += 1
-                    except (InvalidToken, UnicodeDecodeError):
+                    except (InvalidToken, InvalidTag, UnicodeDecodeError):
                         skipped.append({
                             'service': row["service"],
                             'username': row["username"],
@@ -664,12 +1217,28 @@ class StorageManager:
                         if merge_duplicates and not dry_run:
                             # Update existing credential
                             cred_id = existing_map[key]
-                            fernet = self._require_unlocked()
-                            encrypted_password, encrypted_note = self._encrypt_credential_fields(fernet, password, note)
-                            cursor.execute(
-                                "UPDATE credentials SET encrypted_password = ?, encrypted_note = ?, note_is_hidden = 0 WHERE id = ?",
-                                (encrypted_password, encrypted_note, cred_id)
-                            )
+                            if self._vault_version == 2:
+                                conn_inner = self._get_conn()
+                                cur_inner = conn_inner.cursor()
+                                cur_inner.execute(
+                                    "SELECT credential_uuid FROM credentials WHERE id = ?",
+                                    (cred_id,),
+                                )
+                                cred_uuid_row = cur_inner.fetchone()
+                                if cred_uuid_row:
+                                    encrypted_password, encrypted_note = self._encrypt_fields_v2(
+                                        password, note, cred_uuid_row["credential_uuid"]
+                                    )
+                                    cursor.execute(
+                                        "UPDATE credentials SET encrypted_password = ?, encrypted_note = ?, note_is_hidden = 0 WHERE id = ?",
+                                        (encrypted_password, encrypted_note, cred_id)
+                                    )
+                            else:
+                                encrypted_password, encrypted_note = self._encrypt_fields_v1(fernet, password, note)
+                                cursor.execute(
+                                    "UPDATE credentials SET encrypted_password = ?, encrypted_note = ?, note_is_hidden = 0 WHERE id = ?",
+                                    (encrypted_password, encrypted_note, cred_id)
+                                )
                             imported += 1
                         else:
                             skipped += 1
@@ -681,12 +1250,22 @@ class StorageManager:
                     else:
                         # Insert new credential
                         if not dry_run:
-                            fernet = self._require_unlocked()
-                            encrypted_password, encrypted_note = self._encrypt_credential_fields(fernet, password, note)
-                            cursor.execute(
-                                "INSERT INTO credentials (service, username, encrypted_password, encrypted_note, note_is_hidden) VALUES (?, ?, ?, ?, ?)",
-                                (service, username, encrypted_password, encrypted_note, 0)
-                            )
+                            if self._vault_version == 2:
+                                cred_uuid = uuid.uuid4().bytes
+                                encrypted_password, encrypted_note = self._encrypt_fields_v2(
+                                    password, note, cred_uuid
+                                )
+                                cursor.execute(
+                                    "INSERT INTO credentials (credential_uuid, service, username, encrypted_password, encrypted_note, note_is_hidden) VALUES (?, ?, ?, ?, ?, ?)",
+                                    (cred_uuid, service, username, encrypted_password, encrypted_note, 0)
+                                )
+                            else:
+                                fernet = self._require_unlocked()
+                                encrypted_password, encrypted_note = self._encrypt_fields_v1(fernet, password, note)
+                                cursor.execute(
+                                    "INSERT INTO credentials (service, username, encrypted_password, encrypted_note, note_is_hidden) VALUES (?, ?, ?, ?, ?)",
+                                    (service, username, encrypted_password, encrypted_note, 0)
+                                )
                             existing_map[key] = cursor.lastrowid
                         imported += 1
                         # Add to existing keys to avoid duplicate inserts in the same import
