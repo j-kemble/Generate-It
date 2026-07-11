@@ -1175,6 +1175,7 @@ class StorageManager:
         imported = 0
         skipped = 0
         duplicates = []
+        total_rows = 0
 
         # Resource limit: file size
         file_size = csv_path.stat().st_size
@@ -1204,6 +1205,9 @@ class StorageManager:
                 if missing_headers:
                     raise StorageError(f"CSV missing required columns: {', '.join(missing_headers)}")
                 for row_num, row in enumerate(reader, start=2):  # Start at 2 (header is row 1)
+                    total_rows += 1
+                    if total_rows > _MAX_CSV_ROWS:
+                        raise StorageError(f"CSV exceeds maximum row count ({_MAX_CSV_ROWS}).")
                     parsed, parse_issue = csv_formats.parse_import_row(
                         row,
                         import_format=resolved_format,
@@ -1225,10 +1229,6 @@ class StorageManager:
 
                     if not parsed:
                         continue
-
-                    # Row limit
-                    if imported + skipped > _MAX_CSV_ROWS:
-                        raise StorageError(f"CSV exceeds maximum row count ({_MAX_CSV_ROWS}).")
 
                     # Field length limits
                     for field_name, value in parsed.items():
