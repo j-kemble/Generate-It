@@ -83,7 +83,7 @@ Generate It includes an encrypted local vault to store your generated credential
   - `e`: Export credentials to CSV
 
 ### Security Settings (`t`)
-- **Clipboard auto-clear** options:
+- **Clipboard auto-clear** (defaults to `30 seconds`):
   - `No auto-clear`
   - `15 seconds`
   - `30 seconds`
@@ -91,7 +91,7 @@ Generate It includes an encrypted local vault to store your generated credential
   - `1 minute`
   - `2 minutes`
   - `3 minutes`
-- **Auto-lock** options:
+- **Auto-lock** (defaults to `5 minutes`):
   - `No auto-lock`
   - `Lock when screen off`
   - `5 minutes`

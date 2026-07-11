@@ -652,16 +652,16 @@ def _load_security_settings(state: AppState) -> None:
         state.clipboard_auto_clear_index = _coerce_index(
             clip_raw,
             len(CLIPBOARD_AUTO_CLEAR_OPTIONS),
-            default=0,
+            default=2,
         )
         state.auto_lock_index = _coerce_index(
             lock_raw,
             len(AUTO_LOCK_OPTIONS),
-            default=0,
+            default=2,
         )
     except StorageError:
-        state.clipboard_auto_clear_index = 0
-        state.auto_lock_index = 0
+        state.clipboard_auto_clear_index = 2
+        state.auto_lock_index = 2
 
 def _record_user_activity(state: AppState, now: float | None = None) -> None:
     current = time.monotonic() if now is None else now

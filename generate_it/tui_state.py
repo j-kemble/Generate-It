@@ -43,8 +43,8 @@ class AppState:
     vault_selected_idx: int = 0
     
     # Security settings
-    clipboard_auto_clear_index: int = 0
-    auto_lock_index: int = 0
+    clipboard_auto_clear_index: int = 2  # 30 seconds
+    auto_lock_index: int = 2  # 5 minutes
     clipboard_clear_due_at: float | None = None
     clipboard_clear_expected: str | None = None
     last_activity_at: float = field(default_factory=time.monotonic)
