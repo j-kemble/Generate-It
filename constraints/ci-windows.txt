@@ -1,0 +1,12 @@
+#
+# This file must be generated on a Windows machine using:
+#   pip-compile --generate-hashes --output-file=constraints/ci-windows.txt constraints/ci.in
+#
+# On macOS/Linux, windows-curses cannot be resolved, so this file
+# is a placeholder. CI will fail on Windows until the real lock is generated.
+#
+# Generation command (run on Windows CI):
+#   pip-compile --generate-hashes --output-file=constraints/ci-windows.txt constraints/ci.in
+#
+# TODO: Generate this on a real Windows machine or Windows CI runner.
+#

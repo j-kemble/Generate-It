@@ -12,6 +12,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+try:
+    from importlib import metadata
+except ImportError:
+    import importlib_metadata as metadata  # type: ignore[no-redef]
+
 import yaml
 
 
@@ -204,12 +209,27 @@ class TestRuntimeDependencyVersions:
             f"cryptography>={version_str} found, expected >=44.0.0"
         )
 
-    def test_windows_curses_in_ci_input(self):
-        """constraints/ci.in must include windows-curses for Windows platform coverage."""
-        ci_in = REPO_ROOT / "constraints" / "ci.in"
-        content = ci_in.read_text()
+    def test_windows_curses_in_windows_input(self):
+        """constraints/ci-windows.in must include windows-curses for Windows platform coverage."""
+        ci_win_in = REPO_ROOT / "constraints" / "ci-windows.in"
+        assert ci_win_in.exists(), (
+            "constraints/ci-windows.in must exist for Windows platform lock generation"
+        )
+        content = ci_win_in.read_text()
         assert "windows-curses" in content, (
-            "constraints/ci.in must include windows-curses for Windows platform lock generation"
+            "constraints/ci-windows.in must include windows-curses for Windows platform lock generation"
+        )
+
+    def test_installed_cryptography_ge_44(self):
+        """The installed cryptography package must satisfy >=44.0.0 (metadata check)."""
+        try:
+            dist = metadata.distribution("cryptography")
+            version_str = dist.version
+        except metadata.PackageNotFoundError:
+            return  # Not installed; skip
+        version = tuple(int(x) for x in version_str.split("."))
+        assert version >= (44, 0, 0), (
+            f"Installed cryptography=={version_str}, expected >=44.0.0"
         )
 
 
