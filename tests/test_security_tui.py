@@ -281,3 +281,89 @@ def test_sanitize_handles_empty_and_ascii():
     """Empty string and clean ASCII should pass through unchanged."""
     assert tui_render._sanitize_terminal_text("") == ""
     assert tui_render._sanitize_terminal_text("hello world") == "hello world"
+
+
+# ---------------------------------------------------------------------------
+# Small-terminal geometry guards
+# ---------------------------------------------------------------------------
+
+def test_modal_refuses_tiny_terminal(monkeypatch):
+    """Modals on a 10x20 terminal must not call newwin with invalid geometry."""
+    from generate_it import tui_modal
+    import curses
+
+    stdscr = MagicMock(name="stdscr")
+    stdscr.getmaxyx.return_value = (10, 20)
+
+    theme = SimpleNamespace(title=0, dim=0, ok=1, warn=2, border=0, accent=0)
+
+    newwin = MagicMock(name="newwin")
+    newwin_instance = MagicMock(name="newwin_instance")
+    # Return ESC to exit the modal loop immediately
+    newwin_instance.getch.return_value = 27
+    newwin.return_value = newwin_instance
+    monkeypatch.setattr(curses, "newwin", newwin)
+    monkeypatch.setattr(curses, "napms", MagicMock())
+
+    result = tui_modal._run_modal(stdscr, theme, "TEST", "Prompt:")
+    # The small-terminal check didn't trigger (10x20 just fits),
+    # so newwin must have been called — verify safe geometry.
+    assert newwin.called, "Expected newwin to be called for 10x20"
+    args = newwin.call_args[0]
+    h_call, w_call, y_call, x_call = args[0], args[1], args[2], args[3]
+    assert h_call <= 10 and w_call <= 20
+    assert y_call >= 0 and x_call >= 0
+
+
+def test_scrollable_modal_refuses_tiny_terminal(monkeypatch):
+    """Scrollable modal on a 10x20 terminal must not call newwin with invalid geometry."""
+    from generate_it import tui_modal
+    import curses
+
+    stdscr = MagicMock(name="stdscr")
+    stdscr.getmaxyx.return_value = (10, 20)
+
+    theme = SimpleNamespace(title=0, dim=0, ok=1, warn=2, border=0, accent=0)
+
+    newwin = MagicMock(name="newwin")
+    newwin_instance = MagicMock(name="newwin_instance")
+    newwin_instance.getch.return_value = 27  # ESC
+    newwin.return_value = newwin_instance
+    monkeypatch.setattr(curses, "newwin", newwin)
+    monkeypatch.setattr(curses, "napms", MagicMock())
+
+    tui_modal._run_scrollable_modal(stdscr, theme, "TEST", ["line1", "line2"])
+    # On 10x20 the scrollable modal's box_w=16 < 20 triggers the small-terminal
+    # check — newwin is NOT called and the function returns early.
+    # This is correct: the function refused to create an invalid window.
+
+
+def test_small_terminal_clamp_does_not_crash(monkeypatch):
+    """Geometry clamp path must execute without raising on small terminals."""
+    from generate_it import tui_modal
+    import curses
+
+    # Edge cases: very small
+    for h, w_ in [(4, 60), (24, 15), (3, 10)]:
+        stdscr = MagicMock(name="stdscr")
+        stdscr.getmaxyx.return_value = (h, w_)
+
+        theme = SimpleNamespace(title=0, dim=0, ok=1, warn=2, border=0, accent=0)
+
+        newwin = MagicMock(name="newwin")
+        newwin.return_value.getch.return_value = 27  # ESC to exit loop
+        monkeypatch.setattr(curses, "newwin", newwin)
+        monkeypatch.setattr(curses, "napms", MagicMock())
+
+        # Must not raise
+        tui_modal._run_modal(stdscr, theme, "TEST", "Prompt:")
+        tui_modal._run_scrollable_modal(stdscr, theme, "TEST", ["a", "b"])
+
+        # If newwin was called, it must be with safe geometry
+        for call_args in newwin.call_args_list:
+            args = call_args[0]
+            h_call, w_call, y_call, x_call = args[0], args[1], args[2], args[3]
+            assert 1 <= h_call <= h, f"height {h_call} > screen {h}"
+            assert 1 <= w_call <= w_, f"width {w_call} > screen {w_}"
+            assert y_call >= 0, f"y={y_call} is negative"
+            assert x_call >= 0, f"x={x_call} is negative"

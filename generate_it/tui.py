@@ -1440,6 +1440,13 @@ def run() -> int:
         stdscr.keypad(True)
         stdscr.timeout(250)
 
+        h, w = stdscr.getmaxyx()
+        if h < 10 or w < 40:
+            stdscr.addstr(0, 0, "Terminal too small for Generate-It. Minimum: 40x10.")
+            stdscr.refresh()
+            curses.napms(2000)
+            return 1
+
         words = generator.load_wordlist()
         state = AppState()
         

@@ -70,7 +70,23 @@ def _run_modal(
             input_row = 2 + len(prompt_lines) + 1
             help_row = input_row + 2
 
-        y, x = (h - box_h) // 2, (w - box_w) // 2
+        # Clamp geometry to fit within the terminal.
+        box_h = min(box_h, h)
+        box_w = min(box_w, w)
+        y = max(0, (h - box_h) // 2)
+        x = max(0, (w - box_w) // 2)
+
+        # If the terminal is too small for a useful modal, show a resize message.
+        if box_h < 5 or box_w < 20:
+            stdscr.erase()
+            try:
+                stdscr.addstr(0, 0, "Terminal too small. Resize to at least 20x5.")
+            except curses.error:
+                pass
+            stdscr.refresh()
+            curses.napms(1000)
+            return None
+
         win = window_cache.get(box_h, box_w, y, x)
         win.erase()
         win.box()
@@ -136,7 +152,23 @@ def _run_scrollable_modal(
     h, w = stdscr.getmaxyx()
     box_h = min(20, h - 4)
     box_w = min(70, w - 4)
-    y, x = (h - box_h) // 2, (w - box_w) // 2
+
+    # Clamp geometry to fit within the terminal.
+    box_h = min(box_h, h)
+    box_w = min(box_w, w)
+    y = max(0, (h - box_h) // 2)
+    x = max(0, (w - box_w) // 2)
+
+    # If the terminal is too small for a useful modal, show a resize message.
+    if box_h < 5 or box_w < 20:
+        stdscr.erase()
+        try:
+            stdscr.addstr(0, 0, "Terminal too small. Resize to at least 20x5.")
+        except curses.error:
+            pass
+        stdscr.refresh()
+        curses.napms(1000)
+        return
 
     win = curses.newwin(box_h, box_w, y, x)
     win.keypad(True)
