@@ -163,3 +163,45 @@ def test_storage_connection_uses_busy_timeout(tmp_path) -> None:
         assert timeout == 5_000
     finally:
         storage.close()
+
+
+# ── Phase 6, Task 1: centralized credential encryption ─────────────────
+
+def test_encrypt_credential_fields_roundtrip(tmp_path) -> None:
+    """Encrypt-then-decrypt yields the original plaintext."""
+    storage = StorageManager(db_path=tmp_path / "vault.db")
+    storage.initialize_vault("master")
+
+    password_ct, note_ct = storage._encrypt_credential_fields(
+        storage._fernet, "my-password", "my-note"
+    )
+    assert isinstance(password_ct, bytes)
+    assert isinstance(note_ct, bytes)
+
+    # Verify roundtrip via the existing decrypt helper
+    import sqlite3
+    conn = storage._get_conn()
+    conn.execute(
+        "INSERT INTO credentials (service, username, encrypted_password, encrypted_note)"
+        " VALUES (?, ?, ?, ?)",
+        ("test", "user", password_ct, note_ct),
+    )
+    conn.commit()
+    row = conn.execute("SELECT * FROM credentials WHERE service='test'").fetchone()
+    pw, note = storage._decrypt_credential_fields(row, storage._fernet)
+    assert pw == "my-password"
+    assert note == "my-note"
+    storage.close()
+
+
+def test_encrypt_credential_fields_empty_note(tmp_path) -> None:
+    """Empty note produces None ciphertext (same behavior as current inline)."""
+    storage = StorageManager(db_path=tmp_path / "vault.db")
+    storage.initialize_vault("master")
+
+    password_ct, note_ct = storage._encrypt_credential_fields(
+        storage._fernet, "pw", ""
+    )
+    assert isinstance(password_ct, bytes)
+    assert note_ct is None
+    storage.close()

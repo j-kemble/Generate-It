@@ -253,11 +253,22 @@ class StorageManager:
         )
         return password, note
 
+    def _encrypt_credential_fields(
+        self, fernet: Fernet, password: str, note: str
+    ) -> tuple[bytes, bytes | None]:
+        """Encrypt password and note for storage.
+
+        Returns (encrypted_password, encrypted_note).  ``encrypted_note`` is
+        ``None`` when *note* is empty, matching the existing storage convention.
+        """
+        encrypted_password = fernet.encrypt(password.encode())
+        encrypted_note = fernet.encrypt(note.encode()) if note else None
+        return encrypted_password, encrypted_note
+
     def save_credential(self, service: str, username: str, password: str, note: str = "", note_is_hidden: bool = False) -> int:
         fernet = self._require_unlocked()
 
-        encrypted_password = fernet.encrypt(password.encode())
-        encrypted_note = fernet.encrypt(note.encode()) if note else None
+        encrypted_password, encrypted_note = self._encrypt_credential_fields(fernet, password, note)
         
         conn = self._get_conn()
         cursor = conn.cursor()
@@ -315,8 +326,7 @@ class StorageManager:
         """Update an existing credential by id."""
         fernet = self._require_unlocked()
 
-        encrypted_password = fernet.encrypt(password.encode())
-        encrypted_note = fernet.encrypt(note.encode()) if note else None
+        encrypted_password, encrypted_note = self._encrypt_credential_fields(fernet, password, note)
 
         conn = self._get_conn()
         cursor = conn.cursor()
@@ -473,8 +483,7 @@ class StorageManager:
                         # Update existing credential
                         cred_id = existing_map[key]
                         fernet = self._require_unlocked()
-                        encrypted_password = fernet.encrypt(password.encode())
-                        encrypted_note = fernet.encrypt(note.encode()) if note else None
+                        encrypted_password, encrypted_note = self._encrypt_credential_fields(fernet, password, note)
                         cursor.execute(
                             "UPDATE credentials SET encrypted_password = ?, encrypted_note = ?, note_is_hidden = 0 WHERE id = ?",
                             (encrypted_password, encrypted_note, cred_id)
@@ -491,8 +500,7 @@ class StorageManager:
                     # Insert new credential
                     if not dry_run:
                         fernet = self._require_unlocked()
-                        encrypted_password = fernet.encrypt(password.encode())
-                        encrypted_note = fernet.encrypt(note.encode()) if note else None
+                        encrypted_password, encrypted_note = self._encrypt_credential_fields(fernet, password, note)
                         cursor.execute(
                             "INSERT INTO credentials (service, username, encrypted_password, encrypted_note, note_is_hidden) VALUES (?, ?, ?, ?, ?)",
                             (service, username, encrypted_password, encrypted_note, 0)
