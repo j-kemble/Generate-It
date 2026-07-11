@@ -246,6 +246,31 @@ pip-audit
 mypy generate_it
 ```
 
+### Reproducible builds
+
+To install dependencies from hash-locked constraint files (ensuring identical versions and verified integrity across CI and release environments):
+
+```bash
+# Install CI dependencies (runtime + dev/test, hash-pinned)
+pip install -c constraints/ci.txt -e ".[dev]"
+
+# Install release dependencies (CI + build/twine, hash-pinned)
+pip install -c constraints/release.txt -e ".[dev]" build twine
+```
+
+**Updating constraints after changing dependencies:**
+
+1. Edit `constraints/ci.in` or `constraints/release.in` to add/remove direct dependencies
+2. Re-generate the hash-locked files:
+   ```bash
+   pip install pip-tools
+   pip-compile --generate-hashes --output-file=constraints/ci.txt constraints/ci.in
+   pip-compile --generate-hashes --output-file=constraints/release.txt constraints/release.in
+   ```
+3. Commit the updated `.txt` files
+
+The CI workflow in `.github/workflows/security.yml` uses `constraints/ci.txt` for reproducible, auditable builds.
+
 ## License
 
 Generate It is licensed under the **GNU Affero General Public License v3.0 or later** (**AGPL-3.0-or-later**). See `LICENSE`.
