@@ -736,6 +736,7 @@ def _lock_vault(state: AppState) -> None:
     if state.storage:
         state.storage.close()
     state.vault_unlocked = False
+    state.output = ""
     state.vault_credentials = []
     state.vault_selected_idx = 0
     state.vault_scroll_y = 0
@@ -976,161 +977,165 @@ def _run_details_modal(
     feedback_until = 0.0
     password_revealed = False
 
-    # Load secret on demand
-    if state.storage and state.revealed_secret_id != credential['id']:
-        state.revealed_secret = state.storage.get_credential_secret(credential['id'])
-        state.revealed_secret_id = credential['id']
-    
-    while True:
-        if _maybe_auto_clear_clipboard(state):
-            state.message = "Clipboard auto-cleared."
-        if _should_auto_lock_now(state):
-            reason = _auto_lock_reason_text(state)
-            _lock_vault(state)
-            tui_security._prompt_unlock_vault(stdscr, theme, state, reason=reason)
-            return
-        win.erase()
-        win.box()
+    try:
+        # Load secret on demand
+        if state.storage and state.revealed_secret_id != credential['id']:
+            state.revealed_secret = state.storage.get_credential_secret(credential['id'])
+            state.revealed_secret_id = credential['id']
         
-        # Title
-        win.addstr(0, 2, " CREDENTIAL DETAILS ", theme.title)
-        
-        # Content
-        # We use safe addstr to avoid crashing if strings are too long
-        row = 2
-        
-        label_attr = theme.dim
-        val_attr = curses.A_BOLD
-        
-        win.addstr(row, 2, "Service:", label_attr)
-        win.addstr(row, 12, R._sanitize_terminal_text(credential['service'][:box_w-14]), val_attr)
-        row += 2
+        while True:
+            if _maybe_auto_clear_clipboard(state):
+                state.message = "Clipboard auto-cleared."
+            if _should_auto_lock_now(state):
+                reason = _auto_lock_reason_text(state)
+                _lock_vault(state)
+                tui_security._prompt_unlock_vault(stdscr, theme, state, reason=reason)
+                return
+            win.erase()
+            win.box()
+            
+            # Title
+            win.addstr(0, 2, " CREDENTIAL DETAILS ", theme.title)
+            
+            # Content
+            # We use safe addstr to avoid crashing if strings are too long
+            row = 2
+            
+            label_attr = theme.dim
+            val_attr = curses.A_BOLD
+            
+            win.addstr(row, 2, "Service:", label_attr)
+            win.addstr(row, 12, R._sanitize_terminal_text(credential['service'][:box_w-14]), val_attr)
+            row += 2
 
-        win.addstr(row, 2, "Username:", label_attr)
-        win.addstr(row, 12, R._sanitize_terminal_text(credential['username'][:box_w-14]), val_attr)
-        row += 2
-        
-        # Note
-        note_text = state.revealed_secret.get('note', '') if state.revealed_secret else ''
-        note_is_hidden = state.revealed_secret.get('note_is_hidden', False) if state.revealed_secret else False
-        display_note = "*" * len(note_text) if note_is_hidden and note_text else note_text
-        if display_note:
-            win.addstr(row, 2, "Note:", label_attr)
-            row += 1
-            # Wrap note to fit
-            import textwrap
-            wrapped_note = textwrap.wrap(display_note, width=box_w-14)
-            for line in wrapped_note:
-                win.addstr(row, 2, R._sanitize_terminal_text(line[:box_w-14]), val_attr)
+            win.addstr(row, 2, "Username:", label_attr)
+            win.addstr(row, 12, R._sanitize_terminal_text(credential['username'][:box_w-14]), val_attr)
+            row += 2
+            
+            # Note
+            note_text = state.revealed_secret.get('note', '') if state.revealed_secret else ''
+            note_is_hidden = state.revealed_secret.get('note_is_hidden', False) if state.revealed_secret else False
+            display_note = "*" * len(note_text) if note_is_hidden and note_text else note_text
+            if display_note:
+                win.addstr(row, 2, "Note:", label_attr)
                 row += 1
+                # Wrap note to fit
+                import textwrap
+                wrapped_note = textwrap.wrap(display_note, width=box_w-14)
+                for line in wrapped_note:
+                    win.addstr(row, 2, R._sanitize_terminal_text(line[:box_w-14]), val_attr)
+                    row += 1
 
-        win.addstr(row, 2, "Password:", label_attr)
-        if state.revealed_secret:
-            if password_revealed:
-                win.addstr(row, 12, R._sanitize_terminal_text(state.revealed_secret['password'][:box_w-14]), val_attr)
-            else:
-                masked = "*" * min(len(state.revealed_secret['password']), 20)
-                win.addstr(row, 12, masked[:box_w-14], val_attr)
-        row += 2
-        
-        win.addstr(row, 2, "Created:", label_attr)
-        win.addstr(row, 12, R._sanitize_terminal_text(str(credential['created_at'])[:box_w-14]))
-        
-        # Footer - stacked on two lines for better readability
-        line1 = "c: Copy Pass  u: Copy User"
-        if note_text:
-            line1 += "  n: Copy Note"
-        line1 += "  r: Hide" if password_revealed else "  r: Reveal"
-        
-        line2_parts = []
-        if note_text:
-            line2_parts.append("h: Show/Hide Note")
-        line2_parts.append("Esc: Close")
-        line2 = "  ".join(line2_parts)
-        
-        footer_text = line2
-        footer_attr = theme.dim
-        if feedback_text and time.monotonic() < feedback_until:
-            footer_text = feedback_text
-            footer_attr = feedback_attr
-        win.addstr(box_h - 3, 2, line1[:box_w-4], theme.dim)
-        win.addstr(box_h - 2, 2, footer_text[:box_w-4], footer_attr)
-        
-        win.refresh()
-        
-        key = win.getch()
-        if key == -1:
-            continue
-        _record_user_activity(state)
-        
-        if key in (27, ord('q'), ord('Q')): # Esc/q
-            return
+            win.addstr(row, 2, "Password:", label_attr)
+            if state.revealed_secret:
+                if password_revealed:
+                    win.addstr(row, 12, R._sanitize_terminal_text(state.revealed_secret['password'][:box_w-14]), val_attr)
+                else:
+                    masked = "*" * min(len(state.revealed_secret['password']), 20)
+                    win.addstr(row, 12, masked[:box_w-14], val_attr)
+            row += 2
             
-        elif key in (ord('r'), ord('R')):
-            password_revealed = not password_revealed
+            win.addstr(row, 2, "Created:", label_attr)
+            win.addstr(row, 12, R._sanitize_terminal_text(str(credential['created_at'])[:box_w-14]))
             
-        elif key in (ord('c'), ord('C')):
-            try:
-                if state.revealed_secret:
-                    msg = tui_flow._copy_to_clipboard_with_policy(state, state.revealed_secret['password'])
-                    feedback_text = "       COPIED PASSWORD!       "
-                    feedback_attr = theme.ok
-                    feedback_until = time.monotonic() + 0.5
-                    state.message = msg
-            except (StorageError, PyperclipException):
-                pass
-
-        elif key in (ord('u'), ord('U')):
-            try:
-                msg = tui_flow._copy_to_clipboard_with_policy(state, credential['username'])
-                feedback_text = "       COPIED USERNAME!       "
-                feedback_attr = theme.ok
-                feedback_until = time.monotonic() + 0.5
-                state.message = msg
-            except (StorageError, PyperclipException):
-                pass
-
-        elif key in (ord('n'), ord('N')):
+            # Footer - stacked on two lines for better readability
+            line1 = "c: Copy Pass  u: Copy User"
             if note_text:
+                line1 += "  n: Copy Note"
+            line1 += "  r: Hide" if password_revealed else "  r: Reveal"
+            
+            line2_parts = []
+            if note_text:
+                line2_parts.append("h: Show/Hide Note")
+            line2_parts.append("Esc: Close")
+            line2 = "  ".join(line2_parts)
+            
+            footer_text = line2
+            footer_attr = theme.dim
+            if feedback_text and time.monotonic() < feedback_until:
+                footer_text = feedback_text
+                footer_attr = feedback_attr
+            win.addstr(box_h - 3, 2, line1[:box_w-4], theme.dim)
+            win.addstr(box_h - 2, 2, footer_text[:box_w-4], footer_attr)
+            
+            win.refresh()
+            
+            key = win.getch()
+            if key == -1:
+                continue
+            _record_user_activity(state)
+            
+            if key in (27, ord('q'), ord('Q')): # Esc/q
+                return
+                
+            elif key in (ord('r'), ord('R')):
+                password_revealed = not password_revealed
+                
+            elif key in (ord('c'), ord('C')):
                 try:
-                    msg = tui_flow._copy_to_clipboard_with_policy(state, note_text)
-                    feedback_text = "        COPIED NOTE!        "
+                    if state.revealed_secret:
+                        msg = tui_flow._copy_to_clipboard_with_policy(state, state.revealed_secret['password'])
+                        feedback_text = "       COPIED PASSWORD!       "
+                        feedback_attr = theme.ok
+                        feedback_until = time.monotonic() + 0.5
+                        state.message = msg
+                except (StorageError, PyperclipException):
+                    pass
+
+            elif key in (ord('u'), ord('U')):
+                try:
+                    msg = tui_flow._copy_to_clipboard_with_policy(state, credential['username'])
+                    feedback_text = "       COPIED USERNAME!       "
                     feedback_attr = theme.ok
                     feedback_until = time.monotonic() + 0.5
                     state.message = msg
                 except (StorageError, PyperclipException):
                     pass
-            else:
-                feedback_text = "       NO NOTE TO COPY!      "
-                feedback_attr = theme.warn
-                feedback_until = time.monotonic() + 0.5
 
-        elif key in (ord('h'), ord('H')):
-            if note_text:
-                try:
-                    cred_id = credential['id']
-                    current_hidden = note_is_hidden
-                    if state.storage and state.revealed_secret:
-                        state.storage.update_credential(
-                            cred_id,
-                            credential['service'],
-                            credential['username'],
-                            state.revealed_secret['password'],
-                            state.revealed_secret['note'],
-                            not current_hidden
-                        )
-                        state.vault_credentials = state.storage.list_credential_metadata()
-                        state.revealed_secret['note_is_hidden'] = not current_hidden
-                    credential = next((c for c in state.vault_credentials if c['id'] == cred_id), credential)
-                    break
-                except StorageError as e:
-                    feedback_text = f"     ERROR: {str(e)[:20]}    "
+            elif key in (ord('n'), ord('N')):
+                if note_text:
+                    try:
+                        msg = tui_flow._copy_to_clipboard_with_policy(state, note_text)
+                        feedback_text = "        COPIED NOTE!        "
+                        feedback_attr = theme.ok
+                        feedback_until = time.monotonic() + 0.5
+                        state.message = msg
+                    except (StorageError, PyperclipException):
+                        pass
+                else:
+                    feedback_text = "       NO NOTE TO COPY!      "
                     feedback_attr = theme.warn
-                    feedback_until = time.monotonic() + 1.0
-            else:
-                feedback_text = "       NO NOTE TO HIDE!     "
-                feedback_attr = theme.warn
-                feedback_until = time.monotonic() + 0.5
+                    feedback_until = time.monotonic() + 0.5
+
+            elif key in (ord('h'), ord('H')):
+                if note_text:
+                    try:
+                        cred_id = credential['id']
+                        current_hidden = note_is_hidden
+                        if state.storage and state.revealed_secret:
+                            state.storage.update_credential(
+                                cred_id,
+                                credential['service'],
+                                credential['username'],
+                                state.revealed_secret['password'],
+                                state.revealed_secret['note'],
+                                not current_hidden
+                            )
+                            state.vault_credentials = state.storage.list_credential_metadata()
+                            state.revealed_secret['note_is_hidden'] = not current_hidden
+                        credential = next((c for c in state.vault_credentials if c['id'] == cred_id), credential)
+                        break
+                    except StorageError as e:
+                        feedback_text = f"     ERROR: {str(e)[:20]}    "
+                        feedback_attr = theme.warn
+                        feedback_until = time.monotonic() + 1.0
+                else:
+                    feedback_text = "       NO NOTE TO HIDE!     "
+                    feedback_attr = theme.warn
+                    feedback_until = time.monotonic() + 0.5
+    finally:
+        state.revealed_secret = None
+        state.revealed_secret_id = None
 
 def _run_vault_modal(
     stdscr: curses.window,
