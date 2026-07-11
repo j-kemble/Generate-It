@@ -1,8 +1,9 @@
 # Security Acceptance Matrix
 
-> Generated: 2026-07-11 · 237 tests · mypy clean · Bandit at baseline
+> Generated: 2026-07-11 · 287 tests · mypy clean · Bandit at baseline
 
-Maps every finding from `SECURITY_REVIEW.md` to the implemented control and its regression test(s).
+Maps every finding from the security review to the implemented control and its regression test(s).
+See `review-commit.md` for the commit-level mapping.
 
 ## High Severity
 
