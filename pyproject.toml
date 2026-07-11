@@ -64,8 +64,6 @@ testpaths = ["tests"]
 # Bandit security linter configuration
 exclude_dirs = ["tests"]
 skips = []
-# Focus on crypto and randomness issues for credential generator
-assert_used = true
 
 [tool.mypy]
 # Static type checker configuration
