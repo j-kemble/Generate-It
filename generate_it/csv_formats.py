@@ -232,7 +232,13 @@ def build_export_row(
     normalized = normalize_export_format(export_format)
 
     if normalized == "generic":
-        return [service, "", username, password, note]
+        return [
+            _escape_formula(service),
+            "",
+            _escape_formula(username),
+            _escape_formula(password),
+            _escape_formula(note),
+        ]
 
     if normalized == "spreadsheet-safe":
         return [
@@ -248,33 +254,33 @@ def build_export_row(
             "",  # folder
             "0",  # favorite
             "login",  # type
-            service,  # name
-            note,  # notes
+            _escape_formula(service),  # name
+            _escape_formula(note),  # notes
             "",  # fields
             "0",  # reprompt
             "",  # login_uri
-            username,  # login_username
-            password,  # login_password
+            _escape_formula(username),  # login_username
+            _escape_formula(password),  # login_password
             "",  # login_totp
         ]
 
     if normalized == "apple":
         return [
-            service,  # Title
+            _escape_formula(service),  # Title
             "",  # URL
-            username,  # Username
-            password,  # Password
-            note,  # Notes
+            _escape_formula(username),  # Username
+            _escape_formula(password),  # Password
+            _escape_formula(note),  # Notes
             "",  # OTPAuth
         ]
 
     # nordpass
     return [
-        service,  # name
+        _escape_formula(service),  # name
         "",  # url
-        username,  # username
-        password,  # password
-        note,  # note
+        _escape_formula(username),  # username
+        _escape_formula(password),  # password
+        _escape_formula(note),  # note
         "",  # cardholdername
         "",  # cardnumber
         "",  # cvc

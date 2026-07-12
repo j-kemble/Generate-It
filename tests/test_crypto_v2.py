@@ -531,6 +531,35 @@ class TestVaultV2Migration:
         storage2.migrate_v1_to_v2("correct-password")
         storage2.close()
 
+    def test_migration_wrong_password_rejected(self, tmp_path) -> None:
+        """Migration with a wrong password must raise InvalidPasswordError.
+
+        The vault is unlocked with the correct password, but a different
+        password is passed to migrate_v1_to_v2.  This must be rejected
+        to prevent silent re-keying.
+        """
+        db_path = tmp_path / "vault.db"
+        pw = "a-strong-master-password"
+
+        storage = StorageManager(db_path=db_path)
+        storage.initialize_vault(pw)
+        storage.save_credential("GitHub", "dev", "secret")
+        storage.close()
+
+        # Unlock with correct password.
+        storage2 = StorageManager(db_path=db_path)
+        storage2.unlock_vault(pw)
+
+        # Attempt migration with a different (but equally strong) password.
+        with pytest.raises(InvalidPasswordError, match="does not match"):
+            storage2.migrate_v1_to_v2("different-strong-pw")
+
+        # Vault must still be v1 and intact.
+        assert storage2._vault_version == 1
+        # No backup should have been created.
+        assert not (db_path.with_suffix(db_path.suffix + ".v1.bak")).exists()
+        storage2.close()
+
     def test_migrate_unlocked_v2_raises(self, tmp_path) -> None:
         """Cannot migrate an already v2 vault."""
         db_path = tmp_path / "vault.db"
@@ -713,6 +742,145 @@ class TestVaultV2AssociatedDataBinding:
         assert creds[0]["note"] == "<DECRYPTION_ERROR>"
         storage2.close()
 
+    def test_fresh_v2_vault_uses_aad_v2(self, tmp_path) -> None:
+        """Fresh v2 vaults must have aad_version=2 in config."""
+        db_path = tmp_path / "vault.db"
+        pw = "a-strong-master-password"
+
+        storage = StorageManager(db_path=db_path)
+        storage.initialize_vault_v2(pw)
+        assert storage._aad_version == 2
+
+        import sqlite3
+        raw = sqlite3.connect(db_path)
+        row = raw.execute(
+            "SELECT value FROM config WHERE key='aad_version'"
+        ).fetchone()
+        raw.close()
+        assert row is not None
+        assert int(row[0]) == 2
+        storage.close()
+
+    def test_uuid_ciphertext_swap_rejected_on_aad_v2(self, tmp_path) -> None:
+        """Swapping both UUID and ciphertext between credentials must fail
+        when the vault uses AAD v2 (metadata-bound).
+
+        AAD v1 only binds vault_uuid + credential_uuid + field_name, so
+        swapping both UUID and ciphertext together succeeds.  AAD v2 also
+        binds service+username, so the swap must fail.
+        """
+        db_path = tmp_path / "vault.db"
+        pw = "a-strong-master-password"
+
+        storage = StorageManager(db_path=db_path)
+        storage.initialize_vault_v2(pw)
+        assert storage._aad_version == 2
+        cred_a = storage.save_credential("ServiceA", "userA", "alpha-secret")
+        cred_b = storage.save_credential("ServiceB", "userB", "beta-secret")
+        storage.close()
+
+        # Swap both credential_uuid AND encrypted_password between rows.
+        import sqlite3
+        raw = sqlite3.connect(db_path)
+        row_a = raw.execute(
+            "SELECT credential_uuid, encrypted_password FROM credentials WHERE id=?",
+            (cred_a,),
+        ).fetchone()
+        row_b = raw.execute(
+            "SELECT credential_uuid, encrypted_password FROM credentials WHERE id=?",
+            (cred_b,),
+        ).fetchone()
+        # Swap UUID + ciphertext for both password and note.
+        raw.execute(
+            "UPDATE credentials SET credential_uuid=?, encrypted_password=? WHERE id=?",
+            (row_b[0], row_b[1], cred_a),
+        )
+        raw.execute(
+            "UPDATE credentials SET credential_uuid=?, encrypted_password=? WHERE id=?",
+            (row_a[0], row_a[1], cred_b),
+        )
+        raw.commit()
+        raw.close()
+
+        # Both should show <DECRYPTION_ERROR> — AAD v2 binds service+username
+        # so the swapped ciphertext (encrypted under different metadata) fails.
+        storage2 = StorageManager(db_path=db_path)
+        storage2.unlock_vault(pw)
+        creds = storage2.list_credentials()
+        assert len(creds) == 2
+        for c in creds:
+            assert c["password"] == "<DECRYPTION_ERROR>"
+        storage2.close()
+
+    def test_v1_to_v2_migration_produces_aad_v2(self, tmp_path) -> None:
+        """v1→v2 migration must produce a vault with aad_version=2."""
+        db_path = tmp_path / "vault.db"
+        pw = "a-strong-master-password"
+
+        storage = StorageManager(db_path=db_path)
+        storage.initialize_vault(pw)
+        storage.save_credential("GitHub", "dev", "secret")
+        storage.close()
+
+        storage2 = StorageManager(db_path=db_path)
+        storage2.unlock_vault(pw)
+        storage2.migrate_v1_to_v2(pw)
+        assert storage2._vault_version == 2
+        assert storage2._aad_version == 2
+
+        import sqlite3
+        raw = sqlite3.connect(db_path)
+        row = raw.execute(
+            "SELECT value FROM config WHERE key='aad_version'"
+        ).fetchone()
+        raw.close()
+        assert row is not None
+        assert int(row[0]) == 2
+        storage2.close()
+
+    def test_aad_v1_to_v2_migration_succeeds(self, tmp_path) -> None:
+        """An existing v2 vault at AAD v1 can be migrated to AAD v2."""
+        db_path = tmp_path / "vault.db"
+        pw = "a-strong-master-password"
+
+        # Create a v2 vault with AAD v1 (simulate legacy vault).
+        storage = StorageManager(db_path=db_path)
+        storage.initialize_vault_v2(pw)
+        # Force AAD v1 before saving credentials so they're encrypted with v1 AAD.
+        storage._aad_version = 1
+        import sqlite3
+        conn = storage._get_conn()
+        conn.execute("UPDATE config SET value='1' WHERE key='aad_version'")
+        conn.commit()
+        cred_a = storage.save_credential("ServiceA", "userA", "alpha-secret")
+        cred_b = storage.save_credential("ServiceB", "userB", "beta-secret")
+        storage.close()
+
+        # Re-open at AAD v1.
+        storage2 = StorageManager(db_path=db_path)
+        storage2.unlock_vault(pw)
+        assert storage2._aad_version == 1
+
+        # Migrate to AAD v2.
+        storage2.migrate_aad_v1_to_v2()
+        assert storage2._aad_version == 2
+
+        # Credentials should still decrypt correctly.
+        creds = storage2.list_credentials()
+        assert len(creds) == 2
+        pw_map = {c["service"]: c["password"] for c in creds}
+        assert pw_map["ServiceA"] == "alpha-secret"
+        assert pw_map["ServiceB"] == "beta-secret"
+        storage2.close()
+
+        # Verify config persisted.
+        raw = sqlite3.connect(db_path)
+        row = raw.execute(
+            "SELECT value FROM config WHERE key='aad_version'"
+        ).fetchone()
+        raw.close()
+        assert int(row[0]) == 2
+
 
 class TestVaultV2CloseAndReopen:
     """Close/re-open lifecycle for v2."""
@@ -894,10 +1062,12 @@ class TestValidateKdfConfig:
         with pytest.raises(ValueError, match="salt must be exactly"):
             _validate_kdf_config(KDF_ARGON2ID, 65536, 3, 4, b"too-short")
 
-    def test_scrypt_algorithm_accepted(self) -> None:
+    def test_scrypt_algorithm_rejected(self) -> None:
+        """scrypt is recognised as a constant but not yet implemented — must be rejected."""
         from generate_it._crypto_v2 import _validate_kdf_config, KDF_SCRYPT, SALT_LEN
         import os
-        _validate_kdf_config(KDF_SCRYPT, 65536, 3, 4, os.urandom(SALT_LEN))  # should not raise
+        with pytest.raises(ValueError, match="Unknown KDF algorithm"):
+            _validate_kdf_config(KDF_SCRYPT, 65536, 3, 4, os.urandom(SALT_LEN))
 
 
 class TestValidateVaultMetadata:

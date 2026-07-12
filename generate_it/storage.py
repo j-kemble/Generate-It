@@ -450,7 +450,7 @@ class StorageManager:
             ("kdf_salt", salt),
             ("wrapped_dek", wrapped_dek),
             ("aead_algorithm", aead_algorithm),
-            ("aad_version", "1"),
+            ("aad_version", "2"),
             ("verification", verification_ct),
             ("dek_generation", "1"),
         ]
@@ -467,7 +467,7 @@ class StorageManager:
         self._dek = dek
         self._vault_uuid = vault_uuid
         self._aead_algorithm = aead_algorithm
-        self._aad_version = 1
+        self._aad_version = 2
         _log.info("vault v2 initialized at %s", self.db_path)
 
     def _unlock_vault_v2(self, master_password: str) -> None:
@@ -600,6 +600,38 @@ class StorageManager:
 
         _validate_master_password(master_password)
 
+        # Verify the password authenticates against the existing v1 vault
+        # before any migration work begins.  This prevents a caller from
+        # silently re-keying the vault with a different password.
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("SELECT value FROM config WHERE key=?", ("salt",))
+            v1_salt = cursor.fetchone()["value"]
+            cursor.execute("SELECT value FROM config WHERE key=?", ("verification",))
+            v1_verification_token = cursor.fetchone()["value"]
+        except (TypeError, sqlite3.Error) as exc:
+            raise StorageError(
+                f"Cannot verify password: v1 vault config corrupted. {exc}"
+            ) from exc
+
+        stored_iters_raw = self._read_optional_int_config(cursor, "pbkdf2_iterations")
+        if stored_iters_raw is None:
+            v1_iters = _LEGACY_PBKDF2_ITERATIONS
+        else:
+            v1_iters = stored_iters_raw
+
+        v1_key = self._derive_key(master_password, v1_salt, v1_iters)
+        v1_fernet = Fernet(v1_key)
+        try:
+            decrypted_verification = v1_fernet.decrypt(v1_verification_token)
+            if decrypted_verification != b"VERIFICATION_TOKEN":
+                raise InvalidPasswordError("Password does not match existing v1 vault.")
+        except InvalidToken as exc:
+            raise InvalidPasswordError(
+                "Password does not match existing v1 vault."
+            ) from exc
+
         # 1. Create a secure backup with an unpredictable name, then atomically
         #    rename to the predictable .v1.bak path.  This avoids symlink-following
         #    attacks on the well-known backup filename.
@@ -616,9 +648,6 @@ class StorageManager:
         backup_path = self.db_path.with_suffix(self.db_path.suffix + ".v1.bak")
         os.replace(str(backup_tmp), str(backup_path))
         _log.info("v1 backup created at %s", backup_path)
-
-        conn = self._get_conn()
-        cursor = conn.cursor()
 
         try:
             # 2. Begin exclusive transaction.
@@ -657,7 +686,7 @@ class StorageManager:
                 raise StorageError("v1 Fernet is not available; vault may not be unlocked as v1.")
             fernet = self._fernet
             cursor.execute(
-                "SELECT id, credential_uuid, encrypted_password, encrypted_note"
+                "SELECT id, credential_uuid, service, username, encrypted_password, encrypted_note"
                 " FROM credentials"
             )
             for row in cursor.fetchall():
@@ -681,10 +710,14 @@ class StorageManager:
                             f"Failed to decrypt v1 note for credential id={row['id']}"
                         )
 
-                # Re-encrypt with v2 AEAD.
+                # Re-encrypt with v2 AEAD (AAD v2 — metadata-bound).
+                svc: str = row["service"]
+                usr: str = row["username"]
                 new_password_ct = _crypto_v2.encrypt_field(
                     dek,
-                    _crypto_v2.make_associated_data(vault_uuid, cred_uuid, "password"),
+                    _crypto_v2.make_associated_data_v2(
+                        vault_uuid, cred_uuid, "password", svc, usr,
+                    ),
                     v1_password,
                     aead_algorithm=aead_algorithm,
                 )
@@ -692,7 +725,9 @@ class StorageManager:
                 if v1_note:
                     new_note_ct = _crypto_v2.encrypt_field(
                         dek,
-                        _crypto_v2.make_associated_data(vault_uuid, cred_uuid, "note"),
+                        _crypto_v2.make_associated_data_v2(
+                            vault_uuid, cred_uuid, "note", svc, usr,
+                        ),
                         v1_note,
                         aead_algorithm=aead_algorithm,
                     )
@@ -718,7 +753,7 @@ class StorageManager:
                 ("kdf_salt", salt),
                 ("wrapped_dek", wrapped_dek),
                 ("aead_algorithm", aead_algorithm),
-                ("aad_version", "1"),
+                ("aad_version", "2"),
                 ("verification", verification_ct),
                 ("dek_generation", "1"),
             ]
@@ -742,7 +777,7 @@ class StorageManager:
             self._dek = dek
             self._vault_uuid = vault_uuid
             self._aead_algorithm = aead_algorithm
-            self._aad_version = 1
+            self._aad_version = 2
             _log.info("vault migrated from v1 to v2")
 
         except BaseException:

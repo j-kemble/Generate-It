@@ -448,6 +448,70 @@ def test_truncate_middle_edge_cases() -> None:
     assert tui_helpers._truncate_middle("abc", 3) == "abc"
 
 
+def test_sanitize_strips_zero_width_chars() -> None:
+    for cp in range(0x200B, 0x2010):  # U+200B through U+200F
+        char = chr(cp)
+        text = f"abc{char}def"
+        result = tui_helpers._sanitize_terminal_text(text)
+        assert result == "abcdef", f"U+{cp:04X} was not stripped: got {result!r}"
+
+
+def test_sanitize_replaces_bidi_controls_with_question_mark() -> None:
+    for cp in range(0x202A, 0x2030):  # U+202A through U+202E
+        char = chr(cp)
+        text = f"abc{char}def"
+        result = tui_helpers._sanitize_terminal_text(text)
+        assert result == "abc?def", f"U+{cp:04X} was not replaced with '?': got {result!r}"
+
+
+def test_sanitize_strips_bom() -> None:
+    bom = chr(0xFEFF)
+    text = f"{bom}hello{bom}"
+    result = tui_helpers._sanitize_terminal_text(text)
+    assert result == "hello"
+
+
+def test_sanitize_mixed_c0_bidi_zero_width() -> None:
+    # Mix: C0 control (ESC), bidi (RLO), zero-width (ZWSP), BOM, normal text
+    text = f"start\x1b{chr(0x202E)}{chr(0x200B)}{chr(0xFEFF)}end"
+    result = tui_helpers._sanitize_terminal_text(text)
+    assert result == "start\\e?end"
+
+
+def test_sanitize_preserves_legitimate_unicode() -> None:
+    # CJK
+    assert tui_helpers._sanitize_terminal_text("中文测试") == "中文测试"
+    # Cyrillic
+    assert tui_helpers._sanitize_terminal_text("Привет") == "Привет"
+    # Emoji
+    assert tui_helpers._sanitize_terminal_text("🔑 secret") == "🔑 secret"
+    # Mixed scripts in one string
+    assert tui_helpers._sanitize_terminal_text("中文 Привет 🔑") == "中文 Привет 🔑"
+
+
+def test_sanitize_service_name_with_embedded_zero_width() -> None:
+    # Simulate a phishing attack: "GitHub" with zero-width chars between visible chars
+    zwsp = chr(0x200B)  # zero-width space
+    zwnj = chr(0x200C)  # zero-width non-joiner
+    zwj = chr(0x200D)   # zero-width joiner
+    malicious = f"Git{zwsp}Hub{zwnj}Lo{zwj}gin"
+    result = tui_helpers._sanitize_terminal_text(malicious)
+    assert result == "GitHubLogin"
+    assert zwsp not in result
+    assert zwnj not in result
+    assert zwj not in result
+
+
+def test_sanitize_existing_c0_behavior_unchanged() -> None:
+    assert tui_helpers._sanitize_terminal_text("line1\nline2") == "line1\\nline2"
+    assert tui_helpers._sanitize_terminal_text("tab\there") == "tab\\there"
+    assert tui_helpers._sanitize_terminal_text("cr\r") == "cr\\r"
+    assert tui_helpers._sanitize_terminal_text("bs\b") == "bs\\b"
+    assert tui_helpers._sanitize_terminal_text("esc\x1b") == "esc\\e"
+    assert tui_helpers._sanitize_terminal_text("null\x00") == "null\\x00"
+    assert tui_helpers._sanitize_terminal_text("del\x7f") == "del\\x7f"
+
+
 def test_coerce_index_edge_cases() -> None:
     assert tui._coerce_index("", 5, 0) == 0
     assert tui._coerce_index("abc", 5, 0) == 0

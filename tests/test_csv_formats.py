@@ -318,7 +318,7 @@ def test_build_export_row_spreadsheet_safe_normal_unchanged() -> None:
     assert row[4] == "my note"
 
 
-def test_build_export_row_generic_does_not_escape() -> None:
+def test_build_export_row_generic_escapes_formulas() -> None:
     row = csv_formats.build_export_row(
         "generic",
         service="=EVIL()",
@@ -326,20 +326,30 @@ def test_build_export_row_generic_does_not_escape() -> None:
         password="-bad",
         note="@formula",
     )
-    assert row[0] == "=EVIL()"
-    assert row[2] == "+MALWARE"
-    assert row[3] == "-bad"
-    assert row[4] == "@formula"
+    assert row[0] == "'=EVIL()"
+    assert row[2] == "'+MALWARE"
+    assert row[3] == "'-bad"
+    assert row[4] == "'@formula"
 
 
-def test_build_export_row_bitwarden_does_not_escape() -> None:
+def test_build_export_row_bitwarden_escapes_formulas() -> None:
     row = csv_formats.build_export_row(
         "bitwarden",
         service="=EVIL()",
-        username="user",
-        password="pass",
+        username="+MALWARE",
+        password="-bad",
+        note="@formula",
     )
-    assert "=EVIL()" in row
+    # name (index 3), notes (index 4), login_username (index 8), login_password (index 9)
+    assert row[3] == "'=EVIL()"
+    assert row[4] == "'@formula"
+    assert row[8] == "'+MALWARE"
+    assert row[9] == "'-bad"
+    # Hardcoded constants must remain unescaped
+    assert row[0] == ""  # folder
+    assert row[1] == "0"  # favorite
+    assert row[2] == "login"  # type
+    assert row[6] == "0"  # reprompt
 
 
 def test_get_export_headers_spreadsheet_safe() -> None:
@@ -403,3 +413,168 @@ def test_normalize_export_format_spreadsheet_safe_aliases() -> None:
     assert csv_formats.normalize_export_format("spreadsheet_safe") == "spreadsheet-safe"
     assert csv_formats.normalize_export_format("spreadsheet") == "spreadsheet-safe"
     assert csv_formats.normalize_export_format("safe") == "spreadsheet-safe"
+
+
+# ── regression: formula escaping across ALL export formats ─────────────
+
+_FORMULA_PAYLOAD = "=cmd|'/c calc'!A0"
+_FORMULA_CHARS = ["=", "+", "-", "@"]
+
+
+def test_all_formats_escape_formula_equals_payload() -> None:
+    """Every export format must prefix =cmd|'/c calc'!A0 with a single quote."""
+    for fmt in ("generic", "bitwarden", "apple", "nordpass", "spreadsheet-safe"):
+        row = csv_formats.build_export_row(
+            fmt,
+            service=_FORMULA_PAYLOAD,
+            username=_FORMULA_PAYLOAD,
+            password=_FORMULA_PAYLOAD,
+            note=_FORMULA_PAYLOAD,
+        )
+        for field_idx, field_val in enumerate(row):
+            if field_val == _FORMULA_PAYLOAD:
+                pytest.fail(
+                    f"Format '{fmt}' field [{field_idx}] returned raw formula payload "
+                    f"without escaping: {field_val!r}"
+                )
+
+
+@pytest.mark.parametrize("trigger", _FORMULA_CHARS)
+def test_all_formats_escape_each_formula_trigger(trigger: str) -> None:
+    """Each formula trigger char (=, +, -, @) as a leading char must be escaped."""
+    payload = trigger + "EVIL()"
+    for fmt in ("generic", "bitwarden", "apple", "nordpass", "spreadsheet-safe"):
+        row = csv_formats.build_export_row(
+            fmt,
+            service=payload,
+            username=payload,
+            password=payload,
+            note=payload,
+        )
+        for field_idx, field_val in enumerate(row):
+            if field_val == payload:
+                pytest.fail(
+                    f"Format '{fmt}' field [{field_idx}] returned unescaped formula "
+                    f"trigger '{trigger}': {field_val!r}"
+                )
+
+
+def test_all_formats_normal_values_unchanged() -> None:
+    """Non-formula values must pass through unchanged in every format."""
+    service = "myservice"
+    username = "user@example.com"
+    password = "S3cur3!Pass"
+    note = "a normal note"
+    for fmt in ("generic", "bitwarden", "apple", "nordpass", "spreadsheet-safe"):
+        row = csv_formats.build_export_row(
+            fmt,
+            service=service,
+            username=username,
+            password=password,
+            note=note,
+        )
+        assert service in row, f"Format '{fmt}' lost service value"
+        assert username in row, f"Format '{fmt}' lost username value"
+        assert password in row, f"Format '{fmt}' lost password value"
+        assert note in row, f"Format '{fmt}' lost note value"
+        # No value should start with a single quote
+        for field_idx, field_val in enumerate(row):
+            if field_val.startswith("'"):
+                pytest.fail(
+                    f"Format '{fmt}' field [{field_idx}] unnecessarily escaped "
+                    f"normal value: {field_val!r}"
+                )
+
+
+def test_all_formats_note_field_escaped() -> None:
+    """The note field must be formula-escaped in every export format."""
+    for fmt in ("generic", "bitwarden", "apple", "nordpass", "spreadsheet-safe"):
+        row = csv_formats.build_export_row(
+            fmt,
+            service="ok",
+            username="ok",
+            password="ok",
+            note="=EVIL()",
+        )
+        assert "'=EVIL()" in row, f"Format '{fmt}' did not escape note field"
+        assert "=EVIL()" not in [v for v in row if not v.startswith("'")], (
+            f"Format '{fmt}' has unescaped '=EVIL()' in row"
+        )
+
+
+def test_spreadsheet_safe_still_escapes_as_before() -> None:
+    """Regression: spreadsheet-safe format behavior unchanged."""
+    row = csv_formats.build_export_row(
+        "spreadsheet-safe",
+        service="=EVIL()",
+        username="+EVIL()",
+        password="-EVIL()",
+        note="@EVIL()",
+    )
+    assert row[0] == "'=EVIL()"
+    assert row[1] == ""  # url is always empty
+    assert row[2] == "'+EVIL()"
+    assert row[3] == "'-EVIL()"
+    assert row[4] == "'@EVIL()"
+
+
+def test_bitwarden_hardcoded_constants_not_escaped() -> None:
+    """Hardcoded constant strings in bitwarden format must not be escaped."""
+    row = csv_formats.build_export_row(
+        "bitwarden",
+        service="=EVIL()",
+        username="+EVIL()",
+        password="-EVIL()",
+        note="@EVIL()",
+    )
+    # Constants that should remain exactly as-is
+    assert row[0] == ""   # folder
+    assert row[1] == "0"  # favorite
+    assert row[2] == "login"  # type
+    assert row[6] == "0"  # reprompt
+    assert row[10] == ""  # login_totp
+
+
+def test_nordpass_hardcoded_constants_not_escaped() -> None:
+    """Hardcoded constant strings in nordpass format must not be escaped."""
+    row = csv_formats.build_export_row(
+        "nordpass",
+        service="=EVIL()",
+        username="+EVIL()",
+        password="-EVIL()",
+        note="@EVIL()",
+    )
+    assert row[1] == ""   # url
+    assert row[19] == "password"  # type
+
+
+def test_apple_format_escapes_all_user_fields() -> None:
+    """Apple format: service, username, password, note must all be escaped."""
+    row = csv_formats.build_export_row(
+        "apple",
+        service="=evil",
+        username="+evil",
+        password="-evil",
+        note="@evil",
+    )
+    assert row[0] == "'=evil"   # Title
+    assert row[1] == ""          # URL (constant)
+    assert row[2] == "'+evil"   # Username
+    assert row[3] == "'-evil"   # Password
+    assert row[4] == "'@evil"   # Notes
+    assert row[5] == ""          # OTPAuth (constant)
+
+
+def test_nordpass_format_escapes_all_user_fields() -> None:
+    """NordPass format: service, username, password, note must all be escaped."""
+    row = csv_formats.build_export_row(
+        "nordpass",
+        service="=evil",
+        username="+evil",
+        password="-evil",
+        note="@evil",
+    )
+    assert row[0] == "'=evil"   # name
+    assert row[2] == "'+evil"   # username
+    assert row[3] == "'-evil"   # password
+    assert row[4] == "'@evil"   # note

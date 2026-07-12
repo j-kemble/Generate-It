@@ -341,7 +341,7 @@ def _add_gradient(
 
 
 def _header_lines_for_width(w: int) -> list[str]:
-    # Large: pixel banner (gemini-cli-ish vibe)
+    # Large: pixel banner
     large = _pixel_banner("Generate It")
     needed = max((len(line) for line in large), default=0)
 

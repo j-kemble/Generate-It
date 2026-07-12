@@ -15,6 +15,11 @@ def _sanitize_terminal_text(text: str) -> str:
     Prevents control-character injection from user-controlled strings
     (service, username, note, import results) reaching curses.addstr()
     unchanged.  Printable Unicode (including non-ASCII) is left alone.
+
+    Also strips Unicode zero-width characters (U+200B–200F, U+FEFF)
+    that are invisible and can be used for homograph/phishing attacks,
+    and replaces bidi control characters (U+202A–202F) with a visible
+    "?" so the user is aware something was there.
     """
     result: list[str] = []
     for ch in text:
@@ -33,6 +38,14 @@ def _sanitize_terminal_text(text: str) -> str:
             result.append(f"\\x{cp:02x}")
         elif 0x7F <= cp <= 0x9F:  # DEL (0x7F) + C1 controls (0x80–0x9F)
             result.append(f"\\x{cp:02x}")
+        elif 0x200B <= cp <= 0x200F:  # zero-width chars: ZWSP, ZWNJ, ZWJ, ZWNBS, etc.
+            # Strip entirely — invisible, serve no legitimate purpose in credential names.
+            continue
+        elif 0x202A <= cp <= 0x202F:  # bidi controls: LRE, RLE, PDF, LRO, RLO, LRI, RLI, FSI, PDI
+            # Replace with visible "?" so the user is aware something was there.
+            result.append("?")
+        elif cp == 0xFEFF:  # BOM / zero-width no-break space
+            continue
         else:
             result.append(ch)
     return "".join(result)

@@ -54,7 +54,7 @@ MAX_ARGON2_PARALLELISM: int = 64
 # Recognised KDF algorithms.
 KDF_ARGON2ID: str = "argon2id"
 KDF_SCRYPT: str = "scrypt"
-_VALID_KDF_ALGORITHMS: frozenset[str] = frozenset({KDF_ARGON2ID, KDF_SCRYPT})
+_VALID_KDF_ALGORITHMS: frozenset[str] = frozenset({KDF_ARGON2ID})
 
 # AEAD algorithms recognised by the vault config.
 AEAD_AES_256_GCM: str = "aes-256-gcm"

@@ -157,7 +157,7 @@ def _run_fuzzy_file_picker(
         root_display = _truncate_middle(str(root_dir), max(8, inner_w - 7))
         try:
             win.addstr(0, 2, " FUZZY FILE PICKER ", theme.title)
-            win.addstr(1, 2, f"Root: {root_display}"[:inner_w], theme.dim)
+            win.addstr(1, 2, R._sanitize_terminal_text(f"Root: {root_display}"[:inner_w]), theme.dim)
         except curses.error:
             pass
 
@@ -202,7 +202,7 @@ def _run_fuzzy_file_picker(
                 attr = theme.focus if (scroll_pos + i) == selected_idx else 0
                 line = _truncate_middle(rel, inner_w)
                 try:
-                    win.addstr(content_y + i, 2, line[:inner_w], attr)
+                    win.addstr(content_y + i, 2, R._sanitize_terminal_text(line[:inner_w]), attr)
                 except curses.error:
                     pass
 
@@ -269,7 +269,7 @@ def _run_file_browser_modal(
         inner_w = max(10, box_w - 4)
         try:
             win.addstr(0, 2, " FILE BROWSER ", theme.title)
-            win.addstr(1, 2, _truncate_middle(str(current_dir), inner_w), theme.dim)
+            win.addstr(1, 2, R._sanitize_terminal_text(_truncate_middle(str(current_dir), inner_w)), theme.dim)
         except curses.error:
             pass
 
@@ -332,7 +332,7 @@ def _run_file_browser_modal(
             for i, (label, _, _) in enumerate(visible):
                 attr = theme.focus if (scroll_pos + i) == selected_idx else 0
                 try:
-                    win.addstr(content_y + i, 2, _truncate_middle(label, inner_w), attr)
+                    win.addstr(content_y + i, 2, R._sanitize_terminal_text(_truncate_middle(label, inner_w)), attr)
                 except curses.error:
                     pass
 
@@ -1055,8 +1055,8 @@ def _run_details_modal(
             if feedback_text and time.monotonic() < feedback_until:
                 footer_text = feedback_text
                 footer_attr = feedback_attr
-            win.addstr(box_h - 3, 2, line1[:box_w-4], theme.dim)
-            win.addstr(box_h - 2, 2, footer_text[:box_w-4], footer_attr)
+            win.addstr(box_h - 3, 2, R._sanitize_terminal_text(line1[:box_w-4]), theme.dim)
+            win.addstr(box_h - 2, 2, R._sanitize_terminal_text(footer_text[:box_w-4]), footer_attr)
             
             win.refresh()
             
@@ -1126,7 +1126,7 @@ def _run_details_modal(
                         credential = next((c for c in state.vault_credentials if c['id'] == cred_id), credential)
                         break
                     except StorageError as e:
-                        feedback_text = f"     ERROR: {str(e)[:20]}    "
+                        feedback_text = f"     ERROR: {R._sanitize_terminal_text(str(e))[:20]}    "
                         feedback_attr = theme.warn
                         feedback_until = time.monotonic() + 1.0
                 else:
@@ -1321,6 +1321,11 @@ def _run_vault_modal(
         elif key in (ord('e'), ord('E')):
             if filtered_credentials:
                 cred = filtered_credentials[state.vault_selected_idx]
+                try:
+                    secret = state.storage.get_credential_secret(cred["id"])
+                except StorageError as e:
+                    tui_modal._run_modal(stdscr, theme, "ERROR", f"Cannot load credential: {e}")
+                    continue
                 service = tui_modal._run_modal(
                     stdscr,
                     theme,
@@ -1348,7 +1353,7 @@ def _run_vault_modal(
                     "Password:",
                     is_password=True,
                     max_length=200,
-                    initial_value=cred["password"],
+                    initial_value=secret.get("password", ""),
                 )
                 if password is None:
                     continue
@@ -1361,8 +1366,8 @@ def _run_vault_modal(
 
                 try:
                     # Get existing note for the credential
-                    existing_note = cred.get("note", "")
-                    existing_hidden = cred.get("note_is_hidden", False)
+                    existing_note = secret.get("note", "")
+                    existing_hidden = secret.get("note_is_hidden", False)
                     note = tui_modal._run_modal(stdscr, theme, "EDIT", "Note (optional):", max_length=500, initial_value=existing_note)
                     if note is None:
                         continue
@@ -1527,6 +1532,7 @@ def run() -> int:
                 try:
                     state.storage.unlock_vault(pwd)
                     state.vault_unlocked = True
+                    tui_security._maybe_prompt_aad_migration(stdscr, theme, state)
                     break
                 except InvalidPasswordError:
                     # Visual feedback loop

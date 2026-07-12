@@ -52,3 +52,6 @@ Thumbs.db
 
 # Manual test exports
 Sample-Import/generate-it-*.csv
+
+# Security review artifacts
+SECURITY_REVIEW_*.md
