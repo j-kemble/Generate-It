@@ -5,8 +5,19 @@ from __future__ import annotations
 import pytest
 import os
 import stat
+from pathlib import Path
 
 from generate_it.storage import StorageError
+
+
+def _symlink_or_skip(link: Path, target: Path) -> None:
+    """Create a symlink or skip when Windows symlink privilege is unavailable."""
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        if os.name == "nt" and getattr(exc, "winerror", None) == 1314:
+            pytest.skip("Windows symlink privilege is not available")
+        raise
 
 
 class TestInitializeRejectsWeakPasswords:
@@ -60,7 +71,7 @@ class TestVaultPermissions:
         data_dir = tmp_path / "secure_data"
         db_path = data_dir / "vault.db"
         # Only test on POSIX
-        if not hasattr(os, "chmod"):
+        if os.name != "posix":
             pytest.skip("POSIX permissions not supported on this platform")
 
         storage = StorageManager(db_path=db_path)
@@ -72,7 +83,7 @@ class TestVaultPermissions:
 
     def test_database_is_0600_after_creation(self, tmp_path):
         """Database file must be 0600 after vault initialization."""
-        if not hasattr(os, "chmod"):
+        if os.name != "posix":
             pytest.skip("POSIX permissions not supported on this platform")
 
         from generate_it.storage import StorageManager
@@ -87,7 +98,7 @@ class TestVaultPermissions:
 
     def test_existing_overly_permissive_db_is_tightened(self, tmp_path):
         """An existing 0644 database must be tightened to 0600 on open."""
-        if not hasattr(os, "chmod"):
+        if os.name != "posix":
             pytest.skip("POSIX permissions not supported on this platform")
 
         from generate_it.storage import StorageManager
@@ -116,7 +127,7 @@ class TestExportSecurity:
 
     def test_new_export_is_0600(self, tmp_path):
         """New exports must be created with 0600 permissions."""
-        if not hasattr(os, "chmod"):
+        if os.name != "posix":
             pytest.skip("POSIX permissions not supported on this platform")
 
         from generate_it.storage import StorageManager
@@ -143,7 +154,7 @@ class TestExportSecurity:
         real_csv = tmp_path / "real.csv"
         symlink_csv = tmp_path / "link.csv"
         real_csv.write_text("")  # Create the real file
-        symlink_csv.symlink_to(real_csv)
+        _symlink_or_skip(symlink_csv, real_csv)
 
         storage = StorageManager(db_path=db_path)
         try:
@@ -186,7 +197,7 @@ class TestExportTempSymlink:
         # Determine the predictable temp path the *current* code uses.
         temp_path = csv_path.with_suffix(".tmp" + csv_path.suffix)
         # Pre-create it as a symlink to victim.txt — this is the attack.
-        temp_path.symlink_to(victim_path)
+        _symlink_or_skip(temp_path, victim_path)
 
         storage = StorageManager(db_path=db_path)
         try:
@@ -205,7 +216,7 @@ class TestExportTempSymlink:
             # Final export.csv must be a regular file with 0600 perms.
             assert csv_path.is_file()
             assert not csv_path.is_symlink()
-            if hasattr(os, "chmod"):
+            if os.name == "posix":
                 import stat
                 mode = stat.S_IMODE(os.stat(csv_path).st_mode)
                 assert mode == 0o600, f"Expected 0600, got {oct(mode)}"

@@ -30,7 +30,9 @@ def _flush_and_close(root: logging.Logger) -> None:
 
 
 def _file_mode(path: Path) -> int:
-    """Return the permission bits of *path* (e.g. 0o600)."""
+    """Return POSIX permission bits of *path* (e.g. 0o600)."""
+    if os.name != "posix":
+        pytest.skip("Unix permission bits are not supported on Windows")
     return stat.S_IMODE(path.stat().st_mode)
 
 

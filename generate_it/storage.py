@@ -120,7 +120,7 @@ class StorageManager:
         Failures are logged but never raised — the database still works
         even when the filesystem doesn't support POSIX permissions.
         """
-        if not hasattr(os, "chmod"):
+        if os.name != "posix":
             return
         try:
             os.chmod(str(path), mode)
@@ -139,7 +139,8 @@ class StorageManager:
         """
         fd, tmp_path = tempfile.mkstemp(suffix=suffix, dir=str(dir_path))
         os.close(fd)
-        os.chmod(tmp_path, 0o600)
+        if os.name == "posix":
+            os.chmod(tmp_path, 0o600)
         return Path(tmp_path)
 
     def _get_conn(self) -> sqlite3.Connection:
@@ -1304,13 +1305,12 @@ class StorageManager:
                             'error': "Unable to decrypt credential"
                         })
 
-            # Ensure data is flushed to disk before atomic rename.
-            fd = os.open(str(tmp_path), os.O_RDONLY)
-            os.fsync(fd)
-            os.close(fd)
+                # Flush and sync while the file is still open for writing.  On
+                # Windows, fsync() rejects a read-only descriptor.
+                f.flush()
+                os.fsync(f.fileno())
 
-            # Atomic rename (os.replace is atomic on POSIX, fails if
-            # destination exists on Windows but that's a minor edge-case).
+            # Atomic rename (os.replace is atomic on POSIX and Windows).
             os.replace(str(tmp_path), str(csv_path))
         except BaseException:
             # Clean up temp file on any failure.

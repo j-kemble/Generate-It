@@ -632,7 +632,12 @@ class TestVaultV2Migration:
         # Determine the predictable backup path the *current* code uses.
         backup_path = db_path.with_suffix(db_path.suffix + ".v1.bak")
         # Pre-create it as a symlink to victim.txt — this is the attack.
-        backup_path.symlink_to(victim_path)
+        try:
+            backup_path.symlink_to(victim_path)
+        except OSError as exc:
+            if os.name == "nt" and getattr(exc, "winerror", None) == 1314:
+                pytest.skip("Windows symlink privilege is not available")
+            raise
 
         pw = "a-strong-master-password"
         storage = StorageManager(db_path=db_path)

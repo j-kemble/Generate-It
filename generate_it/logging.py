@@ -3,8 +3,8 @@
 Logs go to ``<data_dir>/generate-it.log`` by default (1 MB × 3 backups).
 Never log passwords, keys, or credential contents.
 
-All log directories are created 0700 and log files 0600 so logs remain
-private regardless of the prevailing umask.
+All log directories and files are created owner-only on POSIX systems
+regardless of the prevailing umask. Windows uses its native filesystem ACLs.
 """
 
 from __future__ import annotations
@@ -30,13 +30,15 @@ _initialised = False
 
 
 class _PrivateRotatingFileHandler(RotatingFileHandler):
-    """RotatingFileHandler that keeps rotated files owner-only (0600)."""
+    """RotatingFileHandler that keeps rotated files owner-only on POSIX."""
 
     def doRollover(self) -> None:
         super().doRollover()
         # After rotation the just-rotated file sits at <base>.1 — tighten it
         # and any pre-existing backup files in case they were created before
         # this protection was added.
+        if os.name != "posix":
+            return
         if hasattr(os, "chmod"):
             for idx in range(1, self.backupCount + 1):
                 rotated = Path(self.baseFilename).with_suffix(
@@ -50,7 +52,9 @@ class _PrivateRotatingFileHandler(RotatingFileHandler):
 
 
 def _set_private(path: Path, mode: int) -> None:
-    """Set *path* to *mode* if the platform supports chmod."""
+    """Set *path* to *mode* on POSIX systems."""
+    if os.name != "posix":
+        return
     if hasattr(os, "chmod"):
         try:
             os.chmod(str(path), mode)

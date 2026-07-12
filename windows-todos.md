@@ -1,97 +1,64 @@
 # Windows CI Lockfile Setup — TODO
 
-**Status:** `constraints/ci-windows.txt` is a placeholder (comments only, no packages listed). Windows has been **temporarily removed** from the CI matrix in `.github/workflows/security.yml` until the real lockfile is generated on a Windows machine.
+**Status:** The Windows implementation is complete locally. The hashed Windows lockfile has been generated, Windows has been restored to the CI matrix, and the Windows dependency path has been verified in an isolated Python 3.13 environment. The remaining steps are to commit/push the changes and confirm the hosted GitHub Actions matrix.
 
-**Date:** 2026-07-11
-**Context:** Finding F-023 — the Windows CI lockfile could not be generated on macOS/Linux because `windows-curses` only resolves on Windows. The placeholder `ci-windows.txt` causes `pip install --require-hashes` to fail (no packages + `--require-hashes` = error).
-
----
-
-## Current State
-
-- `constraints/ci-windows.in` exists and extends `ci.in` with `windows-curses`.
-- `constraints/ci-windows.txt` is a **placeholder** — it contains only explanatory comments and no package pins or hashes.
-- The GitHub Actions matrix in `.github/workflows/security.yml` runs only on `ubuntu-latest` and `macos-latest`. `windows-latest` has been removed.
-- The Windows-specific conditional `pip install` block that referenced `ci-windows.txt` has been removed from the workflow.
-
-## Steps to Generate the Real Lockfile and Re-enable Windows CI
-
-These steps must be performed on a **real Windows machine**. The user's Pip machine (AMD 9060 XT, Windows 11) is suitable.
-
-### 1. Install pip-tools
-
-```powershell
-python -m pip install pip-tools
-```
-
-### 2. Generate the lockfile with hashes
-
-From the repository root on the Windows machine:
-
-```powershell
-pip-compile --generate-hashes --output-file=constraints/ci-windows.txt constraints/ci-windows.in
-```
-
-This resolves `ci-windows.in` (which includes `ci.in` + `windows-curses`) and produces a fully pinned, hashed lockfile.
-
-### 3. Verify windows-curses resolved
-
-Check that `windows-curses` appears in the generated file:
-
-```powershell
-Select-String -Path constraints/ci-windows.txt -Pattern "windows-curses"
-```
-
-You should see a `windows-curses==X.Y.Z` line with its hash entries.
-
-### 4. Commit the lockfile
-
-```powershell
-git add constraints/ci-windows.txt
-git commit -m "ci: add Windows lockfile with hashes (generated on Win11)"
-```
-
-Push to the `development` branch (or open a PR).
-
-### 5. Re-add `windows-latest` to the CI matrix
-
-In `.github/workflows/security.yml`, update the matrix:
-
-```yaml
-      matrix:
-        # Windows temporarily removed — see windows-todos.md
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.10", "3.12", "3.13"]
-```
-
-(Remove the "Windows temporarily removed" comment once re-enabled.)
-
-### 6. Re-add the Windows-specific pip install block
-
-In the "Install dependencies" step of the `test` job, restore the conditional:
-
-```yaml
-      - name: Install dependencies
-        run: |
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            python -m pip install --require-hashes -r constraints/ci-windows.txt
-          else
-            python -m pip install --require-hashes -r constraints/ci.txt
-          fi
-          python -m pip install --no-deps -e .
-```
-
-> **Note:** This uses bash `if` syntax, which works because GitHub Actions Windows runners default to Git Bash. If the workflow is changed to use PowerShell, adjust the conditional accordingly.
-
-### 7. Run CI to verify it passes
-
-Push the changes and monitor the GitHub Actions run. Confirm the `windows-latest` jobs (all three Python versions) pass the test suite.
-
-If the Windows job fails due to a missing hash or resolution error, re-run `pip-compile` on the Windows machine and re-commit.
+**Context:** Finding F-023 — the Windows CI lockfile could not be generated on macOS/Linux because `windows-curses` only resolves on Windows. The placeholder `ci-windows.txt` caused `pip install --require-hashes` to fail because it contained no packages.
 
 ---
 
-## Machine Reference
+## Completed
 
-- **Target machine:** AMD 9060 XT, Windows 11
-- **Why Windows is required:** `pip-compile` resolves platform-specific wheels. `windows-curses` only has Windows wheels, so resolution fails on macOS/Linux.
+- Generated `constraints/ci-windows.txt` on this Windows machine with Python 3.13:
+
+  ```powershell
+  py -3.13 -m pip install pip-tools
+  py -3.13 -m piptools compile --generate-hashes `
+    --output-file=constraints/ci-windows.txt constraints/ci-windows.in
+  ```
+
+- Verified the lockfile contains `windows-curses==2.4.2` and its hashes. It contains 51 pinned packages and 791 package-hash entries.
+- Restored `windows-latest` to the test matrix for Python 3.10, 3.12, and 3.13.
+- Added shell-neutral conditional install steps in `.github/workflows/security.yml`:
+  - Unix runners install `constraints/ci.txt`.
+  - Windows runners install `constraints/ci-windows.txt`.
+  - All runners install the package with `--no-deps -e .`.
+- Fixed a Windows export failure where `os.fsync()` was called on a read-only descriptor. The export now flushes and syncs while the file is still open for writing.
+- Made POSIX permission enforcement and permission-bit assertions explicitly POSIX-only.
+- Made symlink security tests skip cleanly when the Windows runner lacks symlink privilege; they still run when symlinks are available.
+
+## Verification completed
+
+In a clean Windows Python 3.13 virtual environment, the following succeeded:
+
+- `pip install --require-hashes -r constraints/ci-windows.txt`
+- `pip install --no-deps -e .`
+- `pip check` — no broken requirements
+- `pytest tests/ -q` — **372 passed, 11 skipped**
+- Workflow YAML parsing succeeded locally. `actionlint` was not installed, so GitHub-hosted Actions remains the final workflow-level check.
+
+## Remaining steps
+
+1. Review the working-tree diff.
+2. Commit the changes, for example:
+
+   ```powershell
+   git add .github/workflows/security.yml constraints/ci-windows.txt `
+     generate_it/logging.py generate_it/storage.py `
+     tests/test_crypto_v2.py tests/test_logging.py tests/test_security_storage.py `
+     windows-todos.md
+   git commit -m "ci: restore Windows test matrix with hashed lockfile"
+   ```
+
+3. Push the branch or open a PR and confirm all three `windows-latest` jobs pass.
+4. If a hosted Windows job reports a platform-specific dependency or test issue, reproduce it with the same Python version and update the lockfile or platform guard as appropriate.
+
+## Reproduction notes
+
+`constraints/ci-windows.in` extends `ci.in` with `windows-curses`. Regenerate the lockfile on Windows whenever either input file changes:
+
+```powershell
+py -3.13 -m piptools compile --generate-hashes `
+  --output-file=constraints/ci-windows.txt constraints/ci-windows.in
+```
+
+Do not generate this lockfile on macOS/Linux: `windows-curses` has Windows-only wheels and the resolver may not produce a usable Windows lock.
