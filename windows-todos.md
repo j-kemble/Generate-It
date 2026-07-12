@@ -15,7 +15,7 @@
     --output-file=constraints/ci-windows.txt constraints/ci-windows.in
   ```
 
-- Verified the lockfile contains `windows-curses==2.4.2` and its hashes. It contains 51 pinned packages and 791 package-hash entries.
+- Verified the lockfile contains `windows-curses==2.4.2` and its hashes. It contains 55 pinned package headers and 793 package-hash entries.
 - Restored `windows-latest` to the test matrix for Python 3.10, 3.12, and 3.13.
 - Added shell-neutral conditional install steps in `.github/workflows/security.yml`:
   - Unix runners install `constraints/ci.txt`.
