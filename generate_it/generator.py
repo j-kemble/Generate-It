@@ -28,7 +28,7 @@ NUMBERS = string.digits
 SPECIAL_CHARACTERS = "!@#$%^&*()-_=+[]{};:,.?/"
 
 # Used when the user asks to add special characters to a passphrase.
-PASSPHRASE_SPECIALS = "!@#$%&*?"
+PASSPHRASE_SPECIALS = "!@#$%&*?"  # nosec B105 — character pool, not a credential
 
 # Username-related character sets.
 USERNAME_ALPHANUMERIC = string.ascii_lowercase + string.digits

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Callable, TYPE_CHECKING
 import curses
 import textwrap
 
 from .tui_helpers import _sanitize_terminal_text
+
+_log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from . import tui
@@ -137,8 +140,8 @@ def _run_modal(
                     input_str = str(generator_func())[:max_length]
                 else:
                     input_str = ""
-            except Exception:
-                pass
+            except Exception as gen_exc:  # nosec B110 — UI fallback, not security-critical
+                _log.debug("tab generation failed in modal: %s", gen_exc)
         elif 32 <= key <= 126:
             if len(input_str) < max_length:
                 input_str += chr(key)

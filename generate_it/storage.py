@@ -784,8 +784,8 @@ class StorageManager:
             # Rollback the transaction on any failure.
             try:
                 conn.rollback()
-            except Exception:
-                pass
+            except Exception as rollback_exc:  # nosec B110 — best-effort cleanup
+                _log.debug("rollback failed during v1→v2 migration: %s", rollback_exc)
             # The backup file remains as a safety net.
             _log.exception("v1→v2 migration failed; v1 vault is intact")
             raise
@@ -886,8 +886,8 @@ class StorageManager:
         except BaseException:
             try:
                 conn.rollback()
-            except Exception:
-                pass
+            except Exception as rollback_exc:  # nosec B110 — best-effort cleanup
+                _log.debug("rollback failed during AAD v1→v2 migration: %s", rollback_exc)
             _log.exception("AAD v1→v2 migration failed; v2 vault is intact")
             raise
 
@@ -1177,8 +1177,8 @@ class StorageManager:
                     "id": row["id"],
                     "service": row["service"],
                     "username": row["username"],
-                    "password": "<DECRYPTION_ERROR>",
-                    "note": "<DECRYPTION_ERROR>",
+                    "password": "<DECRYPTION_ERROR>",  # nosec B105 — error sentinel
+                    "note": "<DECRYPTION_ERROR>",  # nosec B105 — error sentinel
                     "note_is_hidden": False,
                     "created_at": row["created_at"]
                 })

@@ -34,8 +34,8 @@ _IMPORT_FORMAT_ALIASES: Dict[str, str] = {
     "apple_passwords": "apple",
     "icloud": "apple",
     "icloud_keychain": "apple",
-    "nordpass": "nordpass",
-    "nord_pass": "nordpass",
+    "nordpass": "nordpass",  # nosec B105 — format name, not a credential
+    "nord_pass": "nordpass",  # nosec B105 — format name, not a credential
 }
 
 _EXPORT_FORMAT_ALIASES: Dict[str, str] = {
@@ -50,8 +50,8 @@ _EXPORT_FORMAT_ALIASES: Dict[str, str] = {
     "apple": "apple",
     "apple_passwords": "apple",
     "icloud": "apple",
-    "nordpass": "nordpass",
-    "nord_pass": "nordpass",
+    "nordpass": "nordpass",  # nosec B105 — format name, not a credential
+    "nord_pass": "nordpass",  # nosec B105 — format name, not a credential
 }
 
 _IMPORT_FIELD_ALIASES: Dict[str, Dict[str, Sequence[str]]] = {
