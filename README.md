@@ -42,7 +42,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 
 # Windows (PowerShell)
-# .\venv\Scripts\Activate.ps1
+.\.venv\Scripts\Activate.ps1
 
 pip install -e .
 ```
@@ -207,7 +207,11 @@ Otherwise, Generate It uses the bundled default word list.
 git clone https://github.com/j-kemble/Generate-It.git
 cd Generate-It
 python3 -m venv .venv
-source .venv/bin/activate  # or .\venv\Scripts\activate on Windows
+# Linux/macOS
+source .venv/bin/activate
+
+# Windows (PowerShell)
+.\.venv\Scripts\Activate.ps1
 pip install -e ".[dev]"
 ```
 
