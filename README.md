@@ -1,4 +1,4 @@
-![Generate It Banner](https://raw.githubusercontent.com/j-kemble/Generate-It/development/assets/generate-it-banner.png)
+![Generate It Banner](https://raw.githubusercontent.com/j-kemble/Generate-It/development/assets/generateit-banner.png)
 
 # Generate It
 
@@ -124,7 +124,7 @@ When you generate a credential you will:
   - Rows with missing required fields or unsupported record types are skipped with an issue report.
 - **Supported formats**:
   - `generic` (browser-style): `name,url,username,password,note`
-  - `spreadsheet-safe`: Same structure as `generic`, but text fields that start with `=`, `+`, `-`, or `@` are automatically prefixed with a single quote (`'`) to prevent formula injection when opened in spreadsheet applications like Excel, LibreOffice, or Google Sheets. Use this when you need to view exported data in a spreadsheet.
+  - `spreadsheet-safe`: Same structure as `generic`. All formats now escape formula-triggering characters; this format is retained for explicit spreadsheet-safe intent.
   - `bitwarden`: supports login CSV fields (`name`, `login_username`, `login_password`, `type`, etc.). Non-login item types are skipped.
   - `apple`: supports Apple-style title/url/username/password exports (with optional notes/OTP columns).
   - `nordpass`: supports NordPass CSV template columns.
@@ -133,9 +133,8 @@ When you generate a credential you will:
   - During import, unsupported/non-credential rows are ignored with a reason.
 
 > **⚠️ Security:** CSV exports are plaintext — they are not encrypted and anyone with filesystem access can read them.
-> Do not open raw credential exports in spreadsheet software, as malicious values starting with `=`, `+`, `-`, or `@`
-> may be interpreted as formulas. Use a text editor to inspect exported files, or export with the
-> `spreadsheet-safe` format to automatically escape formula-triggering characters.
+> All export formats automatically escape formula-triggering characters (`=`, `+`, `-`, `@`) to prevent
+> spreadsheet formula injection. However, exercise caution when opening credential exports in any application.
 
 ## How it works
 
@@ -192,7 +191,7 @@ All security checks run automatically on every commit via GitHub Actions.
 
 ## Custom word list
 
-The included word list contains **~7,700** lowercase words from the [EFF long wordlist](https://www.eff.org/deeplinks/2016/07/new-wordlists-random-passphrases) (sourced for high security).
+The included word list contains **5,800** lowercase words filtered from `/usr/share/dict/words` (a-z only, 4–10 characters), providing ~50 bits of entropy for a 4-word passphrase.
 
 Override the word list with the `GENERATE_IT_WORDLIST` environment variable:
 
