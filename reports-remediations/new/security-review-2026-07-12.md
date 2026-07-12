@@ -468,12 +468,12 @@ Each task is scoped to be a single non-breaking commit on `development`. Tasks a
 
 #### Task 10: F-024 — Document packaged wordlist entropy
 
-**Files:** `README.md` or `WARP.md`
+**Files:** `README.md` or `AGENTS.md`
 
 **Problem:** Packaged wordlist (1,005 words) provides ~40 bits for a 4-word passphrase, below the 50-bit floor enforced for custom wordlists.
 
 **Steps:**
-1. Add a note in README.md (passphrase section) or WARP.md: "The built-in wordlist provides ~40 bits of entropy for a 4-word passphrase. For high-security scenarios, supply a custom wordlist with at least 5,800 unique words via `GENERATE_IT_WORDLIST` to meet the 50-bit entropy floor."
+1. Add a note in README.md (passphrase section) or AGENTS.md: "The built-in wordlist provides ~40 bits of entropy for a 4-word passphrase. For high-security scenarios, supply a custom wordlist with at least 5,800 unique words via `GENERATE_IT_WORDLIST` to meet the 50-bit entropy floor."
 2. Alternatively, expand the packaged wordlist — but this is a larger task and may not be worth the bloat. Documentation is the KISS approach.
 
 **Verify:** Full gate (documentation only)

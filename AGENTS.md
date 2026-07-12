@@ -1,6 +1,6 @@
-# WARP.md
+# AGENTS.md
 
-This file provides guidance to WARP (warp.dev) when working with code in this repository.
+This file provides guidance to AI coding agents (Warp, Claude Code, Codex, Cursor, and similar tools) when working with code in this repository.
 
 ## Project summary
 Generate It is a terminal credential generator and local manager featuring a curses-based TUI for:
