@@ -1,6 +1,6 @@
 # Windows CI Lockfile Setup — TODO
 
-**Status:** The Windows implementation is complete locally. The hashed Windows lockfile has been generated from the lowest CI Python version, Windows has been restored to the CI matrix, and the Windows dependency path has been verified in an isolated Python 3.10 environment. The remaining steps are to commit/push the compatibility correction and confirm the hosted GitHub Actions matrix.
+**Status:** Complete. The hashed Windows lockfile was generated from the lowest CI Python version, Windows was restored to the CI matrix, the compatibility correction was committed and pushed, and hosted GitHub Actions passed for all Windows matrix versions.
 
 **Context:** Finding F-023 — the Windows CI lockfile could not be generated on macOS/Linux because `windows-curses` only resolves on Windows. The placeholder `ci-windows.txt` caused `pip install --require-hashes` to fail because it contained no packages.
 
@@ -33,23 +33,15 @@ In a clean Windows Python 3.10 virtual environment, the following succeeded:
 - `pip install --no-deps -e .`
 - `pip check` — no broken requirements
 - `pytest tests/ -q` — **372 passed, 11 skipped**
-- Workflow YAML parsing succeeded locally. `actionlint` was not installed, so GitHub-hosted Actions remains the final workflow-level check.
+- Hosted GitHub Actions run `29204957899` passed all jobs, including `windows-latest` on Python 3.10, 3.12, and 3.13.
+- GitHub reported non-blocking runner annotations about Node.js 20 action deprecation and the future `macos-latest` image migration.
 
-## Remaining steps
+## Finalization completed
 
-1. Review the working-tree diff.
-2. Commit the changes, for example:
-
-   ```powershell
-   git add .github/workflows/security.yml constraints/ci-windows.txt `
-     generate_it/logging.py generate_it/storage.py `
-     tests/test_crypto_v2.py tests/test_logging.py tests/test_security_storage.py `
-     windows-todos.md
-   git commit -m "ci: restore Windows test matrix with hashed lockfile"
-   ```
-
-3. Push the branch or open a PR and confirm all three `windows-latest` jobs pass.
-4. If a hosted Windows job reports a platform-specific dependency or test issue, reproduce it with the same Python version and update the lockfile or platform guard as appropriate.
+- Commit `17c0bdf` restored the Windows matrix and added the initial hashed lockfile.
+- Follow-up commit `11e14b7` regenerated the lockfile from Python 3.10, fixing the Python 3.10 compatibility issue caused by `stevedore==5.9.0`.
+- Both commits were pushed to `development`.
+- Hosted run `29204957899` passed all checks.
 
 ## Reproduction notes
 
