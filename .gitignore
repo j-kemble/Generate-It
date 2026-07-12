@@ -55,3 +55,6 @@ Sample-Import/generate-it-*.csv
 
 # Security review artifacts
 SECURITY_REVIEW_*.md
+
+# Hermes agent state (local only)
+.hermes/
