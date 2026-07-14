@@ -811,8 +811,6 @@ def _render_info_box(
         _addstr_safe(stdscr, row, x + 2, f"Extras: {', '.join(extras) if extras else 'none'}"[:inner_w], theme.dim)
         row += 1
 
-    row += 1
-
     # Strength bar
     _addstr_safe(stdscr, row, x + 2, f"Entropy: ~{bits:0.1f} bits"[:inner_w], theme.dim)
     row += 1
@@ -820,5 +818,5 @@ def _render_info_box(
     prefix = "Strength: ["
     suffix = f"] {label}"
     bar_w = max(0, inner_w - len(prefix) - len(suffix))
-    bar = _bar(min(bits, 100.0), 100.0, bar_w)
+    bar = _bar(min(bits, 256.0), 256.0, bar_w)
     _addstr_safe(stdscr, row, x + 2, f"{prefix}{bar}{suffix}"[:inner_w], kind_attr)

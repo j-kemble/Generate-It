@@ -118,7 +118,7 @@ def test_import_rejects_oversized_file(tmp_path: Path) -> None:
 
     storage = StorageManager(db_path=db_path)
     try:
-        storage.initialize_vault("a-strong-master-password")
+        storage.initialize_vault("A-Strong-Passw0rd!")
         with pytest.raises(StorageError, match="too large"):
             storage.import_from_csv(csv_path)
     finally:
@@ -137,7 +137,7 @@ def test_import_rejects_oversized_fields(tmp_path: Path) -> None:
 
     storage = StorageManager(db_path=db_path)
     try:
-        storage.initialize_vault("a-strong-master-password")
+        storage.initialize_vault("A-Strong-Passw0rd!")
         with pytest.raises(StorageError, match="exceeds"):
             storage.import_from_csv(csv_path)
     finally:
@@ -157,7 +157,7 @@ def test_import_rolls_back_on_failure(tmp_path: Path) -> None:
 
     storage = StorageManager(db_path=db_path)
     try:
-        storage.initialize_vault("a-strong-master-password")
+        storage.initialize_vault("A-Strong-Passw0rd!")
         with pytest.raises(StorageError):
             storage.import_from_csv(csv_path)
 

@@ -202,7 +202,7 @@ def test_no_identifying_info_in_credential_save_logs(
 
     # Create a real vault and save a credential.
     db_path = tmp_path / "vault.db"
-    master = "a-secure-master-password-for-tests"
+    master = "A-Secure-Master-Passw0rd!"
     service = "GitHub"
     username = "alice@example.com"
 
@@ -238,7 +238,7 @@ def test_no_identifying_info_in_credential_v2_save_logs(
     init_logging(log_path=log_path, level=logging.INFO)
 
     db_path = tmp_path / "vault.db"
-    master = "a-secure-master-password-for-tests"
+    master = "A-Secure-Master-Passw0rd!"
     service = "GitLab"
     username = "bob@example.com"
 

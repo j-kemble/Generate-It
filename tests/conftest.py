@@ -21,6 +21,6 @@ def temp_storage_initialized(tmp_path):
     """Temporary StorageManager initialized with a default master password."""
     db_path = tmp_path / "initialized_vault.db"
     storage = StorageManager(db_path=db_path)
-    storage.initialize_vault("a-strong-master-password-for-tests")
+    storage.initialize_vault("A-Strong-Passw0rd!1")
     yield storage
     storage.close()

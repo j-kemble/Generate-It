@@ -36,7 +36,7 @@ class TestInitializeRejectsWeakPasswords:
             temp_storage.initialize_vault("short")  # 5 chars
         assert any(
             word in str(exc.value).lower()
-            for word in ("12", "characters")
+            for word in ("8", "characters")
         )
 
     def test_initialize_rejects_4char_password(self, temp_storage) -> None:
@@ -48,11 +48,11 @@ class TestInitializeRejectsWeakPasswords:
             temp_storage.initialize_vault("password")
 
     def test_initialize_accepts_strong_password(self, temp_storage) -> None:
-        temp_storage.initialize_vault("a-strong-master-password-for-tests")
+        temp_storage.initialize_vault("A-Strong-Passw0rd!1")
         assert temp_storage.vault_exists()
 
     def test_initialize_accepts_long_passphrase(self, temp_storage) -> None:
-        long_pass = "correct horse battery staple with extra words"
+        long_pass = "Correct horse battery staple with 1!"
         temp_storage.initialize_vault(long_pass)
         assert temp_storage.vault_exists()
 
@@ -90,7 +90,7 @@ class TestVaultPermissions:
         db_path = tmp_path / "vault.db"
         storage = StorageManager(db_path=db_path)
         try:
-            storage.initialize_vault("a-strong-master-password")
+            storage.initialize_vault("A-Strong-Passw0rd!")
             mode = stat.S_IMODE(os.stat(db_path).st_mode)
             assert mode == 0o600, f"Expected 0600, got {oct(mode)}"
         finally:
@@ -104,7 +104,7 @@ class TestVaultPermissions:
         from generate_it.storage import StorageManager
         db_path = tmp_path / "vault.db"
         storage = StorageManager(db_path=db_path)
-        storage.initialize_vault("a-strong-master-password")
+        storage.initialize_vault("A-Strong-Passw0rd!")
         storage.close()
 
         # Make it world-readable
@@ -115,7 +115,7 @@ class TestVaultPermissions:
         # Reopen — must tighten
         storage2 = StorageManager(db_path=db_path)
         try:
-            storage2.unlock_vault("a-strong-master-password")
+            storage2.unlock_vault("A-Strong-Passw0rd!")
             mode_after = stat.S_IMODE(os.stat(db_path).st_mode)
             assert mode_after == 0o600, f"Expected 0600 after reopen, got {oct(mode_after)}"
         finally:
@@ -136,7 +136,7 @@ class TestExportSecurity:
 
         storage = StorageManager(db_path=db_path)
         try:
-            storage.initialize_vault("a-strong-master-password")
+            storage.initialize_vault("A-Strong-Passw0rd!")
             storage.save_credential("GitHub", "dev", "secret123456")
             exported, skipped = storage.export_to_csv(csv_path)
             assert exported == 1
@@ -158,7 +158,7 @@ class TestExportSecurity:
 
         storage = StorageManager(db_path=db_path)
         try:
-            storage.initialize_vault("a-strong-master-password")
+            storage.initialize_vault("A-Strong-Passw0rd!")
             storage.save_credential("GitHub", "dev", "secret123456")
             with pytest.raises(StorageError, match="symlink"):
                 storage.export_to_csv(symlink_csv)
@@ -174,7 +174,7 @@ class TestExportSecurity:
 
         storage = StorageManager(db_path=db_path)
         try:
-            storage.initialize_vault("a-strong-master-password")
+            storage.initialize_vault("A-Strong-Passw0rd!")
             storage.save_credential("GitHub", "dev", "secret123456")
             with pytest.raises(StorageError, match="regular file"):
                 storage.export_to_csv(dir_path)
@@ -201,7 +201,7 @@ class TestExportTempSymlink:
 
         storage = StorageManager(db_path=db_path)
         try:
-            storage.initialize_vault("a-strong-master-password")
+            storage.initialize_vault("A-Strong-Passw0rd!")
             storage.save_credential("GitHub", "dev", "secret123456")
 
             exported, skipped = storage.export_to_csv(csv_path)
@@ -242,7 +242,7 @@ class TestKdfValidation:
         # Build a vault whose verification token was actually derived at
         # legacy 100k, then manually delete the pbkdf2_iterations row to
         # simulate the stored form of a real pre-persistence vault.
-        password = "legacy-vault-without-params"
+        password = "Legacy-Vault-Without-Params1!"
         salt = os.urandom(32)
         key = storage._derive_key(password, salt, 100_000)
         fernet = __import__("cryptography.fernet", fromlist=["Fernet"]).Fernet(key)
@@ -271,7 +271,7 @@ class TestKdfValidation:
         import sqlite3
         db_path = tmp_path / "vault.db"
         storage = StorageManager(db_path=db_path)
-        storage.initialize_vault("a-strong-master-password")
+        storage.initialize_vault("A-Strong-Passw0rd!")
         storage.close()
 
         raw = sqlite3.connect(db_path)
@@ -282,7 +282,7 @@ class TestKdfValidation:
         storage2 = StorageManager(db_path=db_path)
         try:
             with pytest.raises(StorageError, match="pbkdf2"):
-                storage2.unlock_vault("a-strong-master-password")
+                storage2.unlock_vault("A-Strong-Passw0rd!")
         finally:
             storage2.close()
 
@@ -292,7 +292,7 @@ class TestKdfValidation:
         import sqlite3
         db_path = tmp_path / "vault.db"
         storage = StorageManager(db_path=db_path)
-        storage.initialize_vault("a-strong-master-password")
+        storage.initialize_vault("A-Strong-Passw0rd!")
         storage.close()
 
         raw = sqlite3.connect(db_path)
@@ -303,7 +303,7 @@ class TestKdfValidation:
         storage2 = StorageManager(db_path=db_path)
         try:
             with pytest.raises(StorageError, match="pbkdf2"):
-                storage2.unlock_vault("a-strong-master-password")
+                storage2.unlock_vault("A-Strong-Passw0rd!")
         finally:
             storage2.close()
 
@@ -313,7 +313,7 @@ class TestKdfValidation:
         import sqlite3
         db_path = tmp_path / "vault.db"
         storage = StorageManager(db_path=db_path)
-        storage.initialize_vault("a-strong-master-password")
+        storage.initialize_vault("A-Strong-Passw0rd!")
         storage.close()
 
         raw = sqlite3.connect(db_path)
@@ -324,7 +324,7 @@ class TestKdfValidation:
         storage2 = StorageManager(db_path=db_path)
         try:
             with pytest.raises(StorageError, match="malformed"):
-                storage2.unlock_vault("a-strong-master-password")
+                storage2.unlock_vault("A-Strong-Passw0rd!")
         finally:
             storage2.close()
 
@@ -334,7 +334,7 @@ class TestKdfValidation:
         import sqlite3
         db_path = tmp_path / "vault.db"
         storage = StorageManager(db_path=db_path)
-        storage.initialize_vault("a-strong-master-password")
+        storage.initialize_vault("A-Strong-Passw0rd!")
         storage.close()
 
         raw = sqlite3.connect(db_path)
@@ -345,6 +345,6 @@ class TestKdfValidation:
         storage2 = StorageManager(db_path=db_path)
         try:
             with pytest.raises(StorageError, match="exceed"):
-                storage2.unlock_vault("a-strong-master-password")
+                storage2.unlock_vault("A-Strong-Passw0rd!")
         finally:
             storage2.close()

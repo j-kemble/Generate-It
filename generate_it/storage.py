@@ -69,15 +69,23 @@ _MAX_CSV_FIELD_BYTES = 500
 def _validate_master_password(password: str) -> None:
     """Validate a master password against the security policy.
 
+    Requirements:
+        - Minimum 8 characters
+        - At least 1 uppercase letter (A-Z)
+        - At least 1 lowercase letter (a-z)
+        - At least 1 digit (0-9)
+        - At least 1 special character (non-alphanumeric)
+        - Not in the common weak-password list
+
     Raises:
         WeakMasterPasswordError: if the password is empty, too short, too long,
-            or matches a known common/weak value.
+            lacks required character classes, or matches a known common/weak value.
     """
     if not password:
         raise WeakMasterPasswordError("Master password cannot be empty.")
-    if len(password) < 12:
+    if len(password) < 8:
         raise WeakMasterPasswordError(
-            "Master password must be at least 12 characters (15+ recommended)."
+            "Master password must be at least 8 characters."
         )
     if len(password) > _MAX_MASTER_PASSWORD_LENGTH:
         raise WeakMasterPasswordError(
@@ -86,6 +94,22 @@ def _validate_master_password(password: str) -> None:
     if password.casefold() in _WEAK_PASSWORDS:
         raise WeakMasterPasswordError(
             "That password is too common and easily guessed. Please choose a stronger one."
+        )
+    if not any(c.isupper() for c in password):
+        raise WeakMasterPasswordError(
+            "Master password must contain at least 1 uppercase letter (A-Z)."
+        )
+    if not any(c.islower() for c in password):
+        raise WeakMasterPasswordError(
+            "Master password must contain at least 1 lowercase letter (a-z)."
+        )
+    if not any(c.isdigit() for c in password):
+        raise WeakMasterPasswordError(
+            "Master password must contain at least 1 digit (0-9)."
+        )
+    if not any(not c.isalnum() for c in password):
+        raise WeakMasterPasswordError(
+            "Master password must contain at least 1 special character (e.g., !@#$%^&*)."
         )
 
 class StorageManager:

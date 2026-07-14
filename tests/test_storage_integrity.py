@@ -9,7 +9,7 @@ from generate_it.storage import StorageError, StorageManager
 
 def test_initialize_existing_vault_preserves_original_credentials(tmp_path) -> None:
     db_path = tmp_path / "vault.db"
-    original_password = "original-master-password"
+    original_password = "Original-Master-Passw0rd!"
 
     original = StorageManager(db_path=db_path)
     original.initialize_vault(original_password)
@@ -19,7 +19,7 @@ def test_initialize_existing_vault_preserves_original_credentials(tmp_path) -> N
     attempted_reinitialization = StorageManager(db_path=db_path)
     try:
         with pytest.raises(StorageError) as error:
-            attempted_reinitialization.initialize_vault("replacement-master-password")
+            attempted_reinitialization.initialize_vault("Replacement-Master-Passw0rd!")
     finally:
         attempted_reinitialization.close()
 
@@ -46,13 +46,13 @@ def test_storage_manager_context_closes_and_locks(tmp_path) -> None:
     manager = StorageManager(db_path=tmp_path / "vault.db")
     with manager as storage:
         assert storage is manager
-        storage.initialize_vault("master-password-key")
+        storage.initialize_vault("Master-Passw0rd-Key!")
         storage.save_credential("GitHub", "dev", "secret")
     assert manager._db_connection is None
     assert manager._fernet is None
 
     fresh = StorageManager(db_path=tmp_path / "vault.db")
-    fresh.unlock_vault("master-password-key")
+    fresh.unlock_vault("Master-Passw0rd-Key!")
     assert [item["password"] for item in fresh.list_credentials()] == ["secret"]
     fresh.close()
 
@@ -79,7 +79,7 @@ def test_get_app_setting_str_value(tmp_path) -> None:
     """Config values stored as strings (not bytes) are returned correctly."""
     db_path = tmp_path / "vault.db"
     storage = StorageManager(db_path=db_path)
-    storage.initialize_vault("master-password-key")
+    storage.initialize_vault("Master-Passw0rd-Key!")
     # Inject a string value directly
     import sqlite3
     raw = sqlite3.connect(db_path)
@@ -103,7 +103,7 @@ def test_import_csv_empty_file_raises(tmp_path) -> None:
     csv_path.write_text("")
 
     storage = StorageManager(db_path=db_path)
-    storage.initialize_vault("master-password-key")
+    storage.initialize_vault("Master-Passw0rd-Key!")
     with pytest.raises(StorageError, match="no headers"):
         storage.import_from_csv(csv_path)
     storage.close()
@@ -117,13 +117,13 @@ def test_import_csv_merge_updates_existing(tmp_path) -> None:
 
     # Create vault with a credential
     storage = StorageManager(db_path=db_path)
-    storage.initialize_vault("master-password-key")
+    storage.initialize_vault("Master-Passw0rd-Key!")
     storage.save_credential("GitHub", "dev", "old-secret")
     storage.close()
 
     # Import with merge — should update the existing credential
     storage = StorageManager(db_path=db_path)
-    storage.unlock_vault("master-password-key")
+    storage.unlock_vault("Master-Passw0rd-Key!")
     imported, skipped, dupes = storage.import_from_csv(csv_path, merge_duplicates=True)
     assert imported == 1
     assert skipped == 0
@@ -151,7 +151,7 @@ def test_list_credentials_corrupted_row_placeholder(tmp_path) -> None:
     db_path = tmp_path / "vault.db"
 
     storage = StorageManager(db_path=db_path)
-    storage.initialize_vault("master-password-key")
+    storage.initialize_vault("Master-Passw0rd-Key!")
     storage.save_credential("GitHub", "dev", "secret", note="a note")
     storage.close()
 
@@ -164,7 +164,7 @@ def test_list_credentials_corrupted_row_placeholder(tmp_path) -> None:
     raw.close()
 
     storage = StorageManager(db_path=db_path)
-    storage.unlock_vault("master-password-key")
+    storage.unlock_vault("Master-Passw0rd-Key!")
     results = storage.list_credentials()
     storage.close()
 
@@ -180,7 +180,7 @@ def test_export_to_csv_skips_corrupted_row(tmp_path) -> None:
     csv_path = tmp_path / "out.csv"
 
     storage = StorageManager(db_path=db_path)
-    storage.initialize_vault("master-password-key")
+    storage.initialize_vault("Master-Passw0rd-Key!")
     storage.save_credential("GitHub", "dev", "secret")
     storage.close()
 
@@ -192,7 +192,7 @@ def test_export_to_csv_skips_corrupted_row(tmp_path) -> None:
     raw.close()
 
     storage = StorageManager(db_path=db_path)
-    storage.unlock_vault("master-password-key")
+    storage.unlock_vault("Master-Passw0rd-Key!")
     exported, skipped = storage.export_to_csv(csv_path, export_format="generic")
     storage.close()
 
@@ -212,7 +212,7 @@ def test_list_credentials_propagates_unexpected_error(monkeypatch, tmp_path) -> 
     db_path = tmp_path / "vault.db"
 
     storage = StorageManager(db_path=db_path)
-    storage.initialize_vault("master-password-key")
+    storage.initialize_vault("Master-Passw0rd-Key!")
     storage.save_credential("GitHub", "dev", "secret")
     storage.close()
 
@@ -223,7 +223,7 @@ def test_list_credentials_propagates_unexpected_error(monkeypatch, tmp_path) -> 
     )
 
     storage = StorageManager(db_path=db_path)
-    storage.unlock_vault("master-password-key")
+    storage.unlock_vault("Master-Passw0rd-Key!")
     with pytest.raises(RuntimeError, match="unexpected"):
         storage.list_credentials()
     storage.close()
@@ -247,7 +247,7 @@ def test_storage_connection_uses_busy_timeout(tmp_path) -> None:
 def test_encrypt_credential_fields_roundtrip(tmp_path) -> None:
     """Encrypt-then-decrypt yields the original plaintext."""
     storage = StorageManager(db_path=tmp_path / "vault.db")
-    storage.initialize_vault("master-password-key")
+    storage.initialize_vault("Master-Passw0rd-Key!")
 
     password_ct, note_ct = storage._encrypt_credential_fields(
         storage._fernet, "my-password", "my-note"
@@ -274,7 +274,7 @@ def test_encrypt_credential_fields_roundtrip(tmp_path) -> None:
 def test_encrypt_credential_fields_empty_note(tmp_path) -> None:
     """Empty note produces None ciphertext (same behavior as current inline)."""
     storage = StorageManager(db_path=tmp_path / "vault.db")
-    storage.initialize_vault("master-password-key")
+    storage.initialize_vault("Master-Passw0rd-Key!")
 
     password_ct, note_ct = storage._encrypt_credential_fields(
         storage._fernet, "pw", ""
@@ -290,7 +290,7 @@ def test_get_app_setting_corrupted_value_returns_default(tmp_path) -> None:
     """Corrupt bytes in config still return default, not an exception."""
     db_path = tmp_path / "vault.db"
     storage = StorageManager(db_path=db_path)
-    storage.initialize_vault("master-password-key")
+    storage.initialize_vault("Master-Passw0rd-Key!")
     storage.set_app_setting("theme", "dark")
     storage.close()
 
@@ -312,7 +312,7 @@ def test_get_app_setting_propagates_unexpected_error(monkeypatch, tmp_path) -> N
     """Non-decode errors in get_app_setting propagate, not silently swallowed."""
     db_path = tmp_path / "vault.db"
     storage = StorageManager(db_path=db_path)
-    storage.initialize_vault("master-password-key")
+    storage.initialize_vault("Master-Passw0rd-Key!")
     storage.set_app_setting("theme", "dark")
     storage.close()
 
@@ -339,7 +339,7 @@ def test_storage_logs_lifecycle_events(tmp_path) -> None:
 
     db_path = tmp_path / "vault.db"
     storage = StorageManager(db_path=db_path)
-    storage.initialize_vault("master-password-pw")
+    storage.initialize_vault("Master-Passw0rd-Pw!")
     storage.save_credential("GH", "u", "p")
     storage.close()
 
@@ -372,7 +372,7 @@ def test_storage_export_is_logged(tmp_path) -> None:
     csv_path = tmp_path / "out.csv"
 
     storage = StorageManager(db_path=db_path)
-    storage.initialize_vault("master-password-key")
+    storage.initialize_vault("Master-Passw0rd-Key!")
     storage.save_credential("GH", "u", "p")
     storage.export_to_csv(csv_path)
 

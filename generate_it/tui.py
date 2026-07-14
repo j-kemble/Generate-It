@@ -1501,6 +1501,7 @@ def run() -> int:
             # First time setup
             while True:
                 stdscr.erase()
+                stdscr.touchwin()
                 R._render_header(stdscr, theme)
                 pwd = tui_modal._run_modal(stdscr, theme, "SETUP", "Create Master Password:", is_password=True)
                 if pwd is None: # Cancelled

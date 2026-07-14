@@ -69,7 +69,7 @@ def test_480k_vault_cannot_unlock_with_wrong_iterations(tmp_path):
           params and always used 480k, this mismatched vault would wrongly
           succeed.
     """
-    P = "master-password"
+    P = "Master-Passw0rd!"
 
     # (a) 480k vault
     db_a = tmp_path / "vault_480k.db"
@@ -120,7 +120,7 @@ def test_legacy_16_byte_salt_and_100k_still_unlocks(tmp_path):
     db = tmp_path / "legacy_noparams.db"
     sm = StorageManager(db_path=db)
 
-    P = "legacy-pass-noparams"
+    P = "Legacy-Pass1!-NoParams"
     salt = os.urandom(16)
     verification = _make_verification(P, salt, _LEGACY_PBKDF2_ITERATIONS)
 
@@ -146,7 +146,7 @@ def test_wrong_password_fails_at_480k(tmp_path):
     """A new (480k) vault must reject the wrong password -- 480k is enforced."""
     db = tmp_path / "vault_wrongpw.db"
     sm = StorageManager(db_path=db)
-    sm.initialize_vault("right-password")
+    sm.initialize_vault("Right-Passw0rd!")
 
     sm2 = StorageManager(db_path=db)
     try:

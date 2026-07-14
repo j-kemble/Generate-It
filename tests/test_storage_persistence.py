@@ -26,7 +26,7 @@ def _write_generic_csv(csv_path, rows):
 def test_import_persists_rows_after_reopen(tmp_path):
     """The hoisted commit must flush rows to disk across a fresh connection."""
     db_path = tmp_path / "vault.db"
-    master = "a-strong-master-password"
+    master = "A-Strong-Passw0rd!"
 
     storage = StorageManager(db_path=db_path)
     storage.initialize_vault(master)
@@ -64,7 +64,7 @@ def test_import_persists_rows_after_reopen(tmp_path):
 def test_import_dry_run_does_not_persist(tmp_path):
     """The ``if not dry_run:`` guard around the hoisted commit must prevent writes."""
     db_path = tmp_path / "vault.db"
-    master = "a-strong-master-password"
+    master = "A-Strong-Passw0rd!"
 
     storage = StorageManager(db_path=db_path)
     storage.initialize_vault(master)
@@ -98,7 +98,7 @@ def test_import_dry_run_does_not_persist(tmp_path):
 def test_import_handles_duplicates_and_skips(tmp_path):
     """Duplicate rows (merge_duplicates=False) are skipped, not double-inserted."""
     db_path = tmp_path / "vault.db"
-    master = "a-strong-master-password"
+    master = "A-Strong-Passw0rd!"
 
     storage = StorageManager(db_path=db_path)
     storage.initialize_vault(master)

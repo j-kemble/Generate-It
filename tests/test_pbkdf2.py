@@ -30,7 +30,7 @@ def _read_config(db_path, key):
 def test_new_vault_uses_480k_and_32_byte_salt(tmp_path):
     db = tmp_path / "vault.db"
     sm = StorageManager(db_path=db)
-    sm.initialize_vault("correct horse battery staple")
+    sm.initialize_vault("Correct horse battery staple 1!")
 
     # Salt length is 32 bytes.
     conn = sqlite3.connect(str(db))
@@ -46,7 +46,7 @@ def test_new_vault_uses_480k_and_32_byte_salt(tmp_path):
 
     # The vault unlocks with the correct password.
     sm2 = StorageManager(db_path=db)
-    sm2.unlock_vault("correct horse battery staple")
+    sm2.unlock_vault("Correct horse battery staple 1!")
     assert sm2.vault_exists()
 
 
@@ -55,7 +55,7 @@ def test_legacy_vault_no_params_unlocks(tmp_path):
     db = tmp_path / "legacy.db"
     sm = StorageManager(db_path=db)
 
-    password = "legacy-pass"
+    password = "Legacy-Pass1!"
     salt = os.urandom(16)
     key = sm._derive_key(password, salt, 100_000)  # legacy vault used 100k
     fernet = __import__("cryptography.fernet", fromlist=["Fernet"]).Fernet(key)

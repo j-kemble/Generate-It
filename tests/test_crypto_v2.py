@@ -257,7 +257,7 @@ class TestVaultV2CreateAndUnlock:
 
     def test_create_and_unlock_v2(self, tmp_path) -> None:
         db_path = tmp_path / "vault.db"
-        pw = "a-strong-master-password"
+        pw = "A-Strong-Passw0rd!"
 
         storage = StorageManager(db_path=db_path)
         storage.initialize_vault_v2(pw)
@@ -275,7 +275,7 @@ class TestVaultV2CreateAndUnlock:
 
     def test_v2_wrong_password_rejected(self, tmp_path) -> None:
         db_path = tmp_path / "vault.db"
-        pw = "a-strong-master-password"
+        pw = "A-Strong-Passw0rd!"
 
         storage = StorageManager(db_path=db_path)
         storage.initialize_vault_v2(pw)
@@ -301,7 +301,7 @@ class TestVaultV2CreateAndUnlock:
     def test_v2_vault_has_version_tag(self, tmp_path) -> None:
         db_path = tmp_path / "vault.db"
         storage = StorageManager(db_path=db_path)
-        storage.initialize_vault_v2("a-strong-master-password")
+        storage.initialize_vault_v2("A-Strong-Passw0rd!")
         storage.close()
 
         # Direct SQLite check.
@@ -322,14 +322,14 @@ class TestVaultV2CreateAndUnlock:
         assert not storage.is_v2_vault()
 
         # Create v1.
-        storage.initialize_vault("a-strong-master-password")
+        storage.initialize_vault("A-Strong-Passw0rd!")
         assert not storage.is_v2_vault()
         storage.close()
 
         # Create v2 (different path).
         db_path2 = tmp_path / "vault2.db"
         storage2 = StorageManager(db_path=db_path2)
-        storage2.initialize_vault_v2("a-strong-master-password")
+        storage2.initialize_vault_v2("A-Strong-Passw0rd!")
         assert storage2.is_v2_vault()
         storage2.close()
 
@@ -339,7 +339,7 @@ class TestVaultV2CredentialOps:
 
     def test_save_and_retrieve_password(self, tmp_path) -> None:
         db_path = tmp_path / "vault.db"
-        pw = "a-strong-master-password"
+        pw = "A-Strong-Passw0rd!"
 
         storage = StorageManager(db_path=db_path)
         storage.initialize_vault_v2(pw)
@@ -359,7 +359,7 @@ class TestVaultV2CredentialOps:
 
     def test_save_with_note(self, tmp_path) -> None:
         db_path = tmp_path / "vault.db"
-        pw = "a-strong-master-password"
+        pw = "A-Strong-Passw0rd!"
 
         storage = StorageManager(db_path=db_path)
         storage.initialize_vault_v2(pw)
@@ -374,7 +374,7 @@ class TestVaultV2CredentialOps:
 
     def test_save_and_get_credential_secret(self, tmp_path) -> None:
         db_path = tmp_path / "vault.db"
-        pw = "a-strong-master-password"
+        pw = "A-Strong-Passw0rd!"
 
         storage = StorageManager(db_path=db_path)
         storage.initialize_vault_v2(pw)
@@ -386,7 +386,7 @@ class TestVaultV2CredentialOps:
 
     def test_list_credential_metadata(self, tmp_path) -> None:
         db_path = tmp_path / "vault.db"
-        pw = "a-strong-master-password"
+        pw = "A-Strong-Passw0rd!"
 
         storage = StorageManager(db_path=db_path)
         storage.initialize_vault_v2(pw)
@@ -403,7 +403,7 @@ class TestVaultV2CredentialOps:
 
     def test_update_credential(self, tmp_path) -> None:
         db_path = tmp_path / "vault.db"
-        pw = "a-strong-master-password"
+        pw = "A-Strong-Passw0rd!"
 
         storage = StorageManager(db_path=db_path)
         storage.initialize_vault_v2(pw)
@@ -418,7 +418,7 @@ class TestVaultV2CredentialOps:
 
     def test_delete_credential(self, tmp_path) -> None:
         db_path = tmp_path / "vault.db"
-        pw = "a-strong-master-password"
+        pw = "A-Strong-Passw0rd!"
 
         storage = StorageManager(db_path=db_path)
         storage.initialize_vault_v2(pw)
@@ -436,7 +436,7 @@ class TestVaultV2Migration:
 
     def test_migration_preserves_all_credentials(self, tmp_path) -> None:
         db_path = tmp_path / "vault.db"
-        pw = "a-strong-master-password"
+        pw = "A-Strong-Passw0rd!"
 
         # Create v1 vault with credentials.
         storage = StorageManager(db_path=db_path)
@@ -483,7 +483,7 @@ class TestVaultV2Migration:
 
     def test_migration_creates_backup(self, tmp_path) -> None:
         db_path = tmp_path / "vault.db"
-        pw = "a-strong-master-password"
+        pw = "A-Strong-Passw0rd!"
 
         storage = StorageManager(db_path=db_path)
         storage.initialize_vault(pw)
@@ -496,7 +496,7 @@ class TestVaultV2Migration:
 
     def test_migration_removes_v1_config_keys(self, tmp_path) -> None:
         db_path = tmp_path / "vault.db"
-        pw = "a-strong-master-password"
+        pw = "A-Strong-Passw0rd!"
 
         storage = StorageManager(db_path=db_path)
         storage.initialize_vault(pw)
@@ -521,14 +521,14 @@ class TestVaultV2Migration:
         db_path = tmp_path / "vault.db"
 
         storage = StorageManager(db_path=db_path)
-        storage.initialize_vault("correct-password")
+        storage.initialize_vault("Correct-Passw0rd!")
         storage.close()
 
         # Unlock with correct password.
         storage2 = StorageManager(db_path=db_path)
-        storage2.unlock_vault("correct-password")
+        storage2.unlock_vault("Correct-Passw0rd!")
         # Migration works.
-        storage2.migrate_v1_to_v2("correct-password")
+        storage2.migrate_v1_to_v2("Correct-Passw0rd!")
         storage2.close()
 
     def test_migration_wrong_password_rejected(self, tmp_path) -> None:
@@ -539,7 +539,7 @@ class TestVaultV2Migration:
         to prevent silent re-keying.
         """
         db_path = tmp_path / "vault.db"
-        pw = "a-strong-master-password"
+        pw = "A-Strong-Passw0rd!"
 
         storage = StorageManager(db_path=db_path)
         storage.initialize_vault(pw)
@@ -552,7 +552,7 @@ class TestVaultV2Migration:
 
         # Attempt migration with a different (but equally strong) password.
         with pytest.raises(InvalidPasswordError, match="does not match"):
-            storage2.migrate_v1_to_v2("different-strong-pw")
+            storage2.migrate_v1_to_v2("Different-Str0ng-Pw!")
 
         # Vault must still be v1 and intact.
         assert storage2._vault_version == 1
@@ -565,15 +565,15 @@ class TestVaultV2Migration:
         db_path = tmp_path / "vault.db"
 
         storage = StorageManager(db_path=db_path)
-        storage.initialize_vault_v2("a-strong-master-password")
+        storage.initialize_vault_v2("A-Strong-Passw0rd!")
         with pytest.raises(StorageError, match="Migration requires an unlocked v1 vault"):
-            storage.migrate_v1_to_v2("a-strong-master-password")
+            storage.migrate_v1_to_v2("A-Strong-Passw0rd!")
         storage.close()
 
     def test_migration_rollback_on_failure(self, tmp_path) -> None:
         """Verify that migration rollback leaves v1 intact."""
         db_path = tmp_path / "vault.db"
-        pw = "a-strong-master-password"
+        pw = "A-Strong-Passw0rd!"
 
         storage = StorageManager(db_path=db_path)
         storage.initialize_vault(pw)
@@ -639,7 +639,7 @@ class TestVaultV2Migration:
                 pytest.skip("Windows symlink privilege is not available")
             raise
 
-        pw = "a-strong-master-password"
+        pw = "A-Strong-Passw0rd!"
         storage = StorageManager(db_path=db_path)
         try:
             storage.initialize_vault(pw)
@@ -668,7 +668,7 @@ class TestVaultV2AssociatedDataBinding:
         """v2 vaults have a credential_uuid column."""
         db_path = tmp_path / "vault.db"
         storage = StorageManager(db_path=db_path)
-        storage.initialize_vault_v2("a-strong-master-password")
+        storage.initialize_vault_v2("A-Strong-Passw0rd!")
         storage.save_credential("Test", "user", "pass")
 
         import sqlite3
@@ -688,7 +688,7 @@ class TestVaultV2AssociatedDataBinding:
     def test_cross_credential_ciphertext_swap_detected(self, tmp_path) -> None:
         """Swapping ciphertext between credentials causes decryption failure."""
         db_path = tmp_path / "vault.db"
-        pw = "a-strong-master-password"
+        pw = "A-Strong-Passw0rd!"
 
         storage = StorageManager(db_path=db_path)
         storage.initialize_vault_v2(pw)
@@ -720,7 +720,7 @@ class TestVaultV2AssociatedDataBinding:
     def test_password_note_swap_detected(self, tmp_path) -> None:
         """Swapping password and note ciphertext causes decryption failure."""
         db_path = tmp_path / "vault.db"
-        pw = "a-strong-master-password"
+        pw = "A-Strong-Passw0rd!"
 
         storage = StorageManager(db_path=db_path)
         storage.initialize_vault_v2(pw)
@@ -750,7 +750,7 @@ class TestVaultV2AssociatedDataBinding:
     def test_fresh_v2_vault_uses_aad_v2(self, tmp_path) -> None:
         """Fresh v2 vaults must have aad_version=2 in config."""
         db_path = tmp_path / "vault.db"
-        pw = "a-strong-master-password"
+        pw = "A-Strong-Passw0rd!"
 
         storage = StorageManager(db_path=db_path)
         storage.initialize_vault_v2(pw)
@@ -775,7 +775,7 @@ class TestVaultV2AssociatedDataBinding:
         binds service+username, so the swap must fail.
         """
         db_path = tmp_path / "vault.db"
-        pw = "a-strong-master-password"
+        pw = "A-Strong-Passw0rd!"
 
         storage = StorageManager(db_path=db_path)
         storage.initialize_vault_v2(pw)
@@ -820,7 +820,7 @@ class TestVaultV2AssociatedDataBinding:
     def test_v1_to_v2_migration_produces_aad_v2(self, tmp_path) -> None:
         """v1→v2 migration must produce a vault with aad_version=2."""
         db_path = tmp_path / "vault.db"
-        pw = "a-strong-master-password"
+        pw = "A-Strong-Passw0rd!"
 
         storage = StorageManager(db_path=db_path)
         storage.initialize_vault(pw)
@@ -846,7 +846,7 @@ class TestVaultV2AssociatedDataBinding:
     def test_aad_v1_to_v2_migration_succeeds(self, tmp_path) -> None:
         """An existing v2 vault at AAD v1 can be migrated to AAD v2."""
         db_path = tmp_path / "vault.db"
-        pw = "a-strong-master-password"
+        pw = "A-Strong-Passw0rd!"
 
         # Create a v2 vault with AAD v1 (simulate legacy vault).
         storage = StorageManager(db_path=db_path)
@@ -893,7 +893,7 @@ class TestVaultV2CloseAndReopen:
     def test_close_clears_v2_state(self, tmp_path) -> None:
         db_path = tmp_path / "vault.db"
         storage = StorageManager(db_path=db_path)
-        storage.initialize_vault_v2("a-strong-master-password")
+        storage.initialize_vault_v2("A-Strong-Passw0rd!")
         storage.close()
 
         assert storage._vault_version is None
@@ -902,7 +902,7 @@ class TestVaultV2CloseAndReopen:
 
     def test_context_manager_works_for_v2(self, tmp_path) -> None:
         db_path = tmp_path / "vault.db"
-        pw = "a-strong-master-password"
+        pw = "A-Strong-Passw0rd!"
 
         with StorageManager(db_path=db_path) as storage:
             storage.initialize_vault_v2(pw)
@@ -922,7 +922,7 @@ class TestVaultV2CloseAndReopen:
 
     def test_reopen_after_close_preserves_data(self, tmp_path) -> None:
         db_path = tmp_path / "vault.db"
-        pw = "a-strong-master-password"
+        pw = "A-Strong-Passw0rd!"
 
         storage = StorageManager(db_path=db_path)
         storage.initialize_vault_v2(pw)
@@ -947,16 +947,16 @@ class TestVaultV2EdgeCases:
     def test_v2_vault_rejects_init_overwrite(self, tmp_path) -> None:
         db_path = tmp_path / "vault.db"
         storage = StorageManager(db_path=db_path)
-        storage.initialize_vault_v2("a-strong-master-password")
+        storage.initialize_vault_v2("A-Strong-Passw0rd!")
         from generate_it.storage import VaultAlreadyInitializedError
         with pytest.raises(VaultAlreadyInitializedError):
-            storage.initialize_vault_v2("another-password")
+            storage.initialize_vault_v2("Another-Passw0rd!")
         storage.close()
 
     def test_save_credential_note_hidden_flag(self, tmp_path) -> None:
         db_path = tmp_path / "vault.db"
         storage = StorageManager(db_path=db_path)
-        storage.initialize_vault_v2("a-strong-master-password")
+        storage.initialize_vault_v2("A-Strong-Passw0rd!")
         storage.save_credential("Test", "user", "pass", note="secret", note_is_hidden=True)
         creds = storage.list_credentials()
         assert creds[0]["note_is_hidden"] is True
@@ -964,7 +964,7 @@ class TestVaultV2EdgeCases:
 
     def test_v2_csv_export_import_roundtrip(self, tmp_path) -> None:
         db_path = tmp_path / "vault.db"
-        pw = "a-strong-master-password"
+        pw = "A-Strong-Passw0rd!"
 
         storage = StorageManager(db_path=db_path)
         storage.initialize_vault_v2(pw)
@@ -997,7 +997,7 @@ class TestVaultV2EdgeCases:
         """An unknown version number raises StorageError."""
         db_path = tmp_path / "vault.db"
         storage = StorageManager(db_path=db_path)
-        storage.initialize_vault_v2("a-strong-master-password")
+        storage.initialize_vault_v2("A-Strong-Passw0rd!")
         storage.close()
 
         # Tamper with the version.
@@ -1009,7 +1009,7 @@ class TestVaultV2EdgeCases:
 
         storage2 = StorageManager(db_path=db_path)
         with pytest.raises(StorageError, match="Unsupported vault format version"):
-            storage2.unlock_vault("a-strong-master-password")
+            storage2.unlock_vault("A-Strong-Passw0rd!")
         storage2.close()
 
 
@@ -1143,7 +1143,7 @@ class TestConfigValidationAtUnlock:
     def test_kdf_config_rejected_at_unlock(self, tmp_path) -> None:
         """A v2 vault with out-of-range KDF memory raises StorageError."""
         db_path = tmp_path / "vault.db"
-        pw = "a-strong-master-password"
+        pw = "A-Strong-Passw0rd!"
 
         storage = StorageManager(db_path=db_path)
         storage.initialize_vault_v2(pw)
@@ -1163,7 +1163,7 @@ class TestConfigValidationAtUnlock:
     def test_vault_metadata_rejected_at_unlock(self, tmp_path) -> None:
         """A v2 vault with wrong-sized vault_uuid raises StorageError."""
         db_path = tmp_path / "vault.db"
-        pw = "a-strong-master-password"
+        pw = "A-Strong-Passw0rd!"
 
         storage = StorageManager(db_path=db_path)
         storage.initialize_vault_v2(pw)
@@ -1183,7 +1183,7 @@ class TestConfigValidationAtUnlock:
     def test_unknown_aead_rejected_at_unlock(self, tmp_path) -> None:
         """A v2 vault with unknown AEAD raises StorageError."""
         db_path = tmp_path / "vault.db"
-        pw = "a-strong-master-password"
+        pw = "A-Strong-Passw0rd!"
 
         storage = StorageManager(db_path=db_path)
         storage.initialize_vault_v2(pw)
