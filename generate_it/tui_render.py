@@ -645,16 +645,6 @@ def _render_actions_box(
     )
     row += 1
 
-    # Stacked hotkeys for better readability
-    hotkey_lines = [
-        "g: Generate  s: Save    t: Security",
-        "/: Search    v: Vault   a: Add",
-        "?: Help     Esc×2: Quit",
-    ]
-    for line in hotkey_lines:
-        _addstr_safe(stdscr, row, x + 2, line[:inner_w], theme.dim)
-        row += 1
-
 
 def _render_vault_box(
     stdscr: curses.window,
@@ -812,16 +802,25 @@ def _render_info_box(
         _addstr_safe(stdscr, row, x + 2, f"Extras: {', '.join(extras) if extras else 'none'}"[:inner_w], theme.dim)
         row += 1
 
-    # Strength bar
-    _addstr_safe(stdscr, row, x + 2, f"Entropy: ~{bits:0.1f} bits"[:inner_w], theme.dim)
-    row += 1
+    if state.mode != "username":
+        # Strength bar
+        _addstr_safe(stdscr, row, x + 2, f"Entropy: ~{bits:0.1f} bits"[:inner_w], theme.dim)
+        row += 1
 
-    prefix = "Strength: ["
-    suffix = f"] {label}"
-    bar_w = max(0, inner_w - len(prefix) - len(suffix))
-    if state.mode == "chars":
-        max_bits = 500.0
-    else:
-        max_bits = 200.0
-    bar = _bar(min(bits, max_bits), max_bits, bar_w)
-    _addstr_safe(stdscr, row, x + 2, f"{prefix}{bar}{suffix}"[:inner_w], kind_attr)
+        prefix = "Strength: ["
+        suffix = f"] {label}"
+        bar_w = max(0, inner_w - len(prefix) - len(suffix))
+        if state.mode == "chars":
+            # Theoretical max: all categories at max length
+            max_bits = float(generator.MAX_PASSWORD_CHARS) * math.log2(
+                len(generator.LETTERS) + len(generator.NUMBERS) + len(generator.SPECIAL_CHARACTERS)
+            )
+        else:
+            # Theoretical max: max words + 3-digit number + 1 special
+            max_bits = (
+                float(generator.MAX_PASSPHRASE_WORDS) * math.log2(wordlist_size)
+                + 3.0 * math.log2(10.0)
+                + math.log2(len(generator.PASSPHRASE_SPECIALS))
+            )
+        bar = _bar(min(bits, max_bits), max_bits, bar_w)
+        _addstr_safe(stdscr, row, x + 2, f"{prefix}{bar}{suffix}"[:inner_w], kind_attr)

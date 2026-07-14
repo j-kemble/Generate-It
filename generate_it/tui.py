@@ -1618,19 +1618,15 @@ def run() -> int:
                     h, w = stdscr.getmaxyx()
 
                     msg = message[: max(0, w - 1)]
-    
-                    # Stacked help lines for better readability
-                    help_lines = [
-                        "Tab/↑/↓: Move  •  Enter/g: Generate  •  s: Save",
-                        "t: Security  •  /: Search  •  i/e: CSV  •  Esc×2: Quit",
-                    ]
 
-                    R._addstr_safe(stdscr, h - 3, 0, " " * max(0, w - 1), theme.dim)
-                    R._addstr_safe(stdscr, h - 3, 1, msg, theme.accent)
+                    # Single combined hotkey line spanning the full width
+                    combined = "Tab/↑/↓: Move • Enter/g: Generate • s: Save • t: Security • /: Search • i/e: CSV • v: Vault • a: Add • Esc×2: Quit"
 
-                    for i, line in enumerate(help_lines):
-                        R._addstr_safe(stdscr, h - 2 + i, 0, " " * max(0, w - 1), theme.dim)
-                        R._addstr_safe(stdscr, h - 2 + i, 1, line[: max(0, w - 2)], theme.dim)
+                    R._addstr_safe(stdscr, h - 2, 0, " " * max(0, w - 1), theme.dim)
+                    R._addstr_safe(stdscr, h - 2, 1, msg, theme.accent)
+
+                    R._addstr_safe(stdscr, h - 1, 0, " " * max(0, w - 1), theme.dim)
+                    R._addstr_safe(stdscr, h - 1, 1, combined[: max(0, w - 2)], theme.dim)
 
                 # Mode box is always visible
                 R._render_mode_box(
