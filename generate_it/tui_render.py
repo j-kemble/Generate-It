@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import curses
 import datetime as _dt
+import math
 import textwrap
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -818,5 +819,9 @@ def _render_info_box(
     prefix = "Strength: ["
     suffix = f"] {label}"
     bar_w = max(0, inner_w - len(prefix) - len(suffix))
-    bar = _bar(min(bits, 256.0), 256.0, bar_w)
+    if state.mode == "chars":
+        max_bits = 500.0
+    else:
+        max_bits = 200.0
+    bar = _bar(min(bits, max_bits), max_bits, bar_w)
     _addstr_safe(stdscr, row, x + 2, f"{prefix}{bar}{suffix}"[:inner_w], kind_attr)

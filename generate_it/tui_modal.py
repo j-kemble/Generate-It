@@ -128,8 +128,14 @@ def _run_modal(
         win.refresh()
         key = win.getch()
         if key == 27: # ESC
+            del win
+            stdscr.touchwin()
+            stdscr.refresh()
             return None
         elif key in (curses.KEY_ENTER, 10, 13):
+            del win
+            stdscr.touchwin()
+            stdscr.refresh()
             return input_str
         elif key in (curses.KEY_BACKSPACE, 127, 8):
             input_str = input_str[:-1]
