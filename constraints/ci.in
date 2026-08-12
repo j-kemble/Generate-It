@@ -11,3 +11,4 @@ pip-audit
 mypy
 pre-commit
 setuptools>=83.0.0
+exceptiongroup
