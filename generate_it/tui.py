@@ -88,11 +88,7 @@ def _save_credential_duplicate_safe(
     if not state.storage:
         raise RuntimeError("Vault is unavailable.")
 
-    existing = _find_duplicate_credential(
-        state.storage.list_credential_metadata(),
-        service,
-        username,
-    )
+    existing = state.storage.find_credential_by_identity(service, username)
     if existing is not None:
         confirm = tui_modal._run_modal(
             stdscr,
@@ -1533,6 +1529,7 @@ def run() -> int:
                 try:
                     state.storage.unlock_vault(pwd)
                     state.vault_unlocked = True
+                    tui_security._maybe_show_identity_conflict(stdscr, theme, state)
                     tui_security._maybe_prompt_aad_migration(stdscr, theme, state)
                     break
                 except InvalidPasswordError:

@@ -138,6 +138,11 @@ def test_save_credential_duplicate_safe_saves_when_no_duplicate(monkeypatch) -> 
         def list_credential_metadata(self):
             return [{"id": c["id"], "service": c["service"], "username": c["username"]} for c in self.list_credentials()]
 
+        def find_credential_by_identity(self, service, username, exclude_id=None):
+            return tui_helpers._find_duplicate_credential(
+                self.list_credential_metadata(), service, username, exclude_id=exclude_id
+            )
+
         def save_credential(self, service: str, username: str, password: str, note: str = "", note_is_hidden: bool = False) -> int:
             self.saved.append((service, username, password, note, note_is_hidden))
             return 99
@@ -182,6 +187,11 @@ def test_save_credential_duplicate_safe_allows_same_service_different_username(m
         def list_credential_metadata(self):
             return [{"id": c["id"], "service": c["service"], "username": c["username"]} for c in self.list_credentials()]
 
+        def find_credential_by_identity(self, service, username, exclude_id=None):
+            return tui_helpers._find_duplicate_credential(
+                self.list_credential_metadata(), service, username, exclude_id=exclude_id
+            )
+
         def save_credential(self, service: str, username: str, password: str, note: str = "", note_is_hidden: bool = False) -> int:
             self.saved.append((service, username, password, note, note_is_hidden))
             return 99
@@ -221,6 +231,11 @@ def test_save_credential_duplicate_safe_overwrites_on_confirmation(monkeypatch) 
         def list_credential_metadata(self):
             return [{"id": 42, "service": "GitHub", "username": "dev"}]
 
+        def find_credential_by_identity(self, service, username, exclude_id=None):
+            return tui_helpers._find_duplicate_credential(
+                self.list_credential_metadata(), service, username, exclude_id=exclude_id
+            )
+
         def save_credential(self, service: str, username: str, password: str, note: str = "", note_is_hidden: bool = False) -> int:
             raise AssertionError("save_credential should not be called for duplicates")
 
@@ -258,6 +273,11 @@ def test_save_credential_duplicate_safe_cancels_without_overwrite(monkeypatch) -
 
         def list_credential_metadata(self):
             return [{"id": 42, "service": "GitHub", "username": "dev"}]
+
+        def find_credential_by_identity(self, service, username, exclude_id=None):
+            return tui_helpers._find_duplicate_credential(
+                self.list_credential_metadata(), service, username, exclude_id=exclude_id
+            )
 
         def save_credential(self, service: str, username: str, password: str, note: str = "") -> int:
             self.saved.append((service, username, password, note))

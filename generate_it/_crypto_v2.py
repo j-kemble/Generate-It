@@ -305,6 +305,52 @@ def make_associated_data_v2(
     return b"".join(parts)
 
 
+def make_associated_data_v3(
+    vault_uuid: bytes,
+    credential_uuid: bytes,
+    field_name: str,
+    service: str,
+    username: str,
+) -> bytes:
+    """Build AAD v3 with explicit uint32 BE length-prefixed components.
+
+    AAD v3 resolves the concatenation ambiguity present in AAD v2 by
+    prefixing EVERY variable-length component (field_name, canonical
+    service_key, canonical username_key) with an explicit 32-bit big-endian
+    length prefix.
+
+    Component layout:
+    - uint16 BE: aad_version = 3
+    - uint8 BE: vault_uuid length (16)
+    - bytes(16): vault_uuid
+    - uint8 BE: credential_uuid length (16)
+    - bytes(16): credential_uuid
+    - uint32 BE: len(field_name_utf8) + bytes
+    - uint32 BE: len(service_key_utf8) + bytes (canonical: NFC+strip+casefold)
+    - uint32 BE: len(username_key_utf8) + bytes (canonical: NFC+strip+casefold)
+    """
+    from .identity import canonical_identity
+
+    fn_bytes = field_name.encode("utf-8")
+    svc_bytes = canonical_identity(service).encode("utf-8")
+    usr_bytes = canonical_identity(username).encode("utf-8")
+
+    parts = [
+        struct.pack(">H", 3),                      # aad_version = 3
+        struct.pack(">B", VAULT_UUID_LEN),         # vault_uuid length (16)
+        vault_uuid,                                 # vault_uuid (16 bytes)
+        struct.pack(">B", CREDENTIAL_UUID_LEN),    # credential_uuid length (16)
+        credential_uuid,                            # credential_uuid (16 bytes)
+        struct.pack(">I", len(fn_bytes)),          # uint32 BE field_name length
+        fn_bytes,
+        struct.pack(">I", len(svc_bytes)),         # uint32 BE service_key length
+        svc_bytes,
+        struct.pack(">I", len(usr_bytes)),         # uint32 BE username_key length
+        usr_bytes,
+    ]
+    return b"".join(parts)
+
+
 def _make_verification_associated_data(vault_uuid: bytes) -> bytes:
     """Build associated data for the verification token.
 

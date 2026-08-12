@@ -747,14 +747,14 @@ class TestVaultV2AssociatedDataBinding:
         assert creds[0]["note"] == "<DECRYPTION_ERROR>"
         storage2.close()
 
-    def test_fresh_v2_vault_uses_aad_v2(self, tmp_path) -> None:
-        """Fresh v2 vaults must have aad_version=2 in config."""
+    def test_fresh_v2_vault_uses_aad_v3(self, tmp_path) -> None:
+        """Fresh v2 vaults must have aad_version=3 in config."""
         db_path = tmp_path / "vault.db"
         pw = "A-Strong-Passw0rd!"
 
         storage = StorageManager(db_path=db_path)
         storage.initialize_vault_v2(pw)
-        assert storage._aad_version == 2
+        assert storage._aad_version == 3
 
         import sqlite3
         raw = sqlite3.connect(db_path)
@@ -763,15 +763,15 @@ class TestVaultV2AssociatedDataBinding:
         ).fetchone()
         raw.close()
         assert row is not None
-        assert int(row[0]) == 2
+        assert int(row[0]) == 3
         storage.close()
 
     def test_uuid_ciphertext_swap_rejected_on_aad_v2(self, tmp_path) -> None:
         """Swapping both UUID and ciphertext between credentials must fail
-        when the vault uses AAD v2 (metadata-bound).
+        when the vault uses AAD v2 or v3 (metadata-bound).
 
         AAD v1 only binds vault_uuid + credential_uuid + field_name, so
-        swapping both UUID and ciphertext together succeeds.  AAD v2 also
+        swapping both UUID and ciphertext together succeeds.  AAD v2+ also
         binds service+username, so the swap must fail.
         """
         db_path = tmp_path / "vault.db"
@@ -779,7 +779,7 @@ class TestVaultV2AssociatedDataBinding:
 
         storage = StorageManager(db_path=db_path)
         storage.initialize_vault_v2(pw)
-        assert storage._aad_version == 2
+        assert storage._aad_version >= 2
         cred_a = storage.save_credential("ServiceA", "userA", "alpha-secret")
         cred_b = storage.save_credential("ServiceB", "userB", "beta-secret")
         storage.close()
@@ -817,8 +817,8 @@ class TestVaultV2AssociatedDataBinding:
             assert c["password"] == "<DECRYPTION_ERROR>"
         storage2.close()
 
-    def test_v1_to_v2_migration_produces_aad_v2(self, tmp_path) -> None:
-        """v1→v2 migration must produce a vault with aad_version=2."""
+    def test_v1_to_v2_migration_produces_aad_v3(self, tmp_path) -> None:
+        """v1→v2 migration must produce a vault with aad_version=3."""
         db_path = tmp_path / "vault.db"
         pw = "A-Strong-Passw0rd!"
 
@@ -831,7 +831,7 @@ class TestVaultV2AssociatedDataBinding:
         storage2.unlock_vault(pw)
         storage2.migrate_v1_to_v2(pw)
         assert storage2._vault_version == 2
-        assert storage2._aad_version == 2
+        assert storage2._aad_version == 3
 
         import sqlite3
         raw = sqlite3.connect(db_path)
@@ -840,7 +840,7 @@ class TestVaultV2AssociatedDataBinding:
         ).fetchone()
         raw.close()
         assert row is not None
-        assert int(row[0]) == 2
+        assert int(row[0]) == 3
         storage2.close()
 
     def test_aad_v1_to_v2_migration_succeeds(self, tmp_path) -> None:
@@ -866,9 +866,9 @@ class TestVaultV2AssociatedDataBinding:
         storage2.unlock_vault(pw)
         assert storage2._aad_version == 1
 
-        # Migrate to AAD v2.
+        # Migrate to AAD v3 (migrate_aad_v1_to_v2 delegates to v3).
         storage2.migrate_aad_v1_to_v2()
-        assert storage2._aad_version == 2
+        assert storage2._aad_version == 3
 
         # Credentials should still decrypt correctly.
         creds = storage2.list_credentials()
@@ -884,7 +884,7 @@ class TestVaultV2AssociatedDataBinding:
             "SELECT value FROM config WHERE key='aad_version'"
         ).fetchone()
         raw.close()
-        assert int(row[0]) == 2
+        assert int(row[0]) == 3
 
 
 class TestVaultV2CloseAndReopen:

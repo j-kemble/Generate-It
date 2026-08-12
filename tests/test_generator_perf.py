@@ -42,13 +42,8 @@ def test_dedupe_edge_cases():
     assert generator._dedupe_preserve_order(["z", "a", "z", "a"]) == ["z", "a"]
 
 
-def test_lru_cache_actually_caches():
-    """The file read must happen exactly ONCE across two identical calls.
-
-    This is the definitive proof that ``@functools.lru_cache`` is in effect.
-    If the decorator were removed, the read would happen twice and there would
-    be no cache hit recorded.
-    """
+def test_signature_cache_actually_caches():
+    """The file read must happen exactly ONCE across two identical calls when the file is unchanged."""
     read_count = {"n": 0}
     original_read_text = generator.Path.read_text
 
@@ -57,48 +52,57 @@ def test_lru_cache_actually_caches():
         return original_read_text(self, *args, **kwargs)
 
     with mock.patch.object(generator.Path, "read_text", counting_read_text):
-        generator.load_wordlist.cache_clear()
+        generator.clear_wordlist_cache()
         _ = generator.load_wordlist()  # miss -> reads the file
         _ = generator.load_wordlist()  # hit  -> must NOT read again
 
-    # The file was read exactly once (second call served from the cache).
     assert read_count["n"] == 1, (
         f"expected the wordlist file to be read exactly once, but read_count={read_count['n']}"
     )
 
-    # cache_info().hits proves a cached lookup actually occurred.
-    info = generator.load_wordlist.cache_info()
-    assert info.hits >= 1, f"expected at least one lru_cache hit, got cache_info={info}"
-    assert info.misses >= 1
+
+def test_wordlist_reloads_when_modified(tmp_path: Path):
+    """Modifying the file causes a cache reload (freshness-aware)."""
+    custom = tmp_path / "wl.txt"
+    words1 = [f"word{n}" for n in range(6000)]
+    custom.write_text("\n".join(words1) + "\n", encoding="utf-8")
+
+    generator.clear_wordlist_cache()
+    loaded1 = generator.load_wordlist(custom)
+    assert loaded1 == words1
+
+    # Update file content and modify mtime
+    words2 = [f"newword{n}" for n in range(6000)]
+    custom.write_text("\n".join(words2) + "\n", encoding="utf-8")
+
+    loaded2 = generator.load_wordlist(custom)
+    assert loaded2 == words2
 
 
-def test_lru_cache_distinguishes_paths(tmp_path: Path):
-    """The cache keys by path, not globally: a custom path yields different words."""
+def test_caller_mutation_does_not_corrupt_cache(tmp_path: Path):
+    """Mutating the returned list does not alter subsequent load_wordlist results."""
+    generator.clear_wordlist_cache()
+    words1 = generator.load_wordlist()
+    words1.pop(0)  # mutate returned list
+
+    words2 = generator.load_wordlist()
+    assert len(words2) == len(words1) + 1  # cache remains intact
+
+
+def test_signature_cache_distinguishes_paths(tmp_path: Path):
+    """The cache keys by path and signature, not globally."""
     custom = tmp_path / "wl.txt"
     custom.write_text(
         "\n".join([f"word{n}" for n in range(6000)]) + "\n", encoding="utf-8"
     )
 
-    generator.load_wordlist.cache_clear()
+    generator.clear_wordlist_cache()
 
-    # The custom file returns its own unique words (not the built-in fallback).
     custom_words = generator.load_wordlist(custom)
     assert custom_words == [f"word{n}" for n in range(6000)]
 
-    # A repeat of the *same* custom path is served from the cache (hit).
-    hits_after_custom = generator.load_wordlist.cache_info().hits
-    _ = generator.load_wordlist(custom)
-    assert generator.load_wordlist.cache_info().hits == hits_after_custom + 1
-
-    # The default wordlist is a different value entirely (proves keying by path,
-    # not a single global entry that would return the same thing for every call).
     default_words = generator.load_wordlist(None)
     assert default_words != custom_words
-
-    # And the default path also caches: a repeat call hits.
-    hits_after_default = generator.load_wordlist.cache_info().hits
-    _ = generator.load_wordlist(None)
-    assert generator.load_wordlist.cache_info().hits == hits_after_default + 1
 
 
 def test_username_separators_is_frozenset_and_membership():

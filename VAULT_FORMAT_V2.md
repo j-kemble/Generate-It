@@ -264,12 +264,64 @@ AAD v2 and sets ``aad_version = 2`` in the config table.  A backup
 AAD v1 vault (``aad_version=1`` or absent) continues to unlock before
 migration.
 
+### 2.5.2 AAD v3 — Length-Delimited Metadata-Bound (aad_version=3)
+
+AAD v3 resolves the concatenation ambiguity present in AAD v2 by prefixing
+EVERY variable-length component (`field_name`, `service_key`, `username_key`) with an
+explicit 32-bit big-endian unsigned integer length prefix (`struct.pack(">I", len)`).
+`service_key` and `username_key` use the project's canonical identity rule
+(`unicodedata.normalize("NFC", text).strip().casefold()`).
+
+**AAD v3 wire format:**
+
+```text
+uint16: aad_version = 3
+uint8:  vault_uuid length (16)
+bytes:  vault_uuid (16)
+uint8:  credential_uuid length (16)
+bytes:  credential_uuid (16)
+uint32: len(field_name) (big-endian)
+bytes:  field_name (UTF-8)
+uint32: len(service_key) (big-endian)
+bytes:  service_key (canonical UTF-8: NFC + strip + casefold)
+uint32: len(username_key) (big-endian)
+bytes:  username_key (canonical UTF-8: NFC + strip + casefold)
+```
+
+**Construction (Python):**
+
+```python
+def make_associated_data_v3(vault_uuid, credential_uuid, field_name, service, username):
+    fn_bytes = field_name.encode("utf-8")
+    svc_bytes = canonical_identity(service).encode("utf-8")
+    usr_bytes = canonical_identity(username).encode("utf-8")
+    parts = [
+        struct.pack(">H", 3),                      # aad_version = 3
+        struct.pack(">B", VAULT_UUID_LEN),         # vault_uuid length (16)
+        vault_uuid,                                 # vault_uuid
+        struct.pack(">B", CREDENTIAL_UUID_LEN),    # credential_uuid length (16)
+        credential_uuid,                            # credential_uuid
+        struct.pack(">I", len(fn_bytes)),          # uint32 BE field_name length
+        fn_bytes,
+        struct.pack(">I", len(svc_bytes)),         # uint32 BE service_key length
+        svc_bytes,
+        struct.pack(">I", len(usr_bytes)),         # uint32 BE username_key length
+        usr_bytes,
+    ]
+    return b"".join(parts)
+```
+
+**Migration (AAD v1/v2 → v3):** Re-encrypts every credential field with
+AAD v3 and sets ``aad_version = 3`` in the config table.  A backup
+file is created before migration begins.
+
 **AAD version config key:**
 
 | Key | Value | Description |
 |-----|-------|-------------|
 | `aad_version` | `"1"` or absent | Legacy AAD v1 (UUID-only binding) |
-| `aad_version` | `"2"` | AAD v2 (metadata-bound) |
+| `aad_version` | `"2"` | Legacy AAD v2 (un-delimited metadata-bound) |
+| `aad_version` | `"3"` | Current AAD v3 (length-delimited metadata-bound) |
 
 The verification token always uses AAD v1 regardless of ``aad_version``,
 since it has no credential-level metadata to bind.

@@ -348,7 +348,43 @@ def _secure_sample_without_replacement(words: list[str], count: int) -> list[str
     return pool[:count]
 
 
-@functools.lru_cache(maxsize=1)
+def resolve_wordlist_source(path: Path | None = None) -> tuple[Path | None, bool]:
+    """Resolve explicit path, $GENERATE_IT_WORDLIST env var, or packaged default.
+
+    Returns (resolved_path, is_custom).
+    """
+    is_custom = path is not None
+    if path is None:
+        env_path = os.environ.get("GENERATE_IT_WORDLIST")
+        if env_path:
+            path = Path(env_path).expanduser()
+            is_custom = True
+        else:
+            path = PACKAGED_WORDLIST_PATH
+
+    return path, is_custom
+
+
+_WORDLIST_CACHE: dict[tuple[Path | None, int, int], tuple[str, ...]] = {}
+_WORDLIST_CACHE_MAX_SIZE = 8
+
+
+def clear_wordlist_cache() -> None:
+    """Clear the wordlist cache (used by tests and cache invalidation)."""
+    _WORDLIST_CACHE.clear()
+
+
+def _get_file_signature(path: Path | None) -> tuple[Path | None, int, int]:
+    """Return (resolved_path, mtime_ns, size) for freshness-aware cache keying."""
+    if path is None or not path.exists():
+        return (None, 0, 0)
+    try:
+        st = path.stat()
+        return (path.resolve(), st.st_mtime_ns, st.st_size)
+    except OSError:
+        return (path.resolve(), 0, 0)
+
+
 def load_wordlist(path: Path | None = None) -> list[str]:
     """Load passphrase words.
 
@@ -360,42 +396,50 @@ def load_wordlist(path: Path | None = None) -> list[str]:
     Lines starting with `#` and blank lines are ignored.
     Custom wordlists (explicit path or env var) are validated against
     a 50-bit entropy floor at 4 words.
+
+    Cached by (resolved_path, mtime_ns, size) in a small bounded cache.
+    Returns a defensive copy so caller mutations do not corrupt shared cached data.
     """
+    resolved_path, is_custom = resolve_wordlist_source(path)
+    sig = _get_file_signature(resolved_path)
 
-    is_custom = path is not None
+    if sig in _WORDLIST_CACHE:
+        return list(_WORDLIST_CACHE[sig])
 
-    if path is None:
-        env_path = os.environ.get("GENERATE_IT_WORDLIST")
-        if env_path:
-            path = Path(env_path).expanduser()
-            is_custom = True
-        else:
-            path = PACKAGED_WORDLIST_PATH
-
-    if not path.exists():
-        return DEFAULT_WORDLIST
-
-    words: list[str] = []
-    for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
-        w = line.strip()
-        if not w or w.startswith("#"):
-            continue
-        words.append(w)
-
-    words = _dedupe_preserve_order(words)
+    if resolved_path is None or not resolved_path.exists():
+        return list(DEFAULT_WORDLIST)
+    else:
+        raw_words: list[str] = []
+        for line in resolved_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            w = line.strip()
+            if not w or w.startswith("#"):
+                continue
+            raw_words.append(w)
+        words_tuple = tuple(_dedupe_preserve_order(raw_words))
 
     # Validate custom wordlists against the entropy floor.
     if is_custom:
-        bits = _ordered_sample_entropy_bits(len(words), 4)
+        bits = _ordered_sample_entropy_bits(len(words_tuple), 4)
         if bits < _MIN_PASSPHRASE_ENTROPY_BITS:
             raise WordlistSecurityError(
-                f"Custom wordlist has only {len(words)} unique words, "
+                f"Custom wordlist has only {len(words_tuple)} unique words, "
                 f"providing {bits:.1f} bits of entropy for a 4-word passphrase. "
                 f"Minimum required: {_MIN_PASSPHRASE_ENTROPY_BITS:.0f} bits. "
                 f"Need at least ~5,800 unique words."
             )
 
-    return words
+    # Maintain bounded cache size.
+    if len(_WORDLIST_CACHE) >= _WORDLIST_CACHE_MAX_SIZE:
+        oldest_key = next(iter(_WORDLIST_CACHE))
+        del _WORDLIST_CACHE[oldest_key]
+
+    _WORDLIST_CACHE[sig] = words_tuple
+    return list(words_tuple)
+
+
+# Attach cache_clear attribute for backwards compatibility with tests that called
+# load_wordlist.cache_clear().
+load_wordlist.cache_clear = clear_wordlist_cache  # type: ignore[attr-defined]
 
 
 def generate_character_password(
