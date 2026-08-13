@@ -362,54 +362,6 @@ def _make_verification_associated_data(vault_uuid: bytes) -> bytes:
     )
 
 
-def make_associated_data_v4(
-    vault_uuid: bytes,
-    credential_uuid: bytes,
-    field_name: str,
-    service: str,
-    username: str,
-) -> bytes:
-    """Build AAD v4 with explicit uint32 BE length-prefixed components.
-
-    Identical layout to AAD v3, but the canonical service/username
-    components use the zero-width-stripped canonicalization
-    (``canonical_identity_stripped``) instead of the frozen
-    ``canonical_identity``.  The version marker distinguishes the two so
-    v3 ciphertext (legacy canonicalization) and v4 ciphertext (stripped
-    canonicalization) can never be confused during decryption.
-
-    Component layout:
-    - uint16 BE: aad_version = 4
-    - uint8 BE: vault_uuid length (16)
-    - bytes(16): vault_uuid
-    - uint8 BE: credential_uuid length (16)
-    - bytes(16): credential_uuid
-    - uint32 BE: len(field_name_utf8) + bytes
-    - uint32 BE: len(service_key_utf8) + bytes (stripped canonical)
-    - uint32 BE: len(username_key_utf8) + bytes (stripped canonical)
-    """
-    from .identity import canonical_identity_stripped
-
-    fn_bytes = field_name.encode("utf-8")
-    svc_bytes = canonical_identity_stripped(service).encode("utf-8")
-    usr_bytes = canonical_identity_stripped(username).encode("utf-8")
-
-    parts = [
-        struct.pack(">H", 4),                      # aad_version = 4
-        struct.pack(">B", VAULT_UUID_LEN),         # vault_uuid length (16)
-        vault_uuid,                                 # vault_uuid (16 bytes)
-        struct.pack(">B", CREDENTIAL_UUID_LEN),    # credential_uuid length (16)
-        credential_uuid,                            # credential_uuid (16 bytes)
-        struct.pack(">I", len(fn_bytes)),          # uint32 BE field_name length
-        fn_bytes,
-        struct.pack(">I", len(svc_bytes)),         # uint32 BE service_key length
-        svc_bytes,
-        struct.pack(">I", len(usr_bytes)),         # uint32 BE username_key length
-        usr_bytes,
-    ]
-    return b"".join(parts)
-
-
 # ---------------------------------------------------------------------------
 # AEAD encryption / decryption
 # ---------------------------------------------------------------------------
@@ -452,7 +404,7 @@ def encrypt_field(
 
             nonce (12 bytes) || ciphertext (N bytes) || tag (16 bytes)
     """
-    plaintext_bytes = plaintext.encode("utf-8")
+    plaintext_bytes = plaintext.encode()
     if len(plaintext_bytes) > max_plaintext_bytes:
         raise ValueError(f"{field_name} plaintext exceeds {max_plaintext_bytes} bytes")
     aead = _get_aead(dek, aead_algorithm)

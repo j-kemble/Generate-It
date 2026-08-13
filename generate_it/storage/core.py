@@ -71,6 +71,20 @@ _IDX_IDENTITY_UNIQUE = "idx_credentials_identity"
 _IDX_IDENTITY_ORDER = "idx_credentials_order"
 
 
+def _validate_credential_field_limits(password: str, note: str) -> None:
+    """Reject oversized credential plaintext before encryption."""
+    password_size = len(password.encode("utf-8"))
+    if password_size > _crypto_v2.MAX_PASSWORD_BYTES:
+        raise StorageError(
+            f"password plaintext exceeds {_crypto_v2.MAX_PASSWORD_BYTES} bytes"
+        )
+    note_size = len(note.encode("utf-8"))
+    if note_size > _crypto_v2.MAX_NOTE_BYTES:
+        raise StorageError(
+            f"note plaintext exceeds {_crypto_v2.MAX_NOTE_BYTES} bytes"
+        )
+
+
 def _estimate_password_entropy(password: str) -> float:
     """Estimate entropy of a password in bits using a simple charset-length model.
 
@@ -1320,6 +1334,7 @@ class StorageManager:
         self, fernet: Fernet, password: str, note: str
     ) -> tuple[bytes, Optional[bytes]]:
         """Encrypt using v1 Fernet."""
+        _validate_credential_field_limits(password, note)
         encrypted_password = fernet.encrypt(password.encode())
         encrypted_note = fernet.encrypt(note.encode()) if note else None
         return encrypted_password, encrypted_note
@@ -1342,6 +1357,8 @@ class StorageManager:
         encrypted_password = _crypto_v2.encrypt_field(
             self._dek, password_ad, password,
             aead_algorithm=self._aead_algorithm,
+            max_plaintext_bytes=_crypto_v2.MAX_PASSWORD_BYTES,
+            field_name="password",
         )
 
         encrypted_note: bytes | None = None
@@ -1350,6 +1367,8 @@ class StorageManager:
             encrypted_note = _crypto_v2.encrypt_field(
                 self._dek, note_ad, note,
                 aead_algorithm=self._aead_algorithm,
+                max_plaintext_bytes=_crypto_v2.MAX_NOTE_BYTES,
+                field_name="note",
             )
 
         return encrypted_password, encrypted_note
@@ -1393,6 +1412,7 @@ class StorageManager:
 
     def save_credential(self, service: str, username: str, password: str, note: str = "", note_is_hidden: bool = False) -> int:
         self._require_unlocked()
+        _validate_credential_field_limits(password, note)
         service_key, username_key = self._validated_identity_keys(service, username)
 
         if self._vault_version == 2:
@@ -1583,6 +1603,7 @@ class StorageManager:
     def update_credential(self, credential_id: int, service: str, username: str, password: str, note: str = "", note_is_hidden: bool = False) -> None:
         """Update an existing credential by id."""
         self._require_unlocked()
+        _validate_credential_field_limits(password, note)
         service_key, username_key = self._validated_identity_keys(service, username)
 
         if self._vault_version == 2:
