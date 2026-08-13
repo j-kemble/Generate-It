@@ -695,15 +695,18 @@ def _maybe_auto_clear_clipboard(state: AppState, now: float | None = None) -> bo
         return False
 
     expected = state.clipboard_clear_expected
-    state.clipboard_clear_due_at = None
-    state.clipboard_clear_expected = None
 
     try:
         current_clip = pyperclip.paste()
-        if expected is None or current_clip == expected:
-            pyperclip.copy("")
+        if expected is None or current_clip != expected:
+            state.clipboard_clear_due_at = None
+            state.clipboard_clear_expected = None
+            return True
+        pyperclip.copy("")
     except PyperclipException:
         return False
+    state.clipboard_clear_due_at = None
+    state.clipboard_clear_expected = None
     return True
 
 def _revoke_clipboard(state: AppState) -> None:
@@ -713,18 +716,23 @@ def _revoke_clipboard(state: AppState) -> None:
     we do NOT clear it — we respect newer clipboard content.
     """
     expected = state.clipboard_clear_expected
-    state.clipboard_clear_due_at = None
-    state.clipboard_clear_expected = None
 
     if expected is None:
+        state.clipboard_clear_due_at = None
+        state.clipboard_clear_expected = None
         return
 
     try:
         current_clip = pyperclip.paste()
-        if current_clip == expected:
-            pyperclip.copy("")
+        if current_clip != expected:
+            state.clipboard_clear_due_at = None
+            state.clipboard_clear_expected = None
+            return
+        pyperclip.copy("")
+        state.clipboard_clear_due_at = None
+        state.clipboard_clear_expected = None
     except PyperclipException:
-        pass
+        return
 
 
 def _lock_vault(state: AppState) -> None:
@@ -1307,6 +1315,7 @@ def _run_vault_modal(
                 vault_filter += chr(key)
                 state.vault_selected_idx = 0
                 state.vault_scroll_y = 0
+                continue
         if key in (curses.KEY_UP, ord('k')):
             if filtered_credentials:
                 state.vault_selected_idx = max(0, state.vault_selected_idx - 1)
@@ -1526,15 +1535,8 @@ def run() -> int:
                 if pwd is None: # Cancelled
                     return 0
                 
-                try:
-                    state.storage.unlock_vault(pwd)
-                    state.vault_unlocked = True
-                    tui_security._maybe_show_identity_conflict(stdscr, theme, state)
-                    tui_security._maybe_prompt_aad_migration(stdscr, theme, state)
+                if tui_security._try_unlock_vault(stdscr, theme, state, pwd):
                     break
-                except InvalidPasswordError:
-                    # Visual feedback loop
-                    continue
 
         # Load initial credentials
         if state.vault_unlocked and state.storage:

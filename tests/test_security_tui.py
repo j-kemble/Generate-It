@@ -212,8 +212,8 @@ def test_revoke_clipboard_handles_pyperclip_error(monkeypatch):
     tui._lock_vault(state)
 
     assert not state.vault_unlocked
-    assert state.clipboard_clear_expected is None
-
+    assert state.clipboard_clear_expected == "secret"
+    assert state.clipboard_clear_due_at == float("inf")
 
 def test_fresh_state_defaults_to_secure_clipboard_clear():
     """Fresh AppState must default to 30-second clipboard auto-clear."""
