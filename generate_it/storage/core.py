@@ -94,6 +94,8 @@ def _estimate_password_entropy(password: str) -> float:
     but is sufficient for policy threshold checks.
     """
     import math
+    if _is_predictable_password_pattern(password):
+        return 0.0
     charset_size = 0
     if any(c.islower() for c in password):
         charset_size += 26  # a-z
@@ -106,6 +108,18 @@ def _estimate_password_entropy(password: str) -> float:
     if charset_size == 0:
         return 0.0
     return len(password) * math.log2(charset_size)
+
+
+def _is_predictable_password_pattern(password: str) -> bool:
+    """Return whether a password is dominated by a short repeated pattern."""
+    if len(password) < 8:
+        return False
+    for pattern_length in range(1, len(password) // 2 + 1):
+        if len(password) % pattern_length == 0:
+            pattern = password[:pattern_length]
+            if pattern * (len(password) // pattern_length) == password:
+                return True
+    return len(set(password)) == 1
 
 
 def _validate_master_password(password: str) -> None:

@@ -27,13 +27,19 @@ from __future__ import annotations
 import unicodedata
 
 
+def _remove_identity_format_chars(value: str) -> str:
+    """Remove Unicode format characters from stored identity keys."""
+    return "".join(char for char in value if unicodedata.category(char) != "Cf")
+
+
 def canonical_identity(value: str) -> str:
     """Return the canonical identity form of a service or username string.
 
     ``unicodedata.normalize("NFC", value).strip().casefold()`` — see the
     module docstring for the rationale.  The result may be empty.
     """
-    return unicodedata.normalize("NFC", value).strip().casefold()
+    normalized = unicodedata.normalize("NFC", value).strip().casefold()
+    return _remove_identity_format_chars(normalized)
 
 
 def canonical_service_username(service: str, username: str) -> tuple[str, str]:
@@ -53,17 +59,8 @@ def validate_identity(service: str, username: str) -> tuple[str, str]:
         ValueError: if the canonical service or username is empty.
     """
     service_key, username_key = canonical_service_username(service, username)
-    # Strip unprintable zero-width format chars (U+200B..200F, U+FEFF)
-    # so a string of format-only chars also validates as empty.
-    clean_service = "".join(
-        c for c in service_key if not (0x200B <= ord(c) <= 0x200F or ord(c) == 0xFEFF)
-    ).strip()
-    clean_username = "".join(
-        c for c in username_key if not (0x200B <= ord(c) <= 0x200F or ord(c) == 0xFEFF)
-    ).strip()
-
-    if not clean_service:
+    if not service_key:
         raise ValueError("Service must not be empty.")
-    if not clean_username:
+    if not username_key:
         raise ValueError("Username must not be empty.")
     return service_key, username_key
