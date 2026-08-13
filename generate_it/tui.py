@@ -970,7 +970,8 @@ def _run_details_modal(
 ) -> None:
     """Runs a modal to show credential details and allow copying."""
     h, w = stdscr.getmaxyx()
-    box_h, box_w = 14, 60
+    box_h = max(4, min(14, h))
+    box_w = max(12, min(60, w))
     y, x = (h - box_h) // 2, (w - box_w) // 2
     
     win = curses.newwin(box_h, box_w, y, x)
@@ -984,8 +985,12 @@ def _run_details_modal(
     try:
         # Load secret on demand
         if state.storage and state.revealed_secret_id != credential['id']:
-            state.revealed_secret = state.storage.get_credential_secret(credential['id'])
-            state.revealed_secret_id = credential['id']
+            try:
+                state.revealed_secret = state.storage.get_credential_secret(credential['id'])
+                state.revealed_secret_id = credential['id']
+            except StorageError as exc:
+                tui_modal._run_modal(stdscr, theme, "ERROR", f"Cannot load credential: {exc}")
+                return
         
         while True:
             if _maybe_auto_clear_clipboard(state):
@@ -1025,9 +1030,10 @@ def _run_details_modal(
                 row += 1
                 # Wrap note to fit
                 import textwrap
-                wrapped_note = textwrap.wrap(display_note, width=box_w-14)
-                for line in wrapped_note:
-                    win.addstr(row, 2, R._sanitize_terminal_text(line[:box_w-14]), val_attr)
+                wrapped_note = textwrap.wrap(display_note, width=max(1, box_w - 14))
+                available_rows = max(0, box_h - row - 5)
+                for line in wrapped_note[:available_rows]:
+                    R._addstr_safe(win, row, 2, line[: max(1, box_w - 14)], val_attr)
                     row += 1
 
             win.addstr(row, 2, "Password:", label_attr)
