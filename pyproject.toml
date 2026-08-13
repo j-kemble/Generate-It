@@ -51,8 +51,9 @@ Homepage = "https://github.com/j-kemble/Generate-It"
 Repository = "https://github.com/j-kemble/Generate-It"
 Issues = "https://github.com/j-kemble/Generate-It/issues"
 
-[tool.setuptools]
-packages = ["generate_it"]
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["generate_it*"]
 
 [tool.setuptools.package-data]
 generate_it = ["wordlist.txt"]

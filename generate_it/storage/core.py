@@ -13,11 +13,12 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from platformdirs import user_data_dir
-from . import _crypto_v2, csv_formats
-from .identity import canonical_service_username, validate_identity
-from .logging import get_logger
+from .. import _crypto_v2, csv_formats
+from ..exceptions import CredentialIdentityConflictError, StorageError
+from ..identity import canonical_service_username, validate_identity
+from ..logging import get_logger
 
-_log = get_logger("storage")
+_log = get_logger(__name__)
 
 APP_NAME = "generate-it"
 APP_AUTHOR = "j-kemble"
@@ -29,10 +30,6 @@ _DEFAULT_SALT_LENGTH = 32
 
 # Legacy defaults for vaults created before these params were persisted.
 _LEGACY_PBKDF2_ITERATIONS = 100_000
-
-class StorageError(Exception):
-    """Base exception for storage errors."""
-    pass
 
 class VaultNotInitializedError(StorageError):
     """Raised when attempting to access a vault that doesn't exist."""
@@ -52,21 +49,6 @@ class InvalidPasswordError(StorageError):
 class WeakMasterPasswordError(StorageError):
     """Raised when the master password fails the strength policy."""
     pass
-
-
-class CredentialIdentityConflictError(StorageError):
-    """Raised when existing rows collide under canonical identity rules.
-
-    Non-destructive: no rows are deleted or merged automatically.  The
-    ``conflicts`` attribute lists ``{"service", "username", "ids"}`` dicts
-    so the caller can show the user exactly which credentials conflict;
-    the user must resolve the duplicates (rename or delete) before the
-    identity-schema migration can be rerun.
-    """
-
-    def __init__(self, message: str, conflicts: Optional[List[Dict[str, object]]] = None):
-        super().__init__(message)
-        self.conflicts: List[Dict[str, object]] = list(conflicts or [])
 
 
 # Common weak passwords that are unconditionally rejected (case-insensitive).
@@ -89,27 +71,47 @@ _IDX_IDENTITY_UNIQUE = "idx_credentials_identity"
 _IDX_IDENTITY_ORDER = "idx_credentials_order"
 
 
+def _estimate_password_entropy(password: str) -> float:
+    """Estimate entropy of a password in bits using a simple charset-length model.
+
+    This uses the standard ``length * log2(charset_size)`` formula where the
+    charset size is the union of the character categories present.  It is a
+    lower-bound estimate (does not account for dictionary or pattern effects)
+    but is sufficient for policy threshold checks.
+    """
+    import math
+    charset_size = 0
+    if any(c.islower() for c in password):
+        charset_size += 26  # a-z
+    if any(c.isupper() for c in password):
+        charset_size += 26  # A-Z
+    if any(c.isdigit() for c in password):
+        charset_size += 10  # 0-9
+    if any(not c.isalnum() for c in password):
+        charset_size += 32  # common special characters
+    if charset_size == 0:
+        return 0.0
+    return len(password) * math.log2(charset_size)
+
+
 def _validate_master_password(password: str) -> None:
     """Validate a master password against the security policy.
 
-    Requirements:
-        - Minimum 8 characters
-        - At least 1 uppercase letter (A-Z)
-        - At least 1 lowercase letter (a-z)
-        - At least 1 digit (0-9)
-        - At least 1 special character (non-alphanumeric)
-        - Not in the common weak-password list
+    Uses a two-tier check:
+    1. Entropy-based: requires >= 64 bits of entropy.
+    2. Character-class fallback: if entropy < 64 bits, requires at least
+       one character from each class (upper, lower, digit, special) and
+       minimum 8 characters.  This allows strong passphrases that might
+       have lower entropy per-character (e.g., multiple lowercase words).
+
+    Also unconditionally rejects passwords in the common weak-password list.
 
     Raises:
         WeakMasterPasswordError: if the password is empty, too short, too long,
-            lacks required character classes, or matches a known common/weak value.
+            or fails both the entropy and character-class checks.
     """
     if not password:
         raise WeakMasterPasswordError("Master password cannot be empty.")
-    if len(password) < 8:
-        raise WeakMasterPasswordError(
-            "Master password must be at least 8 characters."
-        )
     if len(password) > _MAX_MASTER_PASSWORD_LENGTH:
         raise WeakMasterPasswordError(
             f"Master password must be at most {_MAX_MASTER_PASSWORD_LENGTH} characters."
@@ -117,6 +119,17 @@ def _validate_master_password(password: str) -> None:
     if password.casefold() in _WEAK_PASSWORDS:
         raise WeakMasterPasswordError(
             "That password is too common and easily guessed. Please choose a stronger one."
+        )
+
+    entropy = _estimate_password_entropy(password)
+    if entropy >= 64.0:
+        return
+
+    # Fallback: character-class check for passwords below the entropy threshold.
+    if len(password) < 8:
+        raise WeakMasterPasswordError(
+            "Master password must be at least 8 characters "
+            f"(current entropy ~{entropy:.0f} bits, need 64)."
         )
     if not any(c.isupper() for c in password):
         raise WeakMasterPasswordError(
@@ -134,6 +147,10 @@ def _validate_master_password(password: str) -> None:
         raise WeakMasterPasswordError(
             "Master password must contain at least 1 special character (e.g., !@#$%^&*)."
         )
+    raise WeakMasterPasswordError(
+        f"Master password is too weak (~{entropy:.0f} bits, need 64). "
+        "Consider using a longer passphrase or adding more character variety."
+    )
 
 class StorageManager:
     def __init__(self, db_path: Optional[Path] = None):
@@ -1007,7 +1024,7 @@ class StorageManager:
                     v1_password,
                     aead_algorithm=aead_algorithm,
                 )
-                new_note_ct: bytes | None = None
+                new_note_ct: Optional[bytes] = None
                 if v1_note:
                     new_note_ct = _crypto_v2.encrypt_field(
                         dek,
@@ -1156,7 +1173,7 @@ class StorageManager:
                     password,
                     aead_algorithm=self._aead_algorithm,
                 )
-                new_note_ct: bytes | None = None
+                new_note_ct: Optional[bytes] = None
                 if note:
                     new_note_ct = _crypto_v2.encrypt_field(
                         self._dek,
@@ -1281,7 +1298,7 @@ class StorageManager:
 
     def _encrypt_credential_fields(
         self, fernet: Fernet, password: str, note: str
-    ) -> tuple[bytes, bytes | None]:
+    ) -> tuple[bytes, Optional[bytes]]:
         """Encrypt password and note for storage.
 
         Dispatches to v1 or v2 encryption based on ``self._vault_version``.
@@ -1301,7 +1318,7 @@ class StorageManager:
 
     def _encrypt_fields_v1(
         self, fernet: Fernet, password: str, note: str
-    ) -> tuple[bytes, bytes | None]:
+    ) -> tuple[bytes, Optional[bytes]]:
         """Encrypt using v1 Fernet."""
         encrypted_password = fernet.encrypt(password.encode())
         encrypted_note = fernet.encrypt(note.encode()) if note else None
@@ -1310,7 +1327,7 @@ class StorageManager:
     def _encrypt_fields_v2(
         self, password: str, note: str, credential_uuid: bytes,
         service: str, username: str,
-    ) -> tuple[bytes, bytes | None]:
+    ) -> tuple[bytes, Optional[bytes]]:
         """Encrypt using v2 AEAD with associated data binding to *credential_uuid*.
 
         Uses AAD v2 (metadata-bound) when ``self._aad_version >= 2``,
