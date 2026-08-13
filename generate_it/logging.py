@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import stat
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -29,8 +30,27 @@ _FORMATTER = logging.Formatter(
 _initialised = False
 
 
+class LoggingError(RuntimeError):
+    """Raised when secure log-file setup cannot be completed."""
+
+
 class _PrivateRotatingFileHandler(RotatingFileHandler):
     """RotatingFileHandler that keeps rotated files owner-only on POSIX."""
+
+    def _open(self):
+        if os.name != "posix":
+            return super()._open()
+        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
+        no_follow = getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(self.baseFilename, flags | no_follow, 0o600)
+        try:
+            file_stat = os.fstat(fd)
+            if not stat.S_ISREG(file_stat.st_mode):
+                raise LoggingError("Log path is not a regular file.")
+            return os.fdopen(fd, self.mode, encoding=self.encoding, errors=self.errors)
+        except BaseException:
+            os.close(fd)
+            raise
 
     def doRollover(self) -> None:
         super().doRollover()
@@ -58,8 +78,38 @@ def _set_private(path: Path, mode: int) -> None:
     if hasattr(os, "chmod"):
         try:
             os.chmod(str(path), mode)
-        except OSError:
-            pass
+        except OSError as exc:
+            raise LoggingError(f"Could not set permissions on {path}.") from exc
+
+
+def _prepare_log_file(path: Path) -> None:
+    """Create or validate a regular owner-only log file without following links."""
+    try:
+        file_stat = path.lstat()
+    except FileNotFoundError:
+        file_stat = None
+    except OSError as exc:
+        raise LoggingError(f"Could not inspect log path {path}.") from exc
+
+    if file_stat is not None:
+        if stat.S_ISLNK(file_stat.st_mode):
+            raise LoggingError("Log path is a symlink.")
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise LoggingError("Log path is not a regular file.")
+
+    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
+    no_follow = getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(str(path), flags | no_follow, 0o600)
+    except OSError as exc:
+        raise LoggingError(f"Could not create or open log path {path}.") from exc
+    try:
+        opened_stat = os.fstat(fd)
+        if not stat.S_ISREG(opened_stat.st_mode):
+            raise LoggingError("Log path is not a regular file.")
+    finally:
+        os.close(fd)
+    _set_private(path, 0o600)
 
 
 def init_logging(
@@ -73,27 +123,26 @@ def init_logging(
     global _initialised
     if _initialised:
         return
-    _initialised = True
 
     root = logging.getLogger()
     path = log_path or _DEFAULT_LOG_PATH
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Tighten the log directory to owner-only *before* creating files.
-    _set_private(path.parent, 0o700)
-
-    # Create an empty file first so RotatingFileHandler can append.
-    path.touch(exist_ok=True)
-    _set_private(path, 0o600)
-
-    handler = _PrivateRotatingFileHandler(
-        path, maxBytes=1_048_576, backupCount=3, encoding="utf-8", delay=True
-    )
-    handler.setFormatter(_FORMATTER)
-    handler.setLevel(level)
-
-    root.setLevel(level)
-    root.addHandler(handler)
+    handler: _PrivateRotatingFileHandler | None = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _set_private(path.parent, 0o700)
+        _prepare_log_file(path)
+        handler = _PrivateRotatingFileHandler(
+            path, maxBytes=1_048_576, backupCount=3, encoding="utf-8", delay=True
+        )
+        handler.setFormatter(_FORMATTER)
+        handler.setLevel(level)
+        root.setLevel(level)
+        root.addHandler(handler)
+    except BaseException:
+        if handler is not None:
+            handler.close()
+        raise
+    _initialised = True
 
 
 def get_logger(name: str) -> logging.Logger:
