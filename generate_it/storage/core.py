@@ -903,7 +903,12 @@ class StorageManager:
         self._ensure_identity_schema()
         _log.info("vault v2 unlocked")
 
-    def migrate_v1_to_v2(self, master_password: str) -> None:
+    def migrate_v1_to_v2(
+        self,
+        master_password: str,
+        *,
+        new_master_password: str | None = None,
+    ) -> None:
         """Migrate an existing v1 vault to v2 format.
 
         The vault must be unlocked as v1 before calling this method.
@@ -919,8 +924,6 @@ class StorageManager:
         """
         if self._vault_version != 1:
             raise StorageError("Migration requires an unlocked v1 vault.")
-
-        _validate_master_password(master_password)
 
         # Verify the password authenticates against the existing v1 vault
         # before any migration work begins.  This prevents a caller from
@@ -954,6 +957,17 @@ class StorageManager:
                 "Password does not match existing v1 vault."
             ) from exc
 
+        target_password = new_master_password or master_password
+        try:
+            _validate_master_password(target_password)
+        except WeakMasterPasswordError as exc:
+            if new_master_password is None:
+                raise WeakMasterPasswordError(
+                    "Legacy password is authenticated but weak; provide a validated "
+                    "new master password for migration."
+                ) from exc
+            raise
+
         # 1. Create a secure backup with an unpredictable name, then atomically
         #    rename to the predictable .v1.bak path.  This avoids symlink-following
         #    attacks on the well-known backup filename.
@@ -978,7 +992,7 @@ class StorageManager:
             # 3. Generate v2 key material.
             vault_uuid = uuid.uuid4().bytes
             salt = os.urandom(_crypto_v2.SALT_LEN)
-            kek = _crypto_v2.derive_kek(master_password, salt)
+            kek = _crypto_v2.derive_kek(target_password, salt)
             dek = _crypto_v2.generate_dek()
             wrapped_dek = _crypto_v2.wrap_dek(kek, dek)
             aead_algorithm = _crypto_v2.AEAD_AES_256_GCM
