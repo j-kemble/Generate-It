@@ -448,7 +448,11 @@ class StorageManager:
 
         self._fernet = fernet
         self._vault_version = 1
-        self._ensure_identity_schema()
+        try:
+            self._ensure_identity_schema()
+        except BaseException:
+            self.close()
+            raise
         _log.info("vault unlocked")
 
     @staticmethod
@@ -900,7 +904,11 @@ class StorageManager:
         self._vault_uuid = vault_uuid
         self._aead_algorithm = aead_algorithm
         self._aad_version = aad_version
-        self._ensure_identity_schema()
+        try:
+            self._ensure_identity_schema()
+        except BaseException:
+            self.close()
+            raise
         _log.info("vault v2 unlocked")
 
     def migrate_v1_to_v2(
@@ -957,7 +965,9 @@ class StorageManager:
                 "Password does not match existing v1 vault."
             ) from exc
 
-        target_password = new_master_password or master_password
+        target_password = (
+            master_password if new_master_password is None else new_master_password
+        )
         try:
             _validate_master_password(target_password)
         except WeakMasterPasswordError as exc:
@@ -982,7 +992,14 @@ class StorageManager:
                     pass
             raise
         backup_path = self.db_path.with_suffix(self.db_path.suffix + ".v1.bak")
-        os.replace(str(backup_tmp), str(backup_path))
+        try:
+            os.replace(str(backup_tmp), str(backup_path))
+        except BaseException:
+            try:
+                backup_tmp.unlink()
+            except OSError:
+                pass
+            raise
         _log.info("v1 backup created at %s", backup_path)
 
         try:
