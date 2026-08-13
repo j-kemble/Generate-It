@@ -211,19 +211,13 @@ class StorageManager:
 
     @staticmethod
     def _ensure_private_permissions(path: Path, mode: int = 0o600) -> None:
-        """Set owner-only permissions on a file or directory.
-
-        On POSIX systems this enforces ``mode`` (default 0600 for files,
-        0700 for directories).  On non-POSIX systems this is a no-op.
-        Failures are logged but never raised — the database still works
-        even when the filesystem doesn't support POSIX permissions.
-        """
+        """Set owner-only permissions on a path or fail closed on POSIX."""
         if os.name != "posix":
             return
         try:
             os.chmod(str(path), mode)
-        except OSError:
-            _log.warning("Could not set permissions on %s", path)
+        except OSError as exc:
+            raise StorageError(f"Could not set required permissions on {path}.") from exc
 
     @staticmethod
     def _secure_temp_file(dir_path: Path, suffix: str) -> Path:
