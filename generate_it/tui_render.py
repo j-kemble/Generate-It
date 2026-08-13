@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from . import generator
-from . import tui as _tui
+from .constants import AUTO_LOCK_OPTIONS, CLIPBOARD_AUTO_CLEAR_OPTIONS
 from .tui_helpers import _estimate_entropy_bits, _sanitize_terminal_text, _strength_label
 
 if TYPE_CHECKING:
@@ -24,9 +24,16 @@ if TYPE_CHECKING:
 
 # State-label helpers that live in tui.py (kept there on purpose) â
 # re-exported here so the verbatim-moved render code keeps working.
-_selected_category_count = _tui._selected_category_count
-_clipboard_auto_clear_label = _tui._clipboard_auto_clear_label
-_auto_lock_label = _tui._auto_lock_label
+def _selected_category_count(state: AppState) -> int:
+    return sum((state.use_letters, state.use_numbers, state.use_special))
+
+
+def _clipboard_auto_clear_label(state: AppState) -> str:
+    return CLIPBOARD_AUTO_CLEAR_OPTIONS[state.clipboard_auto_clear_index][0]
+
+
+def _auto_lock_label(state: AppState) -> str:
+    return AUTO_LOCK_OPTIONS[state.auto_lock_index][0]
 
 HEADER_SMALL = ["Generate It"]
 
@@ -138,6 +145,7 @@ def _draw_hline(stdscr: curses.window, y: int, x: int, w: int, ch, attr: int = 0
     if w <= 0:
         return
     try:
+        stdscr.attrset(attr)
         stdscr.hline(y, x, ch, w)
     except curses.error:
         return
@@ -147,6 +155,7 @@ def _draw_vline(stdscr: curses.window, y: int, x: int, h: int, ch, attr: int = 0
     if h <= 0:
         return
     try:
+        stdscr.attrset(attr)
         stdscr.vline(y, x, ch, h)
     except curses.error:
         return
@@ -773,7 +782,13 @@ def _render_info_box(
     else:
         kind_attr = theme.ok
 
-    mode_str = "characters" if state.mode == "chars" else "passphrase"
+    mode_str = (
+        "characters"
+        if state.mode == "chars"
+        else "passphrase"
+        if state.mode == "words"
+        else "username"
+    )
     _addstr_safe(stdscr, row, x + 2, f"Mode: {mode_str}"[:inner_w], theme.dim)
     row += 1
 
@@ -789,7 +804,7 @@ def _render_info_box(
         row += 1
         _addstr_safe(stdscr, row, x + 2, f"Cats: {', '.join(cats) if cats else 'none'}"[:inner_w], theme.dim)
         row += 1
-    else:
+    elif state.mode == "words":
         _addstr_safe(stdscr, row, x + 2, f"Words: {state.word_count}"[:inner_w], theme.dim)
         row += 1
         _addstr_safe(stdscr, row, x + 2, f"Wordlist: {wordlist_size}"[:inner_w], theme.dim)
@@ -800,6 +815,18 @@ def _render_info_box(
         if state.add_special:
             extras.append("special")
         _addstr_safe(stdscr, row, x + 2, f"Extras: {', '.join(extras) if extras else 'none'}"[:inner_w], theme.dim)
+        row += 1
+    else:
+        _addstr_safe(stdscr, row, x + 2, f"Style: {state.username_style}"[:inner_w], theme.dim)
+        row += 1
+        if state.username_style == "random":
+            _addstr_safe(stdscr, row, x + 2, f"Length: {state.username_length}"[:inner_w], theme.dim)
+        elif state.username_style == "words":
+            _addstr_safe(stdscr, row, x + 2, f"Words: {state.username_word_count}"[:inner_w], theme.dim)
+        else:
+            _addstr_safe(stdscr, row, x + 2, "Adjective + noun"[:inner_w], theme.dim)
+        row += 1
+        _addstr_safe(stdscr, row, x + 2, f"Separator: {state.username_separator}"[:inner_w], theme.dim)
         row += 1
 
     if state.mode != "username":

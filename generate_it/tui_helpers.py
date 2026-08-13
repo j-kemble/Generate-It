@@ -161,6 +161,13 @@ def _estimate_entropy_bits(state: "AppState", wordlist_size: int) -> float:
             return 0.0
         return float(state.char_length) * math.log2(alphabet)
 
+    if state.mode == "username":
+        if state.username_style == "random":
+            return float(state.username_length) * math.log2(len(generator.USERNAME_ALPHANUMERIC))
+        if state.username_style == "words":
+            return float(state.username_word_count) * math.log2(max(2, wordlist_size))
+        return math.log2(max(2, len(generator.DEFAULT_ADJECTIVES))) + math.log2(max(2, wordlist_size))
+
     if wordlist_size <= 1:
         base = 0.0
     else:
