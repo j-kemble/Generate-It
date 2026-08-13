@@ -1069,6 +1069,8 @@ class StorageManager:
                         ),
                         v1_note,
                         aead_algorithm=aead_algorithm,
+                        max_plaintext_bytes=_crypto_v2.MAX_NOTE_BYTES,
+                        field_name="note",
                     )
 
                 write_cursor.execute(
@@ -1218,6 +1220,8 @@ class StorageManager:
                         ),
                         note,
                         aead_algorithm=self._aead_algorithm,
+                        max_plaintext_bytes=_crypto_v2.MAX_NOTE_BYTES,
+                        field_name="note",
                     )
 
                 write_cursor.execute(
@@ -1600,7 +1604,7 @@ class StorageManager:
                     "note_is_hidden": note_is_hidden,
                     "created_at": row["created_at"]
                 })
-            except (InvalidToken, InvalidTag, UnicodeDecodeError):
+            except (InvalidToken, InvalidTag, UnicodeDecodeError, ValueError):
                 results.append({
                     "id": row["id"],
                     "service": row["service"],
@@ -1743,7 +1747,7 @@ class StorageManager:
                             )
                         )
                         exported += 1
-                    except (InvalidToken, InvalidTag, UnicodeDecodeError):
+                    except (InvalidToken, InvalidTag, UnicodeDecodeError, ValueError):
                         skipped.append({
                             'service': row["service"],
                             'username': row["username"],
