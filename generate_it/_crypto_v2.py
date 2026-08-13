@@ -389,6 +389,8 @@ def encrypt_field(
     plaintext: str,
     *,
     aead_algorithm: str = AEAD_AES_256_GCM,
+    max_plaintext_bytes: int = MAX_PASSWORD_BYTES,
+    field_name: str = "password",
 ) -> bytes:
     """Encrypt *plaintext* under *dek* with AES-256-GCM (or ChaCha20-Poly1305).
 
@@ -402,9 +404,11 @@ def encrypt_field(
 
             nonce (12 bytes) || ciphertext (N bytes) || tag (16 bytes)
     """
+    plaintext_bytes = plaintext.encode()
+    if len(plaintext_bytes) > max_plaintext_bytes:
+        raise ValueError(f"{field_name} plaintext exceeds {max_plaintext_bytes} bytes")
     aead = _get_aead(dek, aead_algorithm)
     nonce = os.urandom(NONCE_LEN)
-    plaintext_bytes = plaintext.encode()
     ct = aead.encrypt(nonce, plaintext_bytes, associated_data)
     return nonce + ct
 
@@ -429,6 +433,11 @@ def decrypt_field(
         ``cryptography.exceptions.InvalidTag`` (or equivalent from
         ``cryptography``) if authentication fails.
     """
+    if not isinstance(ciphertext, bytes):
+        raise ValueError("ciphertext must be bytes")
+    minimum_length = NONCE_LEN + 16
+    if len(ciphertext) < minimum_length:
+        raise ValueError(f"ciphertext must be at least {minimum_length} bytes")
     aead = _get_aead(dek, aead_algorithm)
     nonce = ciphertext[:NONCE_LEN]
     ct = ciphertext[NONCE_LEN:]
