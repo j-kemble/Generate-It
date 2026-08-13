@@ -695,15 +695,18 @@ def _maybe_auto_clear_clipboard(state: AppState, now: float | None = None) -> bo
         return False
 
     expected = state.clipboard_clear_expected
-    state.clipboard_clear_due_at = None
-    state.clipboard_clear_expected = None
 
     try:
         current_clip = pyperclip.paste()
-        if expected is None or current_clip == expected:
-            pyperclip.copy("")
+        if expected is None or current_clip != expected:
+            state.clipboard_clear_due_at = None
+            state.clipboard_clear_expected = None
+            return True
+        pyperclip.copy("")
     except PyperclipException:
         return False
+    state.clipboard_clear_due_at = None
+    state.clipboard_clear_expected = None
     return True
 
 def _revoke_clipboard(state: AppState) -> None:
@@ -713,18 +716,23 @@ def _revoke_clipboard(state: AppState) -> None:
     we do NOT clear it — we respect newer clipboard content.
     """
     expected = state.clipboard_clear_expected
-    state.clipboard_clear_due_at = None
-    state.clipboard_clear_expected = None
 
     if expected is None:
+        state.clipboard_clear_due_at = None
+        state.clipboard_clear_expected = None
         return
 
     try:
         current_clip = pyperclip.paste()
-        if current_clip == expected:
-            pyperclip.copy("")
+        if current_clip != expected:
+            state.clipboard_clear_due_at = None
+            state.clipboard_clear_expected = None
+            return
+        pyperclip.copy("")
+        state.clipboard_clear_due_at = None
+        state.clipboard_clear_expected = None
     except PyperclipException:
-        pass
+        return
 
 
 def _lock_vault(state: AppState) -> None:
@@ -1018,15 +1026,7 @@ def _run_details_modal(
                 # Wrap note to fit
                 import textwrap
                 wrapped_note = textwrap.wrap(display_note, width=box_w-14)
-                max_rows = max(0, box_h - row - 6)
-                visible_note = wrapped_note[:max_rows]
-                if len(visible_note) < len(wrapped_note):
-                    marker = " [truncated]"
-                    if visible_note:
-                        visible_note[-1] = visible_note[-1][: max(0, box_w - 14 - len(marker))] + marker
-                    else:
-                        visible_note = [marker]
-                for line in visible_note:
+                for line in wrapped_note:
                     win.addstr(row, 2, R._sanitize_terminal_text(line[:box_w-14]), val_attr)
                     row += 1
 
@@ -1084,9 +1084,7 @@ def _run_details_modal(
                         feedback_until = time.monotonic() + 0.5
                         state.message = msg
                 except (StorageError, PyperclipException):
-                    feedback_text = "    CLIPBOARD COPY FAILED    "
-                    feedback_attr = theme.warn
-                    feedback_until = time.monotonic() + 1.5
+                    pass
 
             elif key in (ord('u'), ord('U')):
                 try:
@@ -1096,9 +1094,7 @@ def _run_details_modal(
                     feedback_until = time.monotonic() + 0.5
                     state.message = msg
                 except (StorageError, PyperclipException):
-                    feedback_text = "    CLIPBOARD COPY FAILED    "
-                    feedback_attr = theme.warn
-                    feedback_until = time.monotonic() + 1.5
+                    pass
 
             elif key in (ord('n'), ord('N')):
                 if note_text:
@@ -1109,9 +1105,7 @@ def _run_details_modal(
                         feedback_until = time.monotonic() + 0.5
                         state.message = msg
                     except (StorageError, PyperclipException):
-                        feedback_text = "    CLIPBOARD COPY FAILED    "
-                        feedback_attr = theme.warn
-                        feedback_until = time.monotonic() + 1.5
+                        pass
                 else:
                     feedback_text = "       NO NOTE TO COPY!      "
                     feedback_attr = theme.warn
@@ -1541,21 +1535,8 @@ def run() -> int:
                 if pwd is None: # Cancelled
                     return 0
                 
-                setattr(state, tui_security._UNLOCK_RETRY_FLAG, False)
-                setattr(state, tui_security._UNLOCK_CANCELLED_FLAG, False)
-                try:
-                    unlocked = tui_security._try_unlock_vault(stdscr, theme, state, pwd)
-                finally:
-                    retry = getattr(state, tui_security._UNLOCK_RETRY_FLAG, False)
-                    cancelled = getattr(state, tui_security._UNLOCK_CANCELLED_FLAG, False)
-                    delattr(state, tui_security._UNLOCK_RETRY_FLAG)
-                    delattr(state, tui_security._UNLOCK_CANCELLED_FLAG)
-                if unlocked:
+                if tui_security._try_unlock_vault(stdscr, theme, state, pwd):
                     break
-                if cancelled:
-                    return 0
-                if retry:
-                    continue
 
         # Load initial credentials
         if state.vault_unlocked and state.storage:

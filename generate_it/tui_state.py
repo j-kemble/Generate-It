@@ -55,5 +55,6 @@ class AppState:
     revealed_secret: dict | None = None
     revealed_secret_id: int | None = None
 
+    # Failed unlock tracking is process-local and does not survive restart.
     failed_unlock_attempts: int = 0
-    lockout_until: float | None = None
+    last_failed_unlock_at: float | None = None

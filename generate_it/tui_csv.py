@@ -144,6 +144,7 @@ def import_vault_csv(
 
     if not csv_path.exists():
         tui_modal._run_modal(stdscr, theme, "ERROR", f"File not found: {csv_path}")
+        state.message = "Import failed. File not found."
         return (0, 0, [])
 
     try:
