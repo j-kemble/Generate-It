@@ -44,6 +44,11 @@ def _remove_zero_width(value: str) -> str:
     )
 
 
+def _remove_identity_format_chars(value: str) -> str:
+    """Remove Unicode format characters from stored identity keys."""
+    return "".join(char for char in value if unicodedata.category(char) != "Cf")
+
+
 def canonical_identity(value: str) -> str:
     """Frozen canonical identity (crypto-bound for AAD v3).
 
@@ -54,7 +59,8 @@ def canonical_identity(value: str) -> str:
 
     The result may be empty.
     """
-    return unicodedata.normalize("NFC", value).strip().casefold()
+    normalized = unicodedata.normalize("NFC", value).strip().casefold()
+    return _remove_identity_format_chars(normalized)
 
 
 def canonical_identity_stripped(value: str) -> str:
