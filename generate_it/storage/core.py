@@ -330,6 +330,81 @@ class StorageManager:
         except (TypeError, ValueError):
             raise StorageError(f"Config key '{key}' has malformed value: {raw!r}")
 
+    def get_failed_unlock_state(self) -> Tuple[int, Optional[float]]:
+        """Return persisted (failed_attempts, last_failed_at_epoch) state.
+
+        Returns ``(0, None)`` when no failures have been recorded.  Raises
+        ``StorageError`` when a persisted value is malformed so a corrupt
+        counter cannot silently disable throttling.
+        """
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT key, value FROM config WHERE key IN "
+            "('lockout:failed_attempts', 'lockout:last_failed_at')"
+        )
+        values = {row["key"]: row["value"] for row in cursor.fetchall()}
+
+        def _read_text(key: str) -> Optional[str]:
+            raw = values.get(key)
+            if raw is None:
+                return None
+            if isinstance(raw, bytes):
+                try:
+                    return raw.decode("utf-8")
+                except UnicodeDecodeError:
+                    raise StorageError(f"Config key '{key}' is malformed")
+            return str(raw)
+
+        attempts_raw = _read_text("lockout:failed_attempts")
+        if attempts_raw is None:
+            return (0, None)
+        try:
+            attempts = int(attempts_raw)
+        except ValueError:
+            raise StorageError(
+                f"Config key 'lockout:failed_attempts' has malformed value: {attempts_raw!r}"
+            )
+        last_failed_at: Optional[float] = None
+        last_raw = _read_text("lockout:last_failed_at")
+        if last_raw is not None:
+            try:
+                last_failed_at = float(last_raw)
+            except ValueError:
+                raise StorageError(
+                    f"Config key 'lockout:last_failed_at' has malformed value: {last_raw!r}"
+                )
+        return (attempts, last_failed_at)
+
+    def record_failed_unlock(self, attempts: int, last_failed_at: float) -> None:
+        """Persist the failed-unlock counter and wall-clock timestamp.
+
+        Stored in the config table so throttling survives application
+        restarts.  The timestamp is epoch-based (not monotonic) so the
+        remaining delay is meaningful across processes.
+        """
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT OR REPLACE INTO config (key, value) VALUES ('lockout:failed_attempts', ?)",
+            (str(attempts).encode("utf-8"),),
+        )
+        cursor.execute(
+            "INSERT OR REPLACE INTO config (key, value) VALUES ('lockout:last_failed_at', ?)",
+            (repr(last_failed_at).encode("utf-8"),),
+        )
+        conn.commit()
+
+    def clear_failed_unlock_state(self) -> None:
+        """Remove the persisted failed-unlock state after a successful unlock."""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            "DELETE FROM config WHERE key IN "
+            "('lockout:failed_attempts', 'lockout:last_failed_at')"
+        )
+        conn.commit()
+
     def _derive_key(self, password: str, salt: bytes, iterations: Optional[int] = None) -> bytes:
         """Derives a url-safe base64-encoded key from the password and salt."""
         iters = iterations if iterations is not None else _DEFAULT_PBKDF2_ITERATIONS

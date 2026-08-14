@@ -55,6 +55,7 @@ class AppState:
     revealed_secret: dict | None = None
     revealed_secret_id: int | None = None
 
-    # Failed unlock tracking is process-local and does not survive restart.
+    # Failed-unlock tracking is mirrored to the vault config table so
+    # throttling survives application restarts.
     failed_unlock_attempts: int = 0
     last_failed_unlock_at: float | None = None

@@ -22,6 +22,15 @@ _AAD_MIGRATION_MESSAGE = (
 _UNLOCK_RETRY_FLAG = "_tui_security_unlock_retry"
 
 
+def _now() -> float:
+    """Wall-clock epoch time used for lockout bookkeeping.
+
+    Epoch (not monotonic) so persisted lockout timestamps remain meaningful
+    across application restarts.
+    """
+    return time.time()
+
+
 def _storage_available(state: AppState) -> bool:
     return state.storage is not None
 
@@ -139,6 +148,7 @@ def _try_unlock_vault(
         state.message = "Vault unavailable."
         return False
 
+    _load_lockout_state(state)
     delay = _get_lockout_delay(state)
     if delay > 0:
         _show_lockout_message(stdscr, theme, delay)
@@ -155,6 +165,7 @@ def _try_unlock_vault(
         state.vault_unlocked = True
         state.failed_unlock_attempts = 0
         state.last_failed_unlock_at = None
+        storage.clear_failed_unlock_state()
         tui._record_user_activity(state)
         state.message = "Vault unlocked."
         return True
@@ -218,9 +229,39 @@ def _prompt_unlock_vault(
         return False
 
 
+def _load_lockout_state(state: AppState) -> None:
+    """Restore persisted failed-unlock state so throttling survives restart.
+
+    Merges the vault's persisted counter/timestamp into ``state`` when they
+    are higher/more recent than the in-memory values.  No-op when no vault
+    exists (first-run setup) or the storage layer is unavailable.
+    """
+    storage = state.storage
+    if storage is None:
+        return
+    try:
+        if not storage.vault_exists():
+            return
+        persisted_attempts, persisted_at = storage.get_failed_unlock_state()
+    except StorageError:
+        # Corrupt persisted lockout state must not silently disable
+        # throttling; leave in-memory values intact and let unlock fail
+        # loudly on the next attempt.
+        return
+    if persisted_attempts > state.failed_unlock_attempts:
+        state.failed_unlock_attempts = persisted_attempts
+    if persisted_at is not None and (
+        state.last_failed_unlock_at is None or persisted_at > state.last_failed_unlock_at
+    ):
+        state.last_failed_unlock_at = persisted_at
+
+
 def _record_unlock_failure(state: AppState) -> None:
     state.failed_unlock_attempts += 1
-    state.last_failed_unlock_at = time.monotonic()
+    state.last_failed_unlock_at = _now()
+    storage = state.storage
+    if storage is not None:
+        storage.record_failed_unlock(state.failed_unlock_attempts, state.last_failed_unlock_at)
 
 
 def _get_lockout_delay_after_failure(attempts: int) -> int:
@@ -236,7 +277,7 @@ def _get_lockout_delay(state: AppState, now: float | None = None) -> float:
     delay = _get_lockout_delay_after_failure(state.failed_unlock_attempts)
     if delay == 0:
         return 0.0
-    current = time.monotonic() if now is None else now
+    current = _now() if now is None else now
     return max(0.0, delay - (current - state.last_failed_unlock_at))
 
 

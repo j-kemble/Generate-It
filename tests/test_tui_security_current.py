@@ -24,6 +24,8 @@ def test_post_auth_initialization_failure_rolls_back_unlock_state(monkeypatch) -
     storage = MagicMock()
     storage.unlock_vault.return_value = None
     storage.list_credential_metadata.side_effect = StorageError("metadata failed")
+    storage.vault_exists.return_value = True
+    storage.get_failed_unlock_state.return_value = (0, None)
     state = _state(storage)
     monkeypatch.setattr(tui_security.tui_modal, "_run_modal", lambda *args, **kwargs: None)
 
