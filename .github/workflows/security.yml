@@ -95,11 +95,14 @@ jobs:
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
         with:
+          fetch-depth: 0
           persist-credentials: false
       - name: Check for trailing whitespace violations
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             git diff --check "${{ github.event.pull_request.base.sha }}...${{ github.sha }}"
+          elif [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+            git diff --check "$(git hash-object -t tree /dev/null)..${{ github.sha }}"
           else
             git diff --check "${{ github.event.before }}...${{ github.sha }}"
           fi
@@ -172,7 +175,8 @@ jobs:
           python -m venv /tmp/generate-it-wheel-smoke
           /tmp/generate-it-wheel-smoke/bin/python -m pip install --require-hashes -r constraints/ci.txt
           /tmp/generate-it-wheel-smoke/bin/python -m pip install --no-deps dist/*.whl
-          /tmp/generate-it-wheel-smoke/bin/python -c "import generate_it.storage, generate_it.tui"
+          cd /tmp
+          /tmp/generate-it-wheel-smoke/bin/python -c "import generate_it, generate_it.storage, generate_it.tui, generate_it.__main__; from importlib.resources import files; path = str(files('generate_it').joinpath('wordlist.txt')); assert 'site-packages' in generate_it.__file__; assert path.endswith('wordlist.txt'); print(generate_it.__file__)"
       - name: Upload build artifacts
         uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882  # v4.4.3
         with:
