@@ -170,6 +170,7 @@ jobs:
       - name: Smoke-test built wheel
         run: |
           python -m venv /tmp/generate-it-wheel-smoke
+          /tmp/generate-it-wheel-smoke/bin/python -m pip install --require-hashes -r constraints/ci.txt
           /tmp/generate-it-wheel-smoke/bin/python -m pip install --no-deps dist/*.whl
           /tmp/generate-it-wheel-smoke/bin/python -c "import generate_it.storage, generate_it.tui"
       - name: Upload build artifacts

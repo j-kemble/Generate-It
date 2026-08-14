@@ -13,4 +13,5 @@ def test_security_workflow_checks_changed_commit_range() -> None:
 def test_security_workflow_smoke_tests_built_wheel_imports() -> None:
     content = (REPO_ROOT / ".github" / "workflows" / "security.yml").read_text()
     assert "Smoke-test built wheel" in content
+    assert "pip install --require-hashes -r constraints/ci.txt" in content
     assert "import generate_it.storage, generate_it.tui" in content
