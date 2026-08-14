@@ -97,7 +97,12 @@ jobs:
         with:
           persist-credentials: false
       - name: Check for trailing whitespace violations
-        run: git diff --check
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git diff --check "${{ github.event.pull_request.base.sha }}...${{ github.sha }}"
+          else
+            git diff --check "${{ github.event.before }}...${{ github.sha }}"
+          fi
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
         with:
           python-version: "3.12"
@@ -162,6 +167,11 @@ jobs:
       - name: Validate package
         run: |
           python -m twine check dist/*
+      - name: Smoke-test built wheel
+        run: |
+          python -m venv /tmp/generate-it-wheel-smoke
+          /tmp/generate-it-wheel-smoke/bin/python -m pip install --no-deps dist/*.whl
+          /tmp/generate-it-wheel-smoke/bin/python -c "import generate_it.storage, generate_it.tui"
       - name: Upload build artifacts
         uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882  # v4.4.3
         with:
