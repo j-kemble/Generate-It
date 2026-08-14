@@ -191,6 +191,8 @@ class StorageManager:
         if db_path:
             self.db_path = db_path
             self.data_dir = db_path.parent
+            if db_path.is_symlink() or self._has_symlink_component(db_path.parent):
+                raise StorageError("Vault path must not contain symlinks.")
             self.data_dir.mkdir(parents=True, exist_ok=True)
             self._ensure_private_permissions(self.data_dir, 0o700)
         else:
@@ -216,11 +218,25 @@ class StorageManager:
         self.identity_conflict: Optional[CredentialIdentityConflictError] = None
 
     @staticmethod
+    def _has_symlink_component(path: Path) -> bool:
+        """Return whether an existing path component is a symbolic link."""
+        current = path
+        while not current.exists() and current != current.parent:
+            current = current.parent
+        while current != current.parent:
+            if current.is_symlink():
+                return True
+            current = current.parent
+        return False
+
+    @staticmethod
     def _ensure_private_permissions(path: Path, mode: int = 0o600) -> None:
         """Set owner-only permissions on a path or fail closed on POSIX."""
         if os.name != "posix":
             return
         try:
+            if path.is_symlink() or StorageManager._has_symlink_component(path.parent):
+                raise StorageError(f"Refusing symlinked path: {path}.")
             os.chmod(str(path), mode)
         except OSError as exc:
             raise StorageError(f"Could not set required permissions on {path}.") from exc
@@ -235,10 +251,12 @@ class StorageManager:
         an open file descriptor has been closed — callers are responsible
         for opening and writing to it.
         """
+        if StorageManager._has_symlink_component(dir_path):
+            raise StorageError("Temporary-file directory must not contain symlinks.")
         fd, tmp_path = tempfile.mkstemp(suffix=suffix, dir=str(dir_path))
-        os.close(fd)
         if os.name == "posix":
-            os.chmod(tmp_path, 0o600)
+            os.fchmod(fd, 0o600)
+        os.close(fd)
         return Path(tmp_path)
 
     def _get_conn(self) -> sqlite3.Connection:
@@ -603,12 +621,24 @@ class StorageManager:
         """Create the deferred unique identity index once conflicts are gone."""
         conn = self._get_conn()
         cursor = conn.cursor()
-        conflicts = self._detect_identity_conflicts(cursor)
-        if conflicts:
-            self._set_identity_conflict(conflicts)
-            return
         try:
             conn.execute("BEGIN EXCLUSIVE")
+            read_cursor = conn.cursor()
+            write_cursor = conn.cursor()
+            read_cursor.execute("SELECT id, service, username FROM credentials ORDER BY id")
+            for row in read_cursor:
+                service_key, username_key = canonical_service_username(
+                    row["service"], row["username"]
+                )
+                write_cursor.execute(
+                    "UPDATE credentials SET service_key = ?, username_key = ? WHERE id = ?",
+                    (service_key, username_key, row["id"]),
+                )
+            conflicts = self._detect_identity_conflicts(cursor)
+            if conflicts:
+                conn.rollback()
+                self._set_identity_conflict(conflicts)
+                return
             self._create_identity_indexes(cursor)
             cursor.execute(
                 "INSERT OR REPLACE INTO config (key, value) VALUES ('identity_schema_version', ?)",
@@ -662,7 +692,14 @@ class StorageManager:
                     pass
             raise
         backup_path = self.db_path.with_suffix(self.db_path.suffix + ".identity.bak")
-        os.replace(str(backup_tmp), str(backup_path))
+        try:
+            os.replace(str(backup_tmp), str(backup_path))
+        except BaseException:
+            try:
+                backup_tmp.unlink()
+            except OSError:
+                pass
+            raise
         _log.info("identity migration backup created at %s", backup_path)
 
         conn = self._get_conn()
@@ -869,7 +906,7 @@ class StorageManager:
             _crypto_v2._validate_kdf_config(
                 kdf_algorithm, memory, time, parallelism, kdf_salt,
             )
-        except ValueError as exc:
+        except (TypeError, ValueError) as exc:
             raise StorageError(f"Invalid KDF configuration: {exc}") from exc
 
         # Validate vault metadata before crypto operations.
@@ -1197,7 +1234,14 @@ class StorageManager:
                     pass
             raise
         backup_path = self.db_path.with_suffix(self.db_path.suffix + backup_suffix)
-        os.replace(str(backup_tmp), str(backup_path))
+        try:
+            os.replace(str(backup_tmp), str(backup_path))
+        except BaseException:
+            try:
+                backup_tmp.unlink()
+            except OSError:
+                pass
+            raise
         _log.info("AAD backup created at %s", backup_path)
 
         conn = self._get_conn()
