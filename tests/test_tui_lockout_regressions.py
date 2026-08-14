@@ -15,6 +15,8 @@ def test_failed_unlock_records_attempt_and_success_resets(monkeypatch) -> None:
     storage = MagicMock()
     storage.unlock_vault.side_effect = [InvalidPasswordError(), None]
     storage.list_credential_metadata.return_value = []
+    storage.vault_exists.return_value = True
+    storage.get_failed_unlock_state.return_value = (0, None)
     state = SimpleNamespace(
         storage=storage,
         vault_unlocked=False,
