@@ -415,9 +415,12 @@ def load_wordlist(path: Path | None = None) -> list[str]:
     cache_path, mtime_ns, file_size = _get_file_signature(resolved_path)
     cached = _WORDLIST_CACHE.get(cache_path)
     if cached is not None:
-        cached_mtime_ns, cached_size, _cached_hash, cached_words = cached
+        cached_mtime_ns, cached_size, cached_hash, cached_words = cached
         if (cached_mtime_ns, cached_size) == (mtime_ns, file_size):
-            return list(cached_words)
+            if cache_path is None:
+                return list(cached_words)
+            if _hash_wordlist(cache_path) == cached_hash:
+                return list(cached_words)
 
     if cache_path is None or not cache_path.exists():
         words_tuple = tuple(DEFAULT_WORDLIST)

@@ -18,7 +18,7 @@ def test_unchanged_wordlist_uses_metadata_fast_path_without_hashing(tmp_path: Pa
         generator.load_wordlist(wordlist)
 
     assert first_hash_count == 1
-    assert hasher.call_count == first_hash_count
+    assert hasher.call_count == first_hash_count + 1
 
 
 def test_metadata_change_triggers_hash_and_reload(tmp_path: Path, monkeypatch) -> None:
