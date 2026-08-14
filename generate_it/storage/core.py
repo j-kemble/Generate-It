@@ -114,10 +114,16 @@ def _is_predictable_password_pattern(password: str) -> bool:
     """Return whether a password is dominated by a short repeated pattern."""
     if len(password) < 8:
         return False
-    for pattern_length in range(1, len(password) // 2 + 1):
-        if len(password) % pattern_length == 0:
-            pattern = password[:pattern_length]
-            if pattern * (len(password) // pattern_length) == password:
+    max_pattern_length = min(32, len(password) // 2)
+    for pattern_length in range(1, max_pattern_length + 1):
+        repetitions = len(password) // pattern_length
+        if repetitions < 3:
+            continue
+        pattern = password[:pattern_length]
+        repeated_prefix_length = pattern_length * repetitions
+        if password[:repeated_prefix_length] == pattern * repetitions:
+            suffix = password[repeated_prefix_length:]
+            if len(suffix) <= max(1, pattern_length // 2):
                 return True
     return len(set(password)) == 1
 

@@ -7,17 +7,14 @@ from generate_it.storage import StorageManager, WeakMasterPasswordError
 from generate_it.storage.core import _estimate_password_entropy, _validate_master_password
 
 
-def test_canonical_identity_removes_embedded_zero_width_format_characters() -> None:
-    assert identity.canonical_identity("al\u200bpha") == "alpha"
-    assert identity.canonical_identity("us\u200d\u2060er") == "user"
-    assert identity.canonical_service_username(" Git\u200bHub ", "De\u200bv") == (
-        "github",
-        "dev",
-    )
+def test_identity_canonicalization_preserves_legacy_format_character_keys() -> None:
+    assert identity.canonical_identity("al\u200bpha") == "al\u200bpha"
+    assert identity.canonical_identity("us\u200d\u2060er") == "us\u200d\u2060er"
 
 
-def test_validate_identity_returns_cleaned_keys() -> None:
-    assert identity.validate_identity("Git\u200bHub", "De\u200bv") == ("github", "dev")
+def test_validate_identity_rejects_prohibited_invisible_characters() -> None:
+    with pytest.raises(ValueError, match="prohibited invisible"):
+        identity.validate_identity("Git\u200bHub", "De\u200bv")
 
 
 def test_predictable_repeated_password_does_not_gain_entropy_from_length() -> None:

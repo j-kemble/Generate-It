@@ -14,7 +14,10 @@ exactly one normalization rule, implemented here:
 3. ``casefold()`` — aggressive Unicode case folding (stronger than
    ``lower()``; e.g. German "ß" folds to "ss").
 
-The order is fixed: normalize, strip, then casefold.
+The order is fixed: normalize, strip, then casefold.  Dangerous invisible
+format characters are rejected at write validation boundaries rather than
+silently removed; this preserves the canonical bytes used by existing AAD v3
+records while preventing new deceptive identities.
 
 AAD v2 (legacy) uses a different, frozen normalization
 (``strip().lower()``) and MUST NOT switch to this helper — existing AAD v2
@@ -27,9 +30,15 @@ from __future__ import annotations
 import unicodedata
 
 
-def _remove_identity_format_chars(value: str) -> str:
-    """Remove Unicode format characters from stored identity keys."""
-    return "".join(char for char in value if unicodedata.category(char) != "Cf")
+_REJECTED_FORMAT_CHARS = frozenset(
+    "\u061c\u180e\u200b\u200e\u200f\u202a\u202b\u202c\u202d\u202e"
+    "\u2060\u2061\u2062\u2063\u2064\u2065\u2066\u2067\u2068\u2069\ufeff"
+)
+
+
+def _has_rejected_format_characters(value: str) -> bool:
+    """Return whether *value* contains an invisible security-sensitive marker."""
+    return any(char in _REJECTED_FORMAT_CHARS for char in value)
 
 
 def canonical_identity(value: str) -> str:
@@ -38,8 +47,7 @@ def canonical_identity(value: str) -> str:
     ``unicodedata.normalize("NFC", value).strip().casefold()`` — see the
     module docstring for the rationale.  The result may be empty.
     """
-    normalized = unicodedata.normalize("NFC", value).strip().casefold()
-    return _remove_identity_format_chars(normalized)
+    return unicodedata.normalize("NFC", value).strip().casefold()
 
 
 def canonical_service_username(service: str, username: str) -> tuple[str, str]:
@@ -58,6 +66,13 @@ def validate_identity(service: str, username: str) -> tuple[str, str]:
     Raises:
         ValueError: if the canonical service or username is empty.
     """
+    normalized_service = unicodedata.normalize("NFC", service)
+    normalized_username = unicodedata.normalize("NFC", username)
+    if _has_rejected_format_characters(normalized_service):
+        raise ValueError("Service contains a prohibited invisible format character.")
+    if _has_rejected_format_characters(normalized_username):
+        raise ValueError("Username contains a prohibited invisible format character.")
+
     service_key, username_key = canonical_service_username(service, username)
     if not service_key:
         raise ValueError("Service must not be empty.")
