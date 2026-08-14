@@ -38,5 +38,9 @@ def test_backup_replace_failure_removes_temporary_backup(tmp_path, monkeypatch) 
     with pytest.raises(IsADirectoryError):
         storage.migrate_v1_to_v2("A-Strong-Passw0rd!")
 
-    assert list(tmp_path.glob(".*.v1.bak")) == []
+    orphaned_temps = [
+        path for path in tmp_path.iterdir()
+        if path.name.endswith(".v1.bak") and path != backup_path
+    ]
+    assert orphaned_temps == []
     storage.close()
