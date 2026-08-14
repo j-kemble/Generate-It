@@ -1064,10 +1064,10 @@ class StorageManager:
 
                 v1_note_bytes = row["encrypted_note"]
                 v1_note = ""
-                if v1_note_bytes:
+                if v1_note_bytes is not None:
                     try:
                         v1_note = fernet.decrypt(v1_note_bytes).decode()
-                    except Exception:
+                    except (InvalidToken, UnicodeDecodeError, TypeError, ValueError):
                         raise StorageError(
                             f"Failed to decrypt v1 note for credential id={row['id']}"
                         )
@@ -1084,17 +1084,22 @@ class StorageManager:
                     aead_algorithm=aead_algorithm,
                 )
                 new_note_ct: Optional[bytes] = None
-                if v1_note:
-                    new_note_ct = _crypto_v2.encrypt_field(
-                        dek,
-                        _crypto_v2.make_associated_data_v3(
-                            vault_uuid, cred_uuid, "note", svc, usr,
-                        ),
-                        v1_note,
-                        aead_algorithm=aead_algorithm,
-                        max_plaintext_bytes=_crypto_v2.MAX_NOTE_BYTES,
-                        field_name="note",
-                    )
+                if v1_note_bytes is not None:
+                    try:
+                        new_note_ct = _crypto_v2.encrypt_field(
+                            dek,
+                            _crypto_v2.make_associated_data_v3(
+                                vault_uuid, cred_uuid, "note", svc, usr,
+                            ),
+                            v1_note,
+                            aead_algorithm=aead_algorithm,
+                            max_plaintext_bytes=_crypto_v2.MAX_NOTE_BYTES,
+                            field_name="note",
+                        )
+                    except ValueError as exc:
+                        raise StorageError(
+                            f"Failed to re-encrypt v1 note for credential id={row['id']}: {exc}"
+                        ) from exc
 
                 write_cursor.execute(
                     "UPDATE credentials SET encrypted_password = ?, encrypted_note = ? WHERE id = ?",
@@ -1235,17 +1240,22 @@ class StorageManager:
                     aead_algorithm=self._aead_algorithm,
                 )
                 new_note_ct: Optional[bytes] = None
-                if note:
-                    new_note_ct = _crypto_v2.encrypt_field(
-                        self._dek,
-                        _crypto_v2.make_associated_data_v3(
-                            self._vault_uuid, cred_uuid, "note", svc, usr,
-                        ),
-                        note,
-                        aead_algorithm=self._aead_algorithm,
-                        max_plaintext_bytes=_crypto_v2.MAX_NOTE_BYTES,
-                        field_name="note",
-                    )
+                if row["encrypted_note"] is not None:
+                    try:
+                        new_note_ct = _crypto_v2.encrypt_field(
+                            self._dek,
+                            _crypto_v2.make_associated_data_v3(
+                                self._vault_uuid, cred_uuid, "note", svc, usr,
+                            ),
+                            note,
+                            aead_algorithm=self._aead_algorithm,
+                            max_plaintext_bytes=_crypto_v2.MAX_NOTE_BYTES,
+                            field_name="note",
+                        )
+                    except ValueError as exc:
+                        raise StorageError(
+                            f"Failed to re-encrypt note for credential id={row['id']}: {exc}"
+                        ) from exc
 
                 write_cursor.execute(
                     "UPDATE credentials SET encrypted_password = ?, encrypted_note = ? WHERE id = ?",
@@ -1325,11 +1335,8 @@ class StorageManager:
     ) -> tuple[str, str]:
         """Decrypt using v1 Fernet."""
         password = fernet.decrypt(row["encrypted_password"]).decode()
-        note = (
-            fernet.decrypt(row["encrypted_note"]).decode()
-            if row["encrypted_note"]
-            else ""
-        )
+        encrypted_note = row["encrypted_note"]
+        note = fernet.decrypt(encrypted_note).decode() if encrypted_note is not None else ""
         return password, note
 
     def _decrypt_fields_v2(self, row: sqlite3.Row) -> tuple[str, str]:
@@ -1350,7 +1357,7 @@ class StorageManager:
         )
 
         note = ""
-        if row["encrypted_note"]:
+        if row["encrypted_note"] is not None:
             note_ad = self._make_credential_aad(credential_uuid, "note", service, username)
             note = _crypto_v2.decrypt_field(
                 self._dek, note_ad, row["encrypted_note"],
@@ -1596,7 +1603,12 @@ class StorageManager:
         row = cursor.fetchone()
         if row is None:
             raise StorageError(f"Credential {credential_id} not found.")
-        password, note = self._decrypt_credential_fields(row, fernet)
+        try:
+            password, note = self._decrypt_credential_fields(row, fernet)
+        except (InvalidToken, InvalidTag, UnicodeDecodeError, TypeError, ValueError) as exc:
+            raise StorageError(
+                f"Unable to decrypt credential {credential_id}."
+            ) from exc
         note_is_hidden = bool(row["note_is_hidden"]) if row["note_is_hidden"] is not None else False
         return {"password": password, "note": note, "note_is_hidden": note_is_hidden}
 
@@ -1627,7 +1639,7 @@ class StorageManager:
                     "note_is_hidden": note_is_hidden,
                     "created_at": row["created_at"]
                 })
-            except (InvalidToken, InvalidTag, UnicodeDecodeError, ValueError):
+            except (InvalidToken, InvalidTag, UnicodeDecodeError, TypeError, ValueError):
                 results.append({
                     "id": row["id"],
                     "service": row["service"],
@@ -1770,7 +1782,7 @@ class StorageManager:
                             )
                         )
                         exported += 1
-                    except (InvalidToken, InvalidTag, UnicodeDecodeError, ValueError):
+                    except (InvalidToken, InvalidTag, UnicodeDecodeError, TypeError, ValueError):
                         skipped.append({
                             'service': row["service"],
                             'username': row["username"],
