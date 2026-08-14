@@ -115,7 +115,13 @@ def ensure_identity_schema(storage) -> None:
 
 
 def retry_identity_unique_index(storage) -> None:
-    """Create the deferred unique identity index once conflicts are gone."""
+    """Create the deferred unique identity index once conflicts are gone.
+
+    Recomputes the canonical keys for every row before checking for
+    conflicts, so stale keys left by an interrupted earlier migration are
+    repaired rather than indexed.  The index is created only when no
+    canonical conflicts remain.
+    """
     conn = storage._get_conn()
     cursor = conn.cursor()
     conflicts = detect_identity_conflicts(cursor)
@@ -124,6 +130,17 @@ def retry_identity_unique_index(storage) -> None:
         return
     try:
         conn.execute("BEGIN EXCLUSIVE")
+        read_cursor = conn.cursor()
+        write_cursor = conn.cursor()
+        read_cursor.execute("SELECT id, service, username FROM credentials ORDER BY id")
+        for row in read_cursor:
+            service_key, username_key = canonical_service_username(
+                row["service"], row["username"]
+            )
+            write_cursor.execute(
+                "UPDATE credentials SET service_key = ?, username_key = ? WHERE id = ?",
+                (service_key, username_key, row["id"]),
+            )
         create_identity_indexes(cursor)
         cursor.execute(
             "INSERT OR REPLACE INTO config (key, value) VALUES ('identity_schema_version', ?)",
@@ -180,7 +197,14 @@ def run_identity_migration(storage) -> None:
                 pass
         raise
     backup_path = storage.db_path.with_suffix(storage.db_path.suffix + ".identity.bak")
-    os.replace(str(backup_tmp), str(backup_path))
+    try:
+        os.replace(str(backup_tmp), str(backup_path))
+    except BaseException:
+        try:
+            backup_tmp.unlink()
+        except OSError:
+            pass
+        raise
     _log.info("identity migration backup created at %s", backup_path)
 
     conn = storage._get_conn()
