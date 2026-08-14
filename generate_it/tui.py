@@ -520,7 +520,7 @@ def _run_security_settings_modal(
     window_cache = tui_modal._WindowCache()
 
     while True:
-        if _maybe_auto_clear_clipboard(state):
+        if _maybe_auto_clear_clipboard(state) and state.message != "Clipboard changed; auto-clear skipped.":
             state.message = "Clipboard auto-cleared."
         if _should_auto_lock_now(state):
             reason = _auto_lock_reason_text(state)
@@ -701,7 +701,8 @@ def _maybe_auto_clear_clipboard(state: AppState, now: float | None = None) -> bo
         if expected is None or current_clip != expected:
             state.clipboard_clear_due_at = None
             state.clipboard_clear_expected = None
-            return True
+            state.message = "Clipboard changed; auto-clear skipped."
+            return False
         pyperclip.copy("")
     except PyperclipException:
         return False
@@ -1171,7 +1172,7 @@ def _run_vault_modal(
     filtered_credentials: list[dict] = []
     
     while True:
-        if _maybe_auto_clear_clipboard(state):
+        if _maybe_auto_clear_clipboard(state) and state.message != "Clipboard changed; auto-clear skipped.":
             state.message = "Clipboard auto-cleared."
         if _should_auto_lock_now(state):
             reason = _auto_lock_reason_text(state)
@@ -1301,9 +1302,6 @@ def _run_vault_modal(
                 continue
             return
         
-        if key in (ord('v'), ord('V'), ord('q'), ord('Q')): # v/q
-            return
-            
         if key == ord('/'):
             search_mode = True
             continue
@@ -1325,6 +1323,8 @@ def _run_vault_modal(
                 state.vault_selected_idx = 0
                 state.vault_scroll_y = 0
                 continue
+        if key in (ord('v'), ord('V'), ord('q'), ord('Q')): # v/q
+            return
         if key in (curses.KEY_UP, ord('k')):
             if filtered_credentials:
                 state.vault_selected_idx = max(0, state.vault_selected_idx - 1)

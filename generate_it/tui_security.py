@@ -144,22 +144,32 @@ def _try_unlock_vault(
         _show_lockout_message(stdscr, theme, delay)
         return False
 
+    authenticated = False
     try:
         storage.unlock_vault(pwd)
+        authenticated = True
+        credentials = storage.list_credential_metadata()
+        state.vault_credentials = credentials
+        _maybe_show_identity_conflict(stdscr, theme, state)
+        _maybe_prompt_aad_migration(stdscr, theme, state)
         state.vault_unlocked = True
-        state.vault_credentials = storage.list_credential_metadata()
         state.failed_unlock_attempts = 0
         state.last_failed_unlock_at = None
         tui._record_user_activity(state)
         state.message = "Vault unlocked."
-        _maybe_show_identity_conflict(stdscr, theme, state)
-        _maybe_prompt_aad_migration(stdscr, theme, state)
         return True
     except InvalidPasswordError:
         _record_unlock_failure(state)
         tui_modal._run_modal(stdscr, theme, "ERROR", "Invalid master password.")
         setattr(state, _UNLOCK_RETRY_FLAG, True)
     except StorageError as e:
+        if authenticated:
+            storage.close()
+            state.vault_unlocked = False
+            state.vault_credentials = []
+            state.message = "Vault initialization failed."
+            tui_modal._run_modal(stdscr, theme, "ERROR", f"Vault initialization failed: {e}")
+            return False
         _record_unlock_failure(state)
         tui_modal._run_modal(stdscr, theme, "ERROR", f"Unlock failed: {e}")
         state.message = "Vault locked."
