@@ -40,8 +40,14 @@ class _PrivateRotatingFileHandler(RotatingFileHandler):
     def _open(self):
         if os.name != "posix":
             return super()._open()
-        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
-        no_follow = getattr(os, "O_NOFOLLOW", 0)
+        flags = os.O_WRONLY | os.O_CREAT
+        if "a" in self.mode:
+            flags |= os.O_APPEND
+        elif "w" in self.mode:
+            flags |= os.O_TRUNC
+        no_follow = getattr(os, "O_NOFOLLOW", None)
+        if no_follow is None:
+            raise LoggingError("Secure no-follow file opening is unavailable.")
         fd = os.open(self.baseFilename, flags | no_follow, 0o600)
         try:
             file_stat = os.fstat(fd)
@@ -65,10 +71,16 @@ class _PrivateRotatingFileHandler(RotatingFileHandler):
                     Path(self.baseFilename).suffix + f".{idx}"
                 )
                 if rotated.exists():
+                    if rotated.is_symlink():
+                        raise LoggingError("Rotated log path is a symlink.")
                     try:
-                        os.chmod(str(rotated), 0o600)
-                    except OSError:
-                        pass
+                        fd = os.open(str(rotated), os.O_RDONLY | os.O_NOFOLLOW)
+                        try:
+                            os.fchmod(fd, 0o600)
+                        finally:
+                            os.close(fd)
+                    except OSError as exc:
+                        raise LoggingError("Could not secure rotated log file.") from exc
 
 
 def _set_private(path: Path, mode: int) -> None:
@@ -76,6 +88,8 @@ def _set_private(path: Path, mode: int) -> None:
     if os.name != "posix":
         return
     if hasattr(os, "chmod"):
+        if path.is_symlink():
+            raise LoggingError(f"Refusing symlinked path: {path}.")
         try:
             os.chmod(str(path), mode)
         except OSError as exc:
@@ -98,7 +112,9 @@ def _prepare_log_file(path: Path) -> None:
             raise LoggingError("Log path is not a regular file.")
 
     flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
-    no_follow = getattr(os, "O_NOFOLLOW", 0)
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    if no_follow is None:
+        raise LoggingError("Secure no-follow file opening is unavailable.")
     try:
         fd = os.open(str(path), flags | no_follow, 0o600)
     except OSError as exc:
@@ -109,7 +125,11 @@ def _prepare_log_file(path: Path) -> None:
             raise LoggingError("Log path is not a regular file.")
     finally:
         os.close(fd)
-    _set_private(path, 0o600)
+    fd = os.open(str(path), os.O_RDONLY | no_follow)
+    try:
+        os.fchmod(fd, 0o600)
+    finally:
+        os.close(fd)
 
 
 def init_logging(
@@ -128,7 +148,18 @@ def init_logging(
     path = log_path or _DEFAULT_LOG_PATH
     handler: _PrivateRotatingFileHandler | None = None
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
+        current = path.parent
+        missing: list[Path] = []
+        while not current.exists() and current != current.parent:
+            missing.append(current)
+            current = current.parent
+        if current.is_symlink():
+            raise LoggingError("Log parent contains a symlink.")
+        for directory in reversed(missing):
+            directory.mkdir()
+            _set_private(directory, 0o700)
+        if path.parent.is_symlink():
+            raise LoggingError("Log parent is a symlink.")
         _set_private(path.parent, 0o700)
         _prepare_log_file(path)
         handler = _PrivateRotatingFileHandler(
@@ -136,8 +167,13 @@ def init_logging(
         )
         handler.setFormatter(_FORMATTER)
         handler.setLevel(level)
-        root.setLevel(level)
-        root.addHandler(handler)
+        old_level = root.level
+        try:
+            root.setLevel(level)
+            root.addHandler(handler)
+        except BaseException:
+            root.setLevel(old_level)
+            raise
     except BaseException:
         if handler is not None:
             handler.close()
