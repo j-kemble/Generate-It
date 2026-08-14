@@ -36,8 +36,8 @@ def test_validate_identity_rejects_empty_components() -> None:
     with pytest.raises(ValueError, match="Service must not be empty"):
         identity.validate_identity("   ", "user")
 
-    with pytest.raises(ValueError, match="Username must not be empty"):
-        identity.validate_identity("GitHub", "\u200b")  # zero-width space after strip -> empty or whitespace
+    with pytest.raises(ValueError, match="prohibited invisible"):
+        identity.validate_identity("GitHub", "\u200b")
 
     # Valid returns canonical pair.
     assert identity.validate_identity(" GitHub ", " DevUser ") == ("github", "devuser")
