@@ -49,10 +49,8 @@ from cryptography.hazmat.primitives import hashes as hashes  # noqa: F401
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC as PBKDF2HMAC  # noqa: F401
 from platformdirs import user_data_dir as user_data_dir  # noqa: F401
 
-# Re-export submodules for direct import if needed.
+# Re-export the migration submodule for direct import if needed.
 from . import migration as migration  # noqa: F401
-from . import v1 as v1  # noqa: F401
-from . import v2 as v2  # noqa: F401
 
 __all__ = [
     "APP_AUTHOR",
@@ -89,7 +87,5 @@ __all__ = [
     "uuid",
     "user_data_dir",
     "Fernet",
-    "v1",
-    "v2",
     "migration",
 ]
