@@ -329,11 +329,11 @@ def make_associated_data_v3(
     - uint32 BE: len(service_key_utf8) + bytes (canonical: NFC+strip+casefold)
     - uint32 BE: len(username_key_utf8) + bytes (canonical: NFC+strip+casefold)
     """
-    from .identity import canonical_identity
+    from .identity import canonical_identity_aad_v3
 
     fn_bytes = field_name.encode("utf-8")
-    svc_bytes = canonical_identity(service).encode("utf-8")
-    usr_bytes = canonical_identity(username).encode("utf-8")
+    svc_bytes = canonical_identity_aad_v3(service).encode("utf-8")
+    usr_bytes = canonical_identity_aad_v3(username).encode("utf-8")
 
     parts = [
         struct.pack(">H", 3),                      # aad_version = 3

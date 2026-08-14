@@ -50,6 +50,18 @@ def canonical_identity(value: str) -> str:
     return unicodedata.normalize("NFC", value).strip().casefold()
 
 
+def canonical_identity_aad_v3(value: str) -> str:
+    """Return the frozen AAD v3 identity form used by existing ciphertext.
+
+    Historical AAD v3 records removed Unicode ``Cf`` format characters before
+    binding service and username metadata.  Keep that wire-format behavior
+    separate from the current identity policy so old records remain decryptable.
+    New writes reject the dangerous subset at :func:`validate_identity`.
+    """
+    normalized = canonical_identity(value)
+    return "".join(char for char in normalized if unicodedata.category(char) != "Cf")
+
+
 def canonical_service_username(service: str, username: str) -> tuple[str, str]:
     """Return the canonical (service_key, username_key) identity pair."""
     return canonical_identity(service), canonical_identity(username)
