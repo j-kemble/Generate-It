@@ -41,11 +41,8 @@ def test_details_modal_clamps_window_to_terminal_and_bounds_note(monkeypatch) ->
 
     tui._run_details_modal(stdscr, SimpleNamespace(title=0, dim=0), state, credential)
 
-    height, width, y, x = tui.curses.newwin.call_args.args
-    assert height <= 8
-    assert width <= 20
-    assert y >= 0
-    assert x >= 0
+    tui.curses.newwin.assert_not_called()
+    assert "Resize" in state.message
 
 
 def test_details_modal_returns_recoverably_on_decryption_failure(monkeypatch) -> None:

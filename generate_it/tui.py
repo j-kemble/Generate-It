@@ -970,8 +970,11 @@ def _run_details_modal(
 ) -> None:
     """Runs a modal to show credential details and allow copying."""
     h, w = stdscr.getmaxyx()
-    box_h = max(4, min(14, h))
-    box_w = max(12, min(60, w))
+    if h < 10 or w < 32:
+        state.message = "Resize terminal to view credential details."
+        return
+    box_h = min(14, h)
+    box_w = min(60, w)
     y, x = (h - box_h) // 2, (w - box_w) // 2
     
     win = curses.newwin(box_h, box_w, y, x)
@@ -988,7 +991,7 @@ def _run_details_modal(
             try:
                 state.revealed_secret = state.storage.get_credential_secret(credential['id'])
                 state.revealed_secret_id = credential['id']
-            except StorageError as exc:
+            except (StorageError, ValueError, TypeError, UnicodeDecodeError) as exc:
                 tui_modal._run_modal(stdscr, theme, "ERROR", f"Cannot load credential: {exc}")
                 return
         
