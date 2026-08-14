@@ -8,7 +8,7 @@ This document specifies a versioned, breaking migration of the Generate-It crede
 
 - `review-commit.md` — finding M4 (unbound ciphertext), M1 (full-vault decryption), H2 (weak KDF)
 - `review-commit.md` — Phase 4: vault v2 specification and implementation
-- `generate_it/storage.py` — current v1 `StorageManager` (PBKDF2 + Fernet + SQLite)
+- `generate_it/storage/core.py` — v1 `StorageManager` implementation (PBKDF2 + Fernet + SQLite), re-exported via the `generate_it/storage` package
 
 ---
 

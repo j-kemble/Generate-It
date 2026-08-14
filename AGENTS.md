@@ -13,7 +13,7 @@ Generate It is a terminal credential generator and local manager featuring a cur
 - **CSV I/O**: import/export across multiple provider formats.
 - **Security UX**: configurable clipboard auto-clear and vault auto-lock policies.
 
-Core logic lives in `generate_it/generator.py` and `generate_it/storage.py`. The curses TUI in `generate_it/tui.py` is the primary interface.
+Core logic lives in `generate_it/generator.py` and the `generate_it/storage/` package (implementation in `generate_it/storage/core.py`). The curses TUI in `generate_it/tui.py` is the primary interface.
 
 ## Common commands
 ### Setup (editable install)
