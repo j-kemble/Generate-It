@@ -535,235 +535,52 @@ class StorageManager:
     @staticmethod
     def _create_identity_indexes(cursor: sqlite3.Cursor, *, include_unique: bool = True) -> None:
         """Create the canonical-identity indexes (idempotent)."""
-        if include_unique:
-            cursor.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_credentials_identity"
-                " ON credentials (service_key, username_key)"
-            )
-        cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_credentials_order"
-            " ON credentials (service_key, username_key, id)"
-        )
+        from .migration import create_identity_indexes
+
+        create_identity_indexes(cursor, include_unique=include_unique)
 
     @staticmethod
     def _identity_columns_present(cursor: sqlite3.Cursor) -> bool:
-        cursor.execute("PRAGMA table_info(credentials)")
-        columns = {row["name"] for row in cursor.fetchall()}
-        return {"service_key", "username_key"}.issubset(columns)
+        from .migration import identity_columns_present
+
+        return identity_columns_present(cursor)
 
     @staticmethod
     def _identity_unique_index_present(cursor: sqlite3.Cursor) -> bool:
-        cursor.execute(
-            "SELECT name FROM sqlite_master WHERE type='index' AND name=?",
-            (_IDX_IDENTITY_UNIQUE,),
-        )
-        return cursor.fetchone() is not None
+        from .migration import identity_unique_index_present
+
+        return identity_unique_index_present(cursor)
 
     def _detect_identity_conflicts(
         self, cursor: sqlite3.Cursor
     ) -> List[Dict[str, Any]]:
-        """Group rows by canonical identity and return colliding groups.
+        """Group rows by canonical identity and return colliding groups."""
+        from .migration import detect_identity_conflicts
 
-        Each returned dict has ``service``/``username`` (from the first row
-        of the group) and ``ids`` (all row ids sharing that canonical
-        identity), sorted by id for deterministic reporting.
-        """
-        cursor.execute("SELECT id, service, username FROM credentials ORDER BY id")
-        groups: Dict[Tuple[str, str], Dict[str, Any]] = {}
-        for row in cursor.fetchall():
-            service = row["service"]
-            username = row["username"]
-            if not isinstance(service, str) or not isinstance(username, str):
-                raise StorageError(
-                    "Vault contains a credential with non-text service/username "
-                    f"(id={row['id']}); cannot migrate identity schema."
-                )
-            service_key, username_key = canonical_service_username(service, username)
-            if not service_key or not username_key:
-                raise StorageError(
-                    "Vault contains a credential with an empty canonical identity "
-                    f"(id={row['id']}, service={service!r}, username={username!r}). "
-                    "Rename or delete it, then retry."
-                )
-            key = (service_key, username_key)
-            entry = groups.setdefault(
-                key,
-                {"service": service, "username": username, "ids": []},
-            )
-            ids_list: List[int] = entry["ids"]
-            ids_list.append(row["id"])
-        return [entry for entry in groups.values() if len(entry["ids"]) > 1]
+        return detect_identity_conflicts(cursor)
 
     def _ensure_identity_schema(self) -> None:
-        """Ensure canonical identity columns and indexes exist.
+        """Ensure canonical identity columns and indexes exist (delegates)."""
+        from .migration import ensure_identity_schema
 
-        Called automatically at the end of every successful unlock.  New
-        vaults are created with the identity schema, so this is a no-op for
-        them.  For pre-identity vaults it runs a migration-safe upgrade:
-        private on-disk backup, single exclusive transaction, canonical
-        backfill, then index creation.
-
-        Canonical duplicates in existing data are handled non-destructively:
-        the backfill commits but the unique index is deferred, and
-        ``self.identity_conflict`` describes the colliding rows so the UI can
-        guide the user to rename/delete them.  The migration retries on the
-        next unlock.
-
-        Raises:
-            StorageError: for malformed data or migration I/O failures.  The
-                database is rolled back and the backup preserved.
-        """
-        self.identity_conflict = None
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='credentials'"
-        )
-        if cursor.fetchone() is None:
-            return
-        if not self._identity_columns_present(cursor):
-            self._run_identity_migration()
-            return
-        if not self._identity_unique_index_present(cursor):
-            # Columns exist but a previous migration deferred the unique index
-            # due to canonical conflicts — retry now that they may be resolved.
-            self._retry_identity_unique_index()
+        ensure_identity_schema(self)
 
     def _retry_identity_unique_index(self) -> None:
         """Create the deferred unique identity index once conflicts are gone."""
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        try:
-            conn.execute("BEGIN EXCLUSIVE")
-            read_cursor = conn.cursor()
-            write_cursor = conn.cursor()
-            read_cursor.execute("SELECT id, service, username FROM credentials ORDER BY id")
-            for row in read_cursor:
-                service_key, username_key = canonical_service_username(
-                    row["service"], row["username"]
-                )
-                write_cursor.execute(
-                    "UPDATE credentials SET service_key = ?, username_key = ? WHERE id = ?",
-                    (service_key, username_key, row["id"]),
-                )
-            conflicts = self._detect_identity_conflicts(cursor)
-            if conflicts:
-                conn.rollback()
-                self._set_identity_conflict(conflicts)
-                return
-            self._create_identity_indexes(cursor)
-            cursor.execute(
-                "INSERT OR REPLACE INTO config (key, value) VALUES ('identity_schema_version', ?)",
-                (str(_IDENTITY_SCHEMA_VERSION),),
-            )
-            conn.commit()
-            _log.info("identity unique index created after conflict resolution")
-        except BaseException:
-            try:
-                conn.rollback()
-            except Exception as rollback_exc:  # nosec B110 — best-effort cleanup
-                _log.debug("rollback failed during identity index retry: %s", rollback_exc)
-            raise
+        from .migration import retry_identity_unique_index
+
+        retry_identity_unique_index(self)
 
     def _set_identity_conflict(self, conflicts: List[Dict[str, Any]]) -> None:
-        summary_items: List[str] = []
-        for c in conflicts:
-            c_ids: List[int] = c.get("ids", [])
-            ids_str = ", ".join(str(i) for i in c_ids)
-            summary_items.append(f"{c['service']} / {c['username']} (ids: {ids_str})")
-        summary = "; ".join(summary_items)
-        self.identity_conflict = CredentialIdentityConflictError(
-            "Some stored credentials are duplicates under the canonical "
-            "identity rules (same service/username ignoring case, surrounding "
-            "whitespace, and equivalent Unicode). Nothing was changed or "
-            "deleted. Rename or delete the duplicates in the vault explorer, "
-            "then unlock again to finish the upgrade. Conflicts: " + summary,
-            conflicts=conflicts,
-        )
-        _log.warning("identity schema migration deferred: %s", summary)
+        from .migration import set_identity_conflict
+
+        set_identity_conflict(self, conflicts)
 
     def _run_identity_migration(self) -> None:
-        """Backfill canonical identity columns for a pre-identity vault.
+        """Backfill canonical identity columns for a pre-identity vault."""
+        from .migration import run_identity_migration
 
-        Creates a private backup first, then runs in a single exclusive
-        transaction: add nullable columns, backfill canonical keys, create
-        indexes, and commit the schema marker last.  On canonical conflicts
-        the backfill still commits (data is only enriched, never dropped or
-        merged) but the unique index is deferred — see
-        ``_ensure_identity_schema``.
-        """
-        # Back up before rewriting any existing data.
-        backup_tmp = self._secure_temp_file(self.db_path.parent, ".identity.bak")
-        try:
-            shutil.copy2(self.db_path, backup_tmp)
-        except BaseException:
-            if backup_tmp.exists():
-                try:
-                    backup_tmp.unlink()
-                except OSError:
-                    pass
-            raise
-        backup_path = self.db_path.with_suffix(self.db_path.suffix + ".identity.bak")
-        try:
-            os.replace(str(backup_tmp), str(backup_path))
-        except BaseException:
-            try:
-                backup_tmp.unlink()
-            except OSError:
-                pass
-            raise
-        _log.info("identity migration backup created at %s", backup_path)
-
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        try:
-            conn.execute("BEGIN EXCLUSIVE")
-
-            # 1. Add nullable canonical columns.
-            if not self._identity_columns_present(cursor):
-                cursor.execute("ALTER TABLE credentials ADD COLUMN service_key TEXT")
-                cursor.execute("ALTER TABLE credentials ADD COLUMN username_key TEXT")
-
-            # 2. Backfill canonical keys (read with one cursor, write with a
-            #    separate cursor to avoid disturbing the active result set).
-            conflicts = self._detect_identity_conflicts(cursor)
-            read_cursor = conn.cursor()
-            write_cursor = conn.cursor()
-            read_cursor.execute("SELECT id, service, username FROM credentials ORDER BY id")
-            for row in read_cursor:
-                service_key, username_key = canonical_service_username(
-                    row["service"], row["username"]
-                )
-                write_cursor.execute(
-                    "UPDATE credentials SET service_key = ?, username_key = ? WHERE id = ?",
-                    (service_key, username_key, row["id"]),
-                )
-
-            # 3. Ordering index is always safe; the unique index is created
-            #    only when no canonical conflicts exist.
-            self._create_identity_indexes(cursor, include_unique=not conflicts)
-
-            # 4. Commit the schema marker last (only on full completion).
-            if not conflicts:
-                cursor.execute(
-                    "INSERT OR REPLACE INTO config (key, value) VALUES ('identity_schema_version', ?)",
-                    (str(_IDENTITY_SCHEMA_VERSION),),
-                )
-            conn.commit()
-
-            if conflicts:
-                self._set_identity_conflict(conflicts)
-            _log.info("identity schema migration complete (backup at %s)", backup_path)
-        except BaseException:
-            try:
-                conn.rollback()
-            except Exception as rollback_exc:  # nosec B110 — best-effort cleanup
-                _log.debug("rollback failed during identity migration: %s", rollback_exc)
-            _log.error(
-                "identity schema migration failed; vault unchanged (backup at %s)",
-                backup_path,
-            )
-            raise
+        run_identity_migration(self)
 
     def initialize_vault_v2(self, master_password: str) -> None:
         """Create a new v2 vault with Argon2id KDF and KEK/DEK split.
