@@ -42,9 +42,11 @@ Tests cover generation invariants (`tests/test_generator.py`), storage/encryptio
 - `generate_it/tui.py:run()`: main curses app loop and startup login/setup flow.
 
 ### Storage & Security
-`generate_it/storage.py` handles the local SQLite database and encryption:
+`generate_it/storage/core.py` (exported via the `generate_it/storage` package) handles the local SQLite database and encryption:
 - **Location**: Uses `platformdirs` to store `vault.db` in standard user data paths.
-- **Encryption**: Uses `cryptography.fernet` for legacy v1 vaults. New vaults default to vault v2 with Argon2id key derivation (64 MiB memory, 3 iterations, 4 lanes) and AES-256-GCM AEAD. The key is derived from the Master Password + a unique salt using **PBKDF2HMAC** for legacy vaults (480k iterations for v1; legacy vaults remain at 100k) or **Argon2id** for v2.
+- **v1 (legacy)**: Fernet (AES-128-CBC + HMAC-SHA256) with a key derived from the Master Password + a unique salt via **PBKDF2HMAC** (SHA-256). New v1 vaults use 480,000 iterations, persisted per-vault in the `config` table; vaults created before parameter persistence fall back to the 100,000-iteration legacy default.
+- **v2 (current default)**: Argon2id key derivation (64 MiB memory, 3 iterations, 4 lanes) with a KEK/DEK split and per-field AES-256-GCM AEAD. AAD v3 binds each ciphertext to the vault, credential, field name, and canonical service/username.
+- **Migration**: v1→v2 requires authenticating the legacy master password first and supports an explicit validated re-key; AAD upgrades require affirmative user confirmation. Migrations create a private backup before rewriting existing data.
 - **Data**: Credentials (service, username, password, note) are stored as encrypted blobs.
 - **App settings**: non-sensitive preferences are persisted in the `config` table via keys prefixed `app_setting:`.
 
