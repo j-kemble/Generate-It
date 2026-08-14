@@ -8,6 +8,8 @@ from generate_it.storage import StorageError, StorageManager
 
 
 def test_required_storage_permission_failure_is_raised(tmp_path, monkeypatch) -> None:
+    if os.name != "posix":
+        pytest.skip("owner-only chmod is POSIX-specific")
     path = tmp_path / "vault.db"
 
     def fail_chmod(*args, **kwargs):

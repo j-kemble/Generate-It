@@ -261,10 +261,15 @@ class StorageManager:
 
     def _get_conn(self) -> sqlite3.Connection:
         if not self._db_connection:
-            self._db_connection = sqlite3.connect(self.db_path)
-            self._db_connection.row_factory = sqlite3.Row
-            self._db_connection.execute("PRAGMA busy_timeout=5000")
-            self._ensure_private_permissions(self.db_path, 0o600)
+            connection = sqlite3.connect(self.db_path)
+            try:
+                connection.row_factory = sqlite3.Row
+                connection.execute("PRAGMA busy_timeout=5000")
+                self._ensure_private_permissions(self.db_path, 0o600)
+            except BaseException:
+                connection.close()
+                raise
+            self._db_connection = connection
         return self._db_connection
 
     def set_app_setting(self, key: str, value: str) -> None:
