@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import curses
+import time
 
 from . import tui, tui_modal
 from .storage import (
@@ -12,12 +13,19 @@ from .tui_state import AppState
 
 _AAD_MIGRATION_MESSAGE = (
     "Your vault uses an older encryption binding (AAD v1/v2). "
-    "A one-time upgrade to AAD v3 will re-encrypt all stored "
-    "credentials with explicit length-delimited associated data.\n\n"
+    "A one-time upgrade to the current AAD format (v4) will re-encrypt "
+    "all stored credentials with explicit length-delimited associated "
+    "data and zero-width-stripped identities.\n\n"
     "A backup file will be created before migration.\n\n"
-    "Proceed with upgrade? (Y/n)"
+    "Proceed with upgrade? (y/N)"
 )
 _UNLOCK_RETRY_FLAG = "_tui_security_unlock_retry"
+_UNLOCK_CANCELLED_FLAG = "_tui_security_unlock_cancelled"
+LOCKOUT_DELAYS_SECONDS: tuple[int, ...] = (0, 30, 300, 1800)
+
+
+def _now() -> float:
+    return time.monotonic()
 
 
 def _storage_available(state: AppState) -> bool:
@@ -78,23 +86,29 @@ def _maybe_prompt_aad_migration(
     theme: tui.Theme,
     state: AppState,
 ) -> None:
-    """If the unlocked v2 vault is at AAD v1 or v2, offer a one-time upgrade to v3.
+    """If the unlocked v2 vault is below the current AAD (v4), offer an upgrade.
 
-    AAD v3 uses unambiguous length-prefixed associated data binding.  The
-    migration is opt-in with a confirmation prompt; a backup file is created
-    before re-encryption.
+    The current AAD (v4) uses unambiguous length-prefixed associated data
+    binding with zero-width-stripped canonical identities.  The migration
+    is opt-in with a confirmation prompt; a backup file is created before
+    re-encryption.
+
+    Note: v2 vaults still at AAD v3 are upgraded automatically to v4 by the
+    unlock-time zero-width migration (``_migrate_zero_width_identity``), so
+    by the time this runs after a successful unlock the predicate below
+    only fires for AAD v1/v2 vaults.
     """
     if not _storage_available(state):
         return
     storage = state.storage
     if storage is None:
         return
-    if storage._vault_version != 2 or storage._aad_version >= 3:
+    if storage._vault_version != 2 or storage._aad_version >= 4:
         return
-    _maybe_migrate_aad_v3(stdscr, theme, state)
+    _maybe_migrate_aad_v4(stdscr, theme, state)
 
 
-def _maybe_migrate_aad_v3(
+def _maybe_migrate_aad_v4(
     stdscr: curses.window,
     theme: tui.Theme,
     state: AppState,
@@ -104,9 +118,9 @@ def _maybe_migrate_aad_v3(
         theme,
         "SECURITY UPGRADE",
         _AAD_MIGRATION_MESSAGE,
-        max_length=1,
+        max_length=3,
     )
-    if confirm is not None and confirm.strip().lower() == "n":
+    if confirm is None or confirm.strip().lower() not in {"y", "yes"}:
         state.message = "AAD upgrade deferred."
         return
 
@@ -114,8 +128,8 @@ def _maybe_migrate_aad_v3(
     if storage is None:
         return
     try:
-        storage.migrate_aad_to_v3()
-        state.message = "Vault upgraded to AAD v3."
+        storage.migrate_aad_to_v4()
+        state.message = "Vault upgraded to the current AAD format."
     except StorageError as e:
         tui_modal._run_modal(
             stdscr,
@@ -137,22 +151,82 @@ def _try_unlock_vault(
         state.message = "Vault unavailable."
         return False
 
+    if not _wait_for_lockout(stdscr, theme, state):
+        setattr(state, _UNLOCK_CANCELLED_FLAG, True)
+        return False
+
     try:
         storage.unlock_vault(pwd)
         state.vault_unlocked = True
         state.vault_credentials = storage.list_credential_metadata()
+        state.failed_unlock_attempts = 0
+        state.lockout_until = None
         tui._record_user_activity(state)
         state.message = "Vault unlocked."
         _maybe_show_identity_conflict(stdscr, theme, state)
         _maybe_prompt_aad_migration(stdscr, theme, state)
         return True
     except InvalidPasswordError:
+        _record_unlock_failure(state)
         tui_modal._run_modal(stdscr, theme, "ERROR", "Invalid master password.")
         setattr(state, _UNLOCK_RETRY_FLAG, True)
     except StorageError as e:
+        state.vault_unlocked = False
+        state.vault_credentials = []
+        # Post-authentication initialization failed (e.g. metadata load or a
+        # migration/conflict step) after a successful unlock.  Fail closed on
+        # the storage manager itself, not just the UI state: clear the decrypted
+        # key material so no later code path can consult storage directly while
+        # the UI reports the vault locked.
+        storage.close()
         tui_modal._run_modal(stdscr, theme, "ERROR", f"Unlock failed: {e}")
         state.message = "Vault locked."
     return False
+
+
+def _lockout_delay_for_attempt(attempts: int) -> int:
+    if attempts <= 0:
+        return 0
+    return LOCKOUT_DELAYS_SECONDS[min(attempts - 1, len(LOCKOUT_DELAYS_SECONDS) - 1)]
+
+
+def _get_lockout_remaining(state: AppState, now: float | None = None) -> float:
+    if state.lockout_until is None:
+        return 0.0
+    current = _now() if now is None else now
+    remaining = max(0.0, state.lockout_until - current)
+    if remaining == 0.0:
+        state.lockout_until = None
+    return remaining
+
+
+def _record_unlock_failure(state: AppState) -> None:
+    state.failed_unlock_attempts += 1
+    delay = _lockout_delay_for_attempt(state.failed_unlock_attempts)
+    state.lockout_until = _now() + delay if delay else None
+
+
+def _wait_for_lockout(
+    stdscr: curses.window,
+    theme: tui.Theme,
+    state: AppState,
+) -> bool:
+    """Wait out a lockout window, allowing Esc to cancel the unlock flow."""
+    while True:
+        remaining = _get_lockout_remaining(state)
+        if remaining <= 0:
+            return True
+        seconds = max(1, int(remaining + 0.999))
+        state.message = f"Too many attempts. Try again in {seconds} seconds."
+        try:
+            stdscr.timeout(250)
+            stdscr.erase()
+            stdscr.addstr(0, 0, state.message)
+            stdscr.refresh()
+        except curses.error:
+            pass
+        if stdscr.getch() == 27:
+            return False
 
 
 def _prompt_unlock_vault(
@@ -180,14 +254,20 @@ def _prompt_unlock_vault(
             return False
 
         setattr(state, _UNLOCK_RETRY_FLAG, False)
+        setattr(state, _UNLOCK_CANCELLED_FLAG, False)
         try:
             unlocked = _try_unlock_vault(stdscr, theme, state, pwd)
         finally:
             retry = getattr(state, _UNLOCK_RETRY_FLAG, False)
+            cancelled = getattr(state, _UNLOCK_CANCELLED_FLAG, False)
             delattr(state, _UNLOCK_RETRY_FLAG)
+            delattr(state, _UNLOCK_CANCELLED_FLAG)
 
         if unlocked:
             return True
+        if cancelled:
+            state.message = "Vault locked."
+            return False
         if retry:
             continue
         return False

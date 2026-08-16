@@ -189,6 +189,28 @@ Generate It includes a comprehensive security suite to ensure credential generat
 
 All security checks run automatically on every commit via GitHub Actions.
 
+## Known Limitations
+
+For a security-sensitive offline credential vault, the following scope limits
+are documented so users can make an informed decision about acceptable risk.
+
+- **Brute-force lockout is process-local, not persistent.** The escalating
+  unlock lockout (`30s`, `5m`, `30m`) is enforced only while the application
+  is running. A restart resets the counter; the delay is never persisted to
+  disk. An attacker with local restart capability could attempt unlimited
+  guesses across restarts. This is a deliberate trade-off (no durable
+  anti-bruteforce state is written to disk).
+- **Migration backups are retained indefinitely.** Each one-time upgrade
+  (v1→v2, identity schema, zero-width identity, AAD re-encryption) writes a
+  backup next to the vault (e.g. `vault.db.identity_zw.bak`). These backups
+  are encrypted with the same vault key and are never auto-deleted; you should
+  remove obsolete backups manually once you are confident the vault is healthy.
+- **Metadata sanitization is partial.** Stored credential notes are clamped
+  and truncated to a safe bound before rendering, but the raw `service` and
+  `username` fields are drawn to the screen as provided. A malicious or
+  unexpected value could display terminal control sequences. Only enter
+  service/usernames you trust into your own vault.
+
 ## Custom word list
 
 The included word list contains **5,800** lowercase words filtered from `/usr/share/dict/words` (a-z only, 4–10 characters), providing ~50 bits of entropy for a 4-word passphrase.

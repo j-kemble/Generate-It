@@ -54,3 +54,6 @@ class AppState:
     # Cleared on lock, modal close, selection change, and in finally block on modal exit.
     revealed_secret: dict | None = None
     revealed_secret_id: int | None = None
+
+    failed_unlock_attempts: int = 0
+    lockout_until: float | None = None

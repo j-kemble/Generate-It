@@ -99,7 +99,7 @@ generate-it
 
 - This project uses PyPI OIDC trusted publishing — no API token is needed or stored
 - Test in a fresh virtual environment before tagging a release to ensure all dependencies are correct
-- You can also publish to TestPyPI first to test the workflow: https://test.pypi.org
+- Review the **Known Limitations** section in `README.md` (process-local brute-force lockout, indefinitely retained migration backups, and partial metadata sanitization) before preparing release notes.
 - For TestPyPI trusted publishing, add the `testpypi` environment with `twine upload --repository testpypi dist/*`
 - The publish workflow verifies that the git tag matches `pyproject.toml` version before proceeding
 - The `pypi` GitHub Environment can be configured with required reviewers for manual release approval

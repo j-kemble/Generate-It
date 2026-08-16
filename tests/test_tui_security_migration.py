@@ -61,8 +61,8 @@ def test_maybe_prompt_aad_migration_success(monkeypatch) -> None:
 
     tui_security._maybe_prompt_aad_migration(None, None, state)
 
-    mock_storage.migrate_aad_to_v3.assert_called_once()
-    assert state.message == "Vault upgraded to AAD v3."
+    mock_storage.migrate_aad_to_v4.assert_called_once()
+    assert state.message == "Vault upgraded to the current AAD format."
 
 
 def test_maybe_prompt_aad_migration_deferred(monkeypatch) -> None:
@@ -76,7 +76,7 @@ def test_maybe_prompt_aad_migration_deferred(monkeypatch) -> None:
 
     tui_security._maybe_prompt_aad_migration(None, None, state)
 
-    mock_storage.migrate_aad_to_v3.assert_not_called()
+    mock_storage.migrate_aad_to_v4.assert_not_called()
     assert state.message == "AAD upgrade deferred."
 
 
@@ -84,7 +84,7 @@ def test_maybe_prompt_aad_migration_handles_failure(monkeypatch) -> None:
     mock_storage = MagicMock()
     mock_storage._vault_version = 2
     mock_storage._aad_version = 2
-    mock_storage.migrate_aad_to_v3.side_effect = StorageError("Disk full")
+    mock_storage.migrate_aad_to_v4.side_effect = StorageError("Disk full")
     state = SimpleNamespace(storage=mock_storage, message="")
 
     monkeypatch.setattr(tui_security.tui_modal, "_run_modal", lambda *a, **k: "y")

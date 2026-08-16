@@ -14,7 +14,12 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from platformdirs import user_data_dir
 from . import _crypto_v2, csv_formats
-from .identity import canonical_service_username, validate_identity
+from ._crypto_v2 import MAX_NOTE_BYTES, MAX_PASSWORD_BYTES
+from .identity import (
+    canonical_identity_stripped,
+    canonical_service_username,
+    validate_identity,
+)
 from .logging import get_logger
 
 _log = get_logger("storage")
@@ -71,7 +76,25 @@ class CredentialIdentityConflictError(StorageError):
 
 # Common weak passwords that are unconditionally rejected (case-insensitive).
 _WEAK_PASSWORDS: frozenset[str] = frozenset({
-    "password", "12345678", "123456789012", "qwertyuiop", "masterpass",
+    "123456", "password", "12345678", "qwerty", "123456789", "12345",
+    "1234", "111111", "1234567", "dragon", "123123", "baseball",
+    "abc123", "football", "monkey", "letmein", "696969", "shadow",
+    "master", "666666", "qwertyuiop", "123321", "mustang", "1234567890",
+    "michael", "654321", "pussy", "superman", "1qaz2wsx", "7777777",
+    "fuckyou", "121212", "000000", "qazwsx", "123qwe", "killer",
+    "trustno1", "jordan", "jennifer", "zxcvbnm", "asdfgh", "hunter",
+    "buster", "soccer", "harley", "batman", "andrew", "tigger",
+    "sunshine", "iloveyou", "fuckme", "2000", "charlie", "robert",
+    "thomas", "hockey", "ranger", "daniel", "starwars", "klaster",
+    "112233", "george", "asshole", "computer", "michelle", "jessica",
+    "pepper", "1111", "zxcvbn", "555555", "11111111", "131313",
+    "freedom", "777777", "pass", "fuck", "maggie", "159753", "aaaaaa",
+    "ginger", "princess", "joshua", "cheese", "amanda", "summer",
+    "love", "ashley", "nicole", "chelsea", "biteme", "matthew",
+    "access", "yankees", "987654321", "dallas", "austin", "thunder",
+    "taylor", "matrix", "mobilemail", "mom", "monitor", "monitoring",
+    "qwerty123", "qwerty123!", "password1", "password123", "masterpass",
+    "welcome1!", "admin123!",
 })
 
 _MAX_MASTER_PASSWORD_LENGTH = 1024
@@ -135,6 +158,14 @@ def _validate_master_password(password: str) -> None:
             "Master password must contain at least 1 special character (e.g., !@#$%^&*)."
         )
 
+
+def _validate_field_size(password: str, note: str) -> None:
+    """Reject credential fields that exceed their encoded byte limits."""
+    if len(password.encode("utf-8")) > MAX_PASSWORD_BYTES:
+        raise StorageError(f"password exceeds {MAX_PASSWORD_BYTES} bytes.")
+    if len(note.encode("utf-8")) > MAX_NOTE_BYTES:
+        raise StorageError(f"note exceeds {MAX_NOTE_BYTES} bytes.")
+
 class StorageManager:
     def __init__(self, db_path: Optional[Path] = None):
         if db_path:
@@ -195,6 +226,34 @@ class StorageManager:
         if os.name == "posix":
             os.chmod(tmp_path, 0o600)
         return Path(tmp_path)
+
+    def _create_secure_backup(self, backup_suffix: str) -> Path:
+        """Create a private on-disk backup of the vault and return its path.
+
+        Writes to a securely-named temp file (0600) in the vault directory,
+        then atomically renames it to ``<db_name><backup_suffix>``.  On any
+        copy failure the temp file is removed so no partial backup is left
+        behind.  Shared by the v1→v2, identity-schema, zero-width-identity,
+        and AAD migrations so backup creation has one authoritative,
+        security-critical implementation.
+
+        Raises:
+            Any filesystem error from :func:`shutil.copy2` (the vault is
+                left untouched).
+        """
+        backup_tmp = self._secure_temp_file(self.db_path.parent, backup_suffix)
+        try:
+            shutil.copy2(self.db_path, backup_tmp)
+        except BaseException:
+            if backup_tmp.exists():
+                try:
+                    backup_tmp.unlink()
+                except OSError:
+                    pass
+            raise
+        backup_path = self.db_path.with_suffix(self.db_path.suffix + backup_suffix)
+        os.replace(str(backup_tmp), str(backup_path))
+        return backup_path
 
     def _get_conn(self) -> sqlite3.Connection:
         if not self._db_connection:
@@ -275,6 +334,7 @@ class StorageManager:
         if self.vault_exists():
             raise VaultAlreadyInitializedError("Vault already initialized.")
 
+        _validate_field_size(master_password, "")
         _validate_master_password(master_password)
 
         salt = os.urandom(_DEFAULT_SALT_LENGTH)
@@ -544,11 +604,14 @@ class StorageManager:
             return
         if not self._identity_columns_present(cursor):
             self._run_identity_migration()
-            return
-        if not self._identity_unique_index_present(cursor):
+        elif not self._identity_unique_index_present(cursor):
             # Columns exist but a previous migration deferred the unique index
             # due to canonical conflicts — retry now that they may be resolved.
             self._retry_identity_unique_index()
+        # Last: rewrite zero-width-bearing keys (and re-encrypt to AAD v4
+        # when the vault is at AAD v3) so stored identities match the
+        # stripped canonicalization used by new writes and lookups.
+        self._migrate_zero_width_identity()
 
     def _retry_identity_unique_index(self) -> None:
         """Create the deferred unique identity index once conflicts are gone."""
@@ -602,18 +665,7 @@ class StorageManager:
         ``_ensure_identity_schema``.
         """
         # Back up before rewriting any existing data.
-        backup_tmp = self._secure_temp_file(self.db_path.parent, ".identity.bak")
-        try:
-            shutil.copy2(self.db_path, backup_tmp)
-        except BaseException:
-            if backup_tmp.exists():
-                try:
-                    backup_tmp.unlink()
-                except OSError:
-                    pass
-            raise
-        backup_path = self.db_path.with_suffix(self.db_path.suffix + ".identity.bak")
-        os.replace(str(backup_tmp), str(backup_path))
+        backup_path = self._create_secure_backup(".identity.bak")
         _log.info("identity migration backup created at %s", backup_path)
 
         conn = self._get_conn()
@@ -667,6 +719,187 @@ class StorageManager:
             )
             raise
 
+    def _reencrypt_all_credentials_to_v4(self) -> None:
+        """Re-encrypt every credential field from the current AAD to AAD v4.
+
+        Must be invoked inside an open exclusive transaction on an unlocked
+        v2 vault, with ``self._aad_version`` still set to the *source*
+        version (the value used to decrypt each row's existing ciphertext).
+        Reads credentials with a streaming cursor and writes the
+        re-encrypted blobs with a separate cursor. Shared by
+        :meth:`migrate_aad_to_v4` and :meth:`_migrate_zero_width_identity`
+        so the re-encryption loop (decrypt -> validate -> AAD v4) has a
+        single authoritative implementation.
+
+        Raises:
+            StorageError: if the vault is not fully unlocked, a row cannot
+                be decrypted under the source AAD version, or a field
+                violates its size limit.  The caller rolls back.
+        """
+        if self._dek is None or self._vault_uuid is None:
+            raise StorageError("Vault is not fully unlocked.")
+        dek = self._dek
+        vault_uuid = self._vault_uuid
+        conn = self._get_conn()
+        read_cursor = conn.cursor()
+        write_cursor = conn.cursor()
+        read_cursor.execute(
+            "SELECT id, credential_uuid, service, username,"
+            " encrypted_password, encrypted_note FROM credentials"
+        )
+        for row in read_cursor:
+            cred_uuid: bytes = row["credential_uuid"]
+            svc: str = row["service"]
+            usr: str = row["username"]
+            try:
+                password, note = self._decrypt_fields_v2(row)
+            except Exception as exc:
+                raise StorageError(
+                    "Failed to decrypt credential id="
+                    f"{row['id']} during AAD migration: {exc}"
+                ) from exc
+            _validate_field_size(password, note)
+            new_password_ct = _crypto_v2.encrypt_field(
+                dek,
+                _crypto_v2.make_associated_data_v4(
+                    vault_uuid, cred_uuid, "password", svc, usr,
+                ),
+                password,
+                aead_algorithm=self._aead_algorithm,
+                max_plaintext_bytes=MAX_PASSWORD_BYTES,
+                field_name="password",
+            )
+            new_note_ct: bytes | None = None
+            if note:
+                new_note_ct = _crypto_v2.encrypt_field(
+                    dek,
+                    _crypto_v2.make_associated_data_v4(
+                        vault_uuid, cred_uuid, "note", svc, usr,
+                    ),
+                    note,
+                    aead_algorithm=self._aead_algorithm,
+                    max_plaintext_bytes=MAX_NOTE_BYTES,
+                    field_name="note",
+                )
+            write_cursor.execute(
+                "UPDATE credentials SET encrypted_password = ?,"
+                " encrypted_note = ? WHERE id = ?",
+                (new_password_ct, new_note_ct, row["id"]),
+            )
+
+    def _migrate_zero_width_identity(self) -> None:
+        """Rewrite zero-width-bearing identity keys and re-encrypt to AAD v4.
+
+        Vaults created before zero-width canonicalization stored identity
+        keys that preserve format characters (U+200B..U+200F, U+FEFF)
+        because the frozen :func:`identity.canonical_identity` kept them.
+        New writes store stripped keys, so those rows must be migrated.
+
+        The AAD-version migration is a **separate decision from identity-key
+        rewriting**.  A v2 vault at AAD v3 is re-encrypted to AAD v4
+        (stripped canonicalization) on every unlock, even when no key needs
+        rewriting (for example a previous/partial migration or a vault that
+        stored stripped keys while still encrypting with AAD v3).  This
+        guarantees every supported v2 vault reaches the current format and
+        none is silently stranded at AAD v3.
+
+        So the migration independently:
+        * re-encrypts every credential field with AAD v4 when the vault is
+          a v2 vault at AAD v3, and
+        * rewrites stored ``service_key``/``username_key`` columns to the
+          stripped canonical form when they differ.
+
+        Follows the ``migrate_aad_to_v4`` pattern: a private backup
+        (``vault.db.identity_zw.bak``) is created first, the rewrite and
+        re-encryption run in a single exclusive transaction, and any
+        failure rolls back leaving the vault unchanged.
+
+        If two rows collapse onto the same stripped identity, the unique
+        index is deferred and ``self.identity_conflict`` describes the
+        colliding rows (same semantics as the identity schema migration).
+        """
+        if self._vault_version not in (1, 2):
+            return
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, service, username, service_key, username_key FROM credentials"
+        )
+        rows_to_rewrite: List[Tuple[int, str, str]] = []
+        for row in cursor.fetchall():
+            stripped_svc = canonical_identity_stripped(row["service"])
+            stripped_usr = canonical_identity_stripped(row["username"])
+            if (
+                row["service_key"] != stripped_svc
+                or row["username_key"] != stripped_usr
+            ):
+                rows_to_rewrite.append((row["id"], stripped_svc, stripped_usr))
+
+        # AAD-version migration is keyed off the format version, NOT off
+        # whether any key must be rewritten: every v2 vault still at AAD v3
+        # is re-encrypted to AAD v4 so it can never be left stranded on the
+        # intermediate format.
+        needs_reencrypt = self._vault_version == 2 and self._aad_version == 3
+
+        if not rows_to_rewrite and not needs_reencrypt:
+            return
+
+        backup_path = self._create_secure_backup(".identity_zw.bak")
+        _log.info("zero-width identity backup created at %s", backup_path)
+
+        previous_aad = self._aad_version
+        try:
+            conn.execute("BEGIN EXCLUSIVE")
+
+            if needs_reencrypt:
+                self._reencrypt_all_credentials_to_v4()
+                cursor.execute(
+                    "INSERT OR REPLACE INTO config (key, value) VALUES ('aad_version', '4')"
+                )
+                self._aad_version = 4
+
+            # Rewrite stored keys to stripped form.  Drop the unique index
+            # first so two rows collapsing onto one stripped identity
+            # cannot fail mid-transaction; recreate it only when no
+            # conflicts remain (deferred otherwise, mirroring the identity
+            # schema migration).
+            if rows_to_rewrite:
+                had_unique_index = self._identity_unique_index_present(cursor)
+                if had_unique_index:
+                    cursor.execute(f"DROP INDEX IF EXISTS {_IDX_IDENTITY_UNIQUE}")
+                write_cursor = conn.cursor()
+                for row_id, stripped_svc, stripped_usr in rows_to_rewrite:
+                    write_cursor.execute(
+                        "UPDATE credentials SET service_key = ?, username_key = ?"
+                        " WHERE id = ?",
+                        (stripped_svc, stripped_usr, row_id),
+                    )
+                if had_unique_index:
+                    conflicts = self._detect_identity_conflicts(cursor)
+                    self._create_identity_indexes(cursor, include_unique=not conflicts)
+                    if conflicts:
+                        self._set_identity_conflict(conflicts)
+                    else:
+                        cursor.execute(
+                            "INSERT OR REPLACE INTO config (key, value) VALUES"
+                            " ('identity_schema_version', ?)",
+                            (str(_IDENTITY_SCHEMA_VERSION),),
+                        )
+
+            conn.commit()
+            _log.info(
+                "zero-width identity migration complete (backup at %s)",
+                backup_path,
+            )
+        except BaseException:
+            self._aad_version = previous_aad
+            try:
+                conn.rollback()
+            except Exception as rollback_exc:  # nosec B110 — best-effort cleanup
+                _log.debug("rollback failed during zero-width migration: %s", rollback_exc)
+            _log.exception("zero-width identity migration failed; vault unchanged")
+            raise
+
     def initialize_vault_v2(self, master_password: str) -> None:
         """Create a new v2 vault with Argon2id KDF and KEK/DEK split.
 
@@ -681,6 +914,7 @@ class StorageManager:
         """
         if self.vault_exists():
             raise VaultAlreadyInitializedError("Vault already initialized.")
+        _validate_field_size(master_password, "")
         _validate_master_password(master_password)
 
         vault_uuid = uuid.uuid4().bytes
@@ -731,7 +965,7 @@ class StorageManager:
             ("kdf_salt", salt),
             ("wrapped_dek", wrapped_dek),
             ("aead_algorithm", aead_algorithm),
-            ("aad_version", "3"),
+            ("aad_version", "4"),
             ("verification", verification_ct),
             ("dek_generation", "1"),
             ("identity_schema_version", str(_IDENTITY_SCHEMA_VERSION)),
@@ -749,7 +983,7 @@ class StorageManager:
         self._dek = dek
         self._vault_uuid = vault_uuid
         self._aead_algorithm = aead_algorithm
-        self._aad_version = 3
+        self._aad_version = 4
         _log.info("vault v2 initialized at %s", self.db_path)
 
     def _unlock_vault_v2(self, master_password: str) -> None:
@@ -834,7 +1068,7 @@ class StorageManager:
         # Read AAD version (default 1 for legacy v2 vaults).
         aad_version_raw = self._read_optional_int_config(cursor, "aad_version")
         aad_version = aad_version_raw if aad_version_raw is not None else 1
-        if aad_version not in (1, 2, 3):
+        if aad_version not in (1, 2, 3, 4):
             raise StorageError(f"Unsupported aad_version: {aad_version}")
 
         # Derive KEK.
@@ -915,21 +1149,8 @@ class StorageManager:
                 "Password does not match existing v1 vault."
             ) from exc
 
-        # 1. Create a secure backup with an unpredictable name, then atomically
-        #    rename to the predictable .v1.bak path.  This avoids symlink-following
-        #    attacks on the well-known backup filename.
-        backup_tmp = self._secure_temp_file(self.db_path.parent, ".v1.bak")
-        try:
-            shutil.copy2(self.db_path, backup_tmp)
-        except BaseException:
-            if backup_tmp.exists():
-                try:
-                    backup_tmp.unlink()
-                except OSError:
-                    pass
-            raise
-        backup_path = self.db_path.with_suffix(self.db_path.suffix + ".v1.bak")
-        os.replace(str(backup_tmp), str(backup_path))
+        # 1. Create a secure private backup before rewriting.
+        backup_path = self._create_secure_backup(".v1.bak")
         _log.info("v1 backup created at %s", backup_path)
 
         try:
@@ -995,27 +1216,32 @@ class StorageManager:
                         raise StorageError(
                             f"Failed to decrypt v1 note for credential id={row['id']}"
                         )
+                _validate_field_size(v1_password, v1_note)
 
-                # Re-encrypt with v2 AEAD (AAD v3 — metadata-bound & length-delimited).
+                # Re-encrypt with v2 AEAD (AAD v4 — metadata-bound & length-delimited).
                 svc: str = row["service"]
                 usr: str = row["username"]
                 new_password_ct = _crypto_v2.encrypt_field(
                     dek,
-                    _crypto_v2.make_associated_data_v3(
+                    _crypto_v2.make_associated_data_v4(
                         vault_uuid, cred_uuid, "password", svc, usr,
                     ),
                     v1_password,
                     aead_algorithm=aead_algorithm,
+                    max_plaintext_bytes=MAX_PASSWORD_BYTES,
+                    field_name="password",
                 )
                 new_note_ct: bytes | None = None
                 if v1_note:
                     new_note_ct = _crypto_v2.encrypt_field(
                         dek,
-                        _crypto_v2.make_associated_data_v3(
+                        _crypto_v2.make_associated_data_v4(
                             vault_uuid, cred_uuid, "note", svc, usr,
                         ),
                         v1_note,
                         aead_algorithm=aead_algorithm,
+                        max_plaintext_bytes=MAX_NOTE_BYTES,
+                        field_name="note",
                     )
 
                 write_cursor.execute(
@@ -1028,7 +1254,7 @@ class StorageManager:
                 dek, vault_uuid, aead_algorithm=aead_algorithm,
             )
 
-            # 7. Write v2 config (new v2 vaults use AAD v3).
+            # 7. Write v2 config (new v2 vaults use AAD v4).
             v2_config: list[tuple[str, object]] = [
                 ("version", "2"),
                 ("vault_uuid", vault_uuid),
@@ -1039,7 +1265,7 @@ class StorageManager:
                 ("kdf_salt", salt),
                 ("wrapped_dek", wrapped_dek),
                 ("aead_algorithm", aead_algorithm),
-                ("aad_version", "3"),
+                ("aad_version", "4"),
                 ("verification", verification_ct),
                 ("dek_generation", "1"),
             ]
@@ -1063,8 +1289,8 @@ class StorageManager:
             self._dek = dek
             self._vault_uuid = vault_uuid
             self._aead_algorithm = aead_algorithm
-            self._aad_version = 3
-            _log.info("vault migrated from v1 to v2 (AAD v3)")
+            self._aad_version = 4
+            _log.info("vault migrated from v1 to v2 (AAD v4)")
 
         except BaseException:
             # Rollback the transaction on any failure.
@@ -1077,44 +1303,44 @@ class StorageManager:
             raise
 
     def migrate_aad_v1_to_v2(self) -> None:
-        """Alias for :meth:`migrate_aad_to_v3` (kept for backwards compatibility)."""
-        self.migrate_aad_to_v3()
+        """Alias for :meth:`migrate_aad_to_v4` (kept for backwards compatibility)."""
+        self.migrate_aad_to_v4()
 
     def migrate_aad_to_v3(self) -> None:
-        """Migrate a v2 vault at AAD v1 or v2 to AAD v3 (length-delimited).
+        """Backward-compatible alias for :meth:`migrate_aad_to_v4`.
 
-        Re-encrypts all credential fields using AAD v3 which uses explicit
-        length prefixes for every variable-length associated data field.
+        The target AAD format for all supported migrations is now **v4**
+        (explicit length-prefixed associated data with zero-width-stripped
+        canonical identities).  The old ``v3`` name is retained so existing
+        callers and tests keep working.
+        """
+        self.migrate_aad_to_v4()
+
+    def migrate_aad_to_v4(self) -> None:
+        """Migrate a v2 vault at AAD v1, v2, or v3 to the current AAD (v4).
+
+        Re-encrypts all credential fields using AAD v4 which uses explicit
+        length prefixes for every variable-length associated data field
+        and zero-width-stripped canonical identities.
         The migration is wrapped in a single SQLite transaction; on failure
         the vault remains in its original AAD state.
 
-        A backup file ``vault.db.aad_v2.bak`` is created before migration.
+        A backup file ``vault.db.aad_v<N>.bak`` is created before migration.
 
         Raises:
             StorageError: if the vault is not v2, not unlocked, or already
-                at AAD v3.
+                at the current AAD version.
         """
         if self._vault_version != 2:
             raise StorageError("AAD migration requires an unlocked v2 vault.")
-        if self._aad_version >= 3:
-            raise StorageError("Vault is already at AAD v3.")
+        if self._aad_version >= 4:
+            raise StorageError("Vault is already at the current AAD version.")
         if self._dek is None or self._vault_uuid is None:
             raise StorageError("Vault is not fully unlocked.")
 
         current_aad = self._aad_version
         backup_suffix = f".aad_v{current_aad}.bak"
-        backup_tmp = self._secure_temp_file(self.db_path.parent, backup_suffix)
-        try:
-            shutil.copy2(self.db_path, backup_tmp)
-        except BaseException:
-            if backup_tmp.exists():
-                try:
-                    backup_tmp.unlink()
-                except OSError:
-                    pass
-            raise
-        backup_path = self.db_path.with_suffix(self.db_path.suffix + backup_suffix)
-        os.replace(str(backup_tmp), str(backup_path))
+        backup_path = self._create_secure_backup(backup_suffix)
         _log.info("AAD backup created at %s", backup_path)
 
         conn = self._get_conn()
@@ -1123,64 +1349,18 @@ class StorageManager:
         try:
             conn.execute("BEGIN EXCLUSIVE")
 
-            # Re-encrypt all credentials with AAD v3 (streaming cursor iteration).
-            read_cursor = conn.cursor()
-            write_cursor = conn.cursor()
-            read_cursor.execute(
-                "SELECT id, credential_uuid, service, username, encrypted_password, encrypted_note"
-                " FROM credentials"
-            )
-            for row in read_cursor:
-                cred_uuid: bytes = row["credential_uuid"]
-                svc: str = row["service"]
-                usr: str = row["username"]
-
-                # Decrypt with current AAD version.
-                old_aad = self._aad_version
-                self._aad_version = current_aad
-                try:
-                    password, note = self._decrypt_fields_v2(row)
-                except Exception as exc:
-                    self._aad_version = old_aad
-                    raise StorageError(
-                        f"Failed to decrypt credential id={row['id']} during AAD migration: {exc}"
-                    ) from exc
-                self._aad_version = old_aad  # restore
-
-                # Re-encrypt with AAD v3.
-                new_password_ct = _crypto_v2.encrypt_field(
-                    self._dek,
-                    _crypto_v2.make_associated_data_v3(
-                        self._vault_uuid, cred_uuid, "password", svc, usr,
-                    ),
-                    password,
-                    aead_algorithm=self._aead_algorithm,
-                )
-                new_note_ct: bytes | None = None
-                if note:
-                    new_note_ct = _crypto_v2.encrypt_field(
-                        self._dek,
-                        _crypto_v2.make_associated_data_v3(
-                            self._vault_uuid, cred_uuid, "note", svc, usr,
-                        ),
-                        note,
-                        aead_algorithm=self._aead_algorithm,
-                    )
-
-                write_cursor.execute(
-                    "UPDATE credentials SET encrypted_password = ?, encrypted_note = ? WHERE id = ?",
-                    (new_password_ct, new_note_ct, row["id"]),
-                )
+            # Decrypt under the *source* AAD version, re-encrypt to v4.
+            self._reencrypt_all_credentials_to_v4()
 
             # Update aad_version in config.
             cursor.execute(
-                "INSERT OR REPLACE INTO config (key, value) VALUES ('aad_version', '3')"
+                "INSERT OR REPLACE INTO config (key, value) VALUES ('aad_version', '4')"
             )
 
             conn.commit()
 
-            self._aad_version = 3
-            _log.info("vault AAD migrated from v%d to v3", current_aad)
+            self._aad_version = 4
+            _log.info("vault AAD migrated from v%d to v4", current_aad)
 
         except BaseException:
             self._aad_version = current_aad
@@ -1325,6 +1505,8 @@ class StorageManager:
         encrypted_password = _crypto_v2.encrypt_field(
             self._dek, password_ad, password,
             aead_algorithm=self._aead_algorithm,
+            max_plaintext_bytes=MAX_PASSWORD_BYTES,
+            field_name="password",
         )
 
         encrypted_note: bytes | None = None
@@ -1333,6 +1515,8 @@ class StorageManager:
             encrypted_note = _crypto_v2.encrypt_field(
                 self._dek, note_ad, note,
                 aead_algorithm=self._aead_algorithm,
+                max_plaintext_bytes=MAX_NOTE_BYTES,
+                field_name="note",
             )
 
         return encrypted_password, encrypted_note
@@ -1342,10 +1526,19 @@ class StorageManager:
     ) -> bytes:
         """Build AEAD associated data for a credential field.
 
-        Dispatches to AAD v3 (length-delimited), AAD v2 (legacy metadata-bound),
-        or AAD v1 (legacy UUID-bound) based on ``_aad_version``.
+        Dispatches to AAD v4 (stripped canonicalization), AAD v3
+        (frozen canonicalization), AAD v2 (legacy metadata-bound), or
+        AAD v1 (legacy UUID-bound) based on ``_aad_version``.
         """
-        if self._aad_version >= 3:
+        if self._aad_version >= 4:
+            return _crypto_v2.make_associated_data_v4(
+                self._vault_uuid,  # type: ignore[arg-type]
+                credential_uuid,
+                field_name,
+                service,
+                username,
+            )
+        if self._aad_version == 3:
             return _crypto_v2.make_associated_data_v3(
                 self._vault_uuid,  # type: ignore[arg-type]
                 credential_uuid,
@@ -1377,6 +1570,7 @@ class StorageManager:
     def save_credential(self, service: str, username: str, password: str, note: str = "", note_is_hidden: bool = False) -> int:
         self._require_unlocked()
         service_key, username_key = self._validated_identity_keys(service, username)
+        _validate_field_size(password, note)
 
         if self._vault_version == 2:
             return self._save_credential_v2(service, username, password, note, note_is_hidden, service_key, username_key)
@@ -1406,6 +1600,7 @@ class StorageManager:
         service_key: str, username_key: str,
     ) -> int:
         """Save a credential in a v2 vault."""
+        _validate_field_size(password, note)
         credential_uuid = uuid.uuid4().bytes
         encrypted_password, encrypted_note = self._encrypt_fields_v2(
             password, note, credential_uuid, service, username
@@ -1567,6 +1762,7 @@ class StorageManager:
         """Update an existing credential by id."""
         self._require_unlocked()
         service_key, username_key = self._validated_identity_keys(service, username)
+        _validate_field_size(password, note)
 
         if self._vault_version == 2:
             self._update_credential_v2(credential_id, service, username, password, note, note_is_hidden, service_key, username_key)
@@ -1599,6 +1795,7 @@ class StorageManager:
         service_key: str, username_key: str,
     ) -> None:
         """Update an existing credential in a v2 vault."""
+        _validate_field_size(password, note)
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute(
