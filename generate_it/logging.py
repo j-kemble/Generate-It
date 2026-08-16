@@ -60,44 +60,54 @@ class _PrivateRotatingFileHandler(RotatingFileHandler):
 
     def doRollover(self) -> None:
         super().doRollover()
-        # After rotation the just-rotated file sits at <base>.1 — tighten it
-        # and any pre-existing backup files in case they were created before
-        # this protection was added.
         if os.name != "posix":
             return
-        if hasattr(os, "chmod"):
-            for idx in range(1, self.backupCount + 1):
-                rotated = Path(self.baseFilename).with_suffix(
-                    Path(self.baseFilename).suffix + f".{idx}"
-                )
-                if rotated.exists():
-                    if rotated.is_symlink():
-                        raise LoggingError("Rotated log path is a symlink.")
-                    try:
-                        fd = os.open(str(rotated), os.O_RDONLY | os.O_NOFOLLOW)
-                        try:
-                            os.fchmod(fd, 0o600)
-                        finally:
-                            os.close(fd)
-                    except OSError as exc:
-                        raise LoggingError("Could not secure rotated log file.") from exc
+        for idx in range(1, self.backupCount + 1):
+            rotated = Path(self.baseFilename).with_suffix(
+                Path(self.baseFilename).suffix + f".{idx}"
+            )
+            if not rotated.exists():
+                continue
+            if rotated.is_symlink():
+                raise LoggingError("Rotated log path is a symlink.")
+            try:
+                fd = os.open(str(rotated), os.O_RDONLY | os.O_NOFOLLOW)
+                try:
+                    os.fchmod(fd, 0o600)
+                finally:
+                    os.close(fd)
+            except OSError as exc:
+                raise LoggingError("Could not secure rotated log file.") from exc
 
 
 def _set_private(path: Path, mode: int) -> None:
     """Set *path* to *mode* on POSIX systems."""
     if os.name != "posix":
         return
-    if hasattr(os, "chmod"):
-        if path.is_symlink():
-            raise LoggingError(f"Refusing symlinked path: {path}.")
-        try:
-            os.chmod(str(path), mode)
-        except OSError as exc:
-            raise LoggingError(f"Could not set permissions on {path}.") from exc
+    if path.is_symlink():
+        raise LoggingError(f"Refusing symlinked path: {path}.")
+    try:
+        os.chmod(str(path), mode)
+    except OSError as exc:
+        raise LoggingError(f"Could not set permissions on {path}.") from exc
 
 
-def _prepare_log_file(path: Path) -> None:
+def _prepare_log_file(path: Path) -> bool:
     """Create or validate a regular owner-only log file without following links."""
+    if os.name != "posix":
+        try:
+            path.open("x").close()
+            return True
+        except FileExistsError:
+            try:
+                path.open("a").close()
+            except OSError as exc:
+                raise LoggingError(f"Could not create or open log path {path}.") from exc
+            return False
+        except OSError as exc:
+            raise LoggingError(f"Could not create or open log path {path}.") from exc
+
+    created = False
     try:
         file_stat = path.lstat()
     except FileNotFoundError:
@@ -111,12 +121,21 @@ def _prepare_log_file(path: Path) -> None:
         if not stat.S_ISREG(file_stat.st_mode):
             raise LoggingError("Log path is not a regular file.")
 
-    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
     no_follow = getattr(os, "O_NOFOLLOW", None)
     if no_follow is None:
         raise LoggingError("Secure no-follow file opening is unavailable.")
     try:
-        fd = os.open(str(path), flags | no_follow, 0o600)
+        fd = os.open(
+            str(path),
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | no_follow,
+            0o600,
+        )
+        created = True
+    except FileExistsError:
+        try:
+            fd = os.open(str(path), os.O_WRONLY | os.O_APPEND | no_follow)
+        except OSError as exc:
+            raise LoggingError(f"Could not create or open log path {path}.") from exc
     except OSError as exc:
         raise LoggingError(f"Could not create or open log path {path}.") from exc
     try:
@@ -130,6 +149,7 @@ def _prepare_log_file(path: Path) -> None:
         os.fchmod(fd, 0o600)
     finally:
         os.close(fd)
+    return created
 
 
 def init_logging(
@@ -138,7 +158,7 @@ def init_logging(
 ) -> None:
     """Initialise rotating file logging.
 
-    Call once at startup.  Subsequent calls are no-ops.
+    Call once at startup. Subsequent calls are no-ops.
     """
     global _initialised
     if _initialised:
@@ -147,6 +167,7 @@ def init_logging(
     root = logging.getLogger()
     path = log_path or _DEFAULT_LOG_PATH
     handler: _PrivateRotatingFileHandler | None = None
+    created_log_file = False
     try:
         current = path.parent
         missing: list[Path] = []
@@ -158,10 +179,14 @@ def init_logging(
         for directory in reversed(missing):
             directory.mkdir()
             _set_private(directory, 0o700)
-        if path.parent.is_symlink():
-            raise LoggingError("Log parent is a symlink.")
+        try:
+            resolved_parent = path.parent.resolve(strict=False)
+        except OSError as exc:
+            raise LoggingError("Could not resolve log parent.") from exc
+        if resolved_parent != path.parent:
+            raise LoggingError("Log parent contains a symlink.")
         _set_private(path.parent, 0o700)
-        _prepare_log_file(path)
+        created_log_file = _prepare_log_file(path)
         handler = _PrivateRotatingFileHandler(
             path, maxBytes=1_048_576, backupCount=3, encoding="utf-8", delay=True
         )
@@ -177,6 +202,11 @@ def init_logging(
     except BaseException:
         if handler is not None:
             handler.close()
+        if created_log_file:
+            try:
+                path.unlink()
+            except OSError:
+                pass
         raise
     _initialised = True
 
@@ -187,10 +217,10 @@ def get_logger(name: str) -> logging.Logger:
 
 
 def _reset_logging() -> None:
-    """Remove all handlers and clear the initialised flag.  Test helper only."""
+    """Remove all handlers and clear the initialised flag. Test helper only."""
     global _initialised
     _initialised = False
     root = logging.getLogger()
-    for h in root.handlers[:]:
-        h.close()
-        root.removeHandler(h)
+    for handler in root.handlers[:]:
+        handler.close()
+        root.removeHandler(handler)

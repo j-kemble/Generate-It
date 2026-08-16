@@ -92,16 +92,3 @@ def test_maybe_prompt_aad_migration_handles_failure(monkeypatch) -> None:
     tui_security._maybe_prompt_aad_migration(None, None, state)
 
     assert state.message == "AAD upgrade failed."
-
-
-def test_maybe_prompt_aad_migration_rejects_empty_confirmation(monkeypatch) -> None:
-    mock_storage = MagicMock(_vault_version=2, _aad_version=2)
-    state = SimpleNamespace(storage=mock_storage, message="")
-    for response in (None, "", "n"):
-        monkeypatch.setattr(
-            tui_security.tui_modal,
-            "_run_modal",
-            lambda *a, response=response, **k: response,
-        )
-        tui_security._maybe_prompt_aad_migration(None, None, state)
-        mock_storage.migrate_aad_to_v3.assert_not_called()

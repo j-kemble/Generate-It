@@ -4,7 +4,7 @@ import math
 from typing import TYPE_CHECKING
 
 from . import generator
-from .identity import canonical_identity
+from .identity import canonical_identity_stripped
 
 if TYPE_CHECKING:
     from .tui_state import AppState
@@ -105,8 +105,8 @@ def _find_duplicate_credential(
     preferred for interactive duplicate checks; this helper remains for
     in-memory lists and tests.
     """
-    service_key = canonical_identity(service)
-    username_key = canonical_identity(username)
+    service_key = canonical_identity_stripped(service)
+    username_key = canonical_identity_stripped(username)
     if not service_key or not username_key:
         return None
 
@@ -114,8 +114,8 @@ def _find_duplicate_credential(
         cred_id = cred.get("id")
         if exclude_id is not None and cred_id == exclude_id:
             continue
-        cred_service = canonical_identity(str(cred.get("service", "")))
-        cred_username = canonical_identity(str(cred.get("username", "")))
+        cred_service = canonical_identity_stripped(str(cred.get("service", "")))
+        cred_username = canonical_identity_stripped(str(cred.get("username", "")))
         if cred_service == service_key and cred_username == username_key:
             return cred
 
@@ -160,26 +160,6 @@ def _estimate_entropy_bits(state: "AppState", wordlist_size: int) -> float:
         if alphabet <= 1:
             return 0.0
         return float(state.char_length) * math.log2(alphabet)
-
-    if state.mode == "username":
-        if state.username_style == "random":
-            bits = float(state.username_length) * math.log2(len(generator.USERNAME_ALPHANUMERIC))
-            if state.username_add_numbers:
-                bits += 2.0 * math.log2(10.0)
-            return bits
-        if state.username_style == "words":
-            if wordlist_size <= 1:
-                return 0.0
-            bits = float(state.username_word_count) * math.log2(wordlist_size)
-            if state.username_add_numbers:
-                bits += 3.0 * math.log2(10.0)
-            return bits
-        if not generator.DEFAULT_ADJECTIVES or wordlist_size <= 1:
-            return 0.0
-        bits = math.log2(len(generator.DEFAULT_ADJECTIVES)) + math.log2(wordlist_size)
-        if state.username_add_numbers:
-            bits += 2.0 * math.log2(10.0)
-        return bits
 
     if wordlist_size <= 1:
         base = 0.0

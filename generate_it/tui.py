@@ -520,7 +520,7 @@ def _run_security_settings_modal(
     window_cache = tui_modal._WindowCache()
 
     while True:
-        if _maybe_auto_clear_clipboard(state) and state.message != "Clipboard changed; auto-clear skipped.":
+        if _maybe_auto_clear_clipboard(state):
             state.message = "Clipboard auto-cleared."
         if _should_auto_lock_now(state):
             reason = _auto_lock_reason_text(state)
@@ -695,19 +695,15 @@ def _maybe_auto_clear_clipboard(state: AppState, now: float | None = None) -> bo
         return False
 
     expected = state.clipboard_clear_expected
+    state.clipboard_clear_due_at = None
+    state.clipboard_clear_expected = None
 
     try:
         current_clip = pyperclip.paste()
-        if expected is None or current_clip != expected:
-            state.clipboard_clear_due_at = None
-            state.clipboard_clear_expected = None
-            state.message = "Clipboard changed; auto-clear skipped."
-            return False
-        pyperclip.copy("")
+        if expected is None or current_clip == expected:
+            pyperclip.copy("")
     except PyperclipException:
         return False
-    state.clipboard_clear_due_at = None
-    state.clipboard_clear_expected = None
     return True
 
 def _revoke_clipboard(state: AppState) -> None:
@@ -717,23 +713,18 @@ def _revoke_clipboard(state: AppState) -> None:
     we do NOT clear it — we respect newer clipboard content.
     """
     expected = state.clipboard_clear_expected
+    state.clipboard_clear_due_at = None
+    state.clipboard_clear_expected = None
 
     if expected is None:
-        state.clipboard_clear_due_at = None
-        state.clipboard_clear_expected = None
         return
 
     try:
         current_clip = pyperclip.paste()
-        if current_clip != expected:
-            state.clipboard_clear_due_at = None
-            state.clipboard_clear_expected = None
-            return
-        pyperclip.copy("")
-        state.clipboard_clear_due_at = None
-        state.clipboard_clear_expected = None
+        if current_clip == expected:
+            pyperclip.copy("")
     except PyperclipException:
-        return
+        pass
 
 
 def _lock_vault(state: AppState) -> None:
@@ -971,11 +962,7 @@ def _run_details_modal(
 ) -> None:
     """Runs a modal to show credential details and allow copying."""
     h, w = stdscr.getmaxyx()
-    if h < 10 or w < 32:
-        state.message = "Resize terminal to view credential details."
-        return
-    box_h = min(14, h)
-    box_w = min(60, w)
+    box_h, box_w = 14, 60
     y, x = (h - box_h) // 2, (w - box_w) // 2
     
     win = curses.newwin(box_h, box_w, y, x)
@@ -989,12 +976,8 @@ def _run_details_modal(
     try:
         # Load secret on demand
         if state.storage and state.revealed_secret_id != credential['id']:
-            try:
-                state.revealed_secret = state.storage.get_credential_secret(credential['id'])
-                state.revealed_secret_id = credential['id']
-            except (StorageError, ValueError, TypeError, UnicodeDecodeError) as exc:
-                tui_modal._run_modal(stdscr, theme, "ERROR", f"Cannot load credential: {exc}")
-                return
+            state.revealed_secret = state.storage.get_credential_secret(credential['id'])
+            state.revealed_secret_id = credential['id']
         
         while True:
             if _maybe_auto_clear_clipboard(state):
@@ -1034,10 +1017,17 @@ def _run_details_modal(
                 row += 1
                 # Wrap note to fit
                 import textwrap
-                wrapped_note = textwrap.wrap(display_note, width=max(1, box_w - 14))
-                available_rows = max(0, box_h - row - 5)
-                for line in wrapped_note[:available_rows]:
-                    R._addstr_safe(win, row, 2, line[: max(1, box_w - 14)], val_attr)
+                wrapped_note = textwrap.wrap(display_note, width=box_w-14)
+                max_rows = max(0, box_h - row - 6)
+                visible_note = wrapped_note[:max_rows]
+                if len(visible_note) < len(wrapped_note):
+                    marker = " [truncated]"
+                    if visible_note:
+                        visible_note[-1] = visible_note[-1][: max(0, box_w - 14 - len(marker))] + marker
+                    else:
+                        visible_note = [marker]
+                for line in visible_note:
+                    win.addstr(row, 2, R._sanitize_terminal_text(line[:box_w-14]), val_attr)
                     row += 1
 
             win.addstr(row, 2, "Password:", label_attr)
@@ -1094,7 +1084,9 @@ def _run_details_modal(
                         feedback_until = time.monotonic() + 0.5
                         state.message = msg
                 except (StorageError, PyperclipException):
-                    pass
+                    feedback_text = "    CLIPBOARD COPY FAILED    "
+                    feedback_attr = theme.warn
+                    feedback_until = time.monotonic() + 1.5
 
             elif key in (ord('u'), ord('U')):
                 try:
@@ -1104,7 +1096,9 @@ def _run_details_modal(
                     feedback_until = time.monotonic() + 0.5
                     state.message = msg
                 except (StorageError, PyperclipException):
-                    pass
+                    feedback_text = "    CLIPBOARD COPY FAILED    "
+                    feedback_attr = theme.warn
+                    feedback_until = time.monotonic() + 1.5
 
             elif key in (ord('n'), ord('N')):
                 if note_text:
@@ -1115,7 +1109,9 @@ def _run_details_modal(
                         feedback_until = time.monotonic() + 0.5
                         state.message = msg
                     except (StorageError, PyperclipException):
-                        pass
+                        feedback_text = "    CLIPBOARD COPY FAILED    "
+                        feedback_attr = theme.warn
+                        feedback_until = time.monotonic() + 1.5
                 else:
                     feedback_text = "       NO NOTE TO COPY!      "
                     feedback_attr = theme.warn
@@ -1172,7 +1168,7 @@ def _run_vault_modal(
     filtered_credentials: list[dict] = []
     
     while True:
-        if _maybe_auto_clear_clipboard(state) and state.message != "Clipboard changed; auto-clear skipped.":
+        if _maybe_auto_clear_clipboard(state):
             state.message = "Clipboard auto-cleared."
         if _should_auto_lock_now(state):
             reason = _auto_lock_reason_text(state)
@@ -1302,6 +1298,9 @@ def _run_vault_modal(
                 continue
             return
         
+        if key in (ord('v'), ord('V'), ord('q'), ord('Q')): # v/q
+            return
+            
         if key == ord('/'):
             search_mode = True
             continue
@@ -1323,8 +1322,6 @@ def _run_vault_modal(
                 state.vault_selected_idx = 0
                 state.vault_scroll_y = 0
                 continue
-        if key in (ord('v'), ord('V'), ord('q'), ord('Q')): # v/q
-            return
         if key in (curses.KEY_UP, ord('k')):
             if filtered_credentials:
                 state.vault_selected_idx = max(0, state.vault_selected_idx - 1)
@@ -1544,8 +1541,21 @@ def run() -> int:
                 if pwd is None: # Cancelled
                     return 0
                 
-                if tui_security._try_unlock_vault(stdscr, theme, state, pwd):
+                setattr(state, tui_security._UNLOCK_RETRY_FLAG, False)
+                setattr(state, tui_security._UNLOCK_CANCELLED_FLAG, False)
+                try:
+                    unlocked = tui_security._try_unlock_vault(stdscr, theme, state, pwd)
+                finally:
+                    retry = getattr(state, tui_security._UNLOCK_RETRY_FLAG, False)
+                    cancelled = getattr(state, tui_security._UNLOCK_CANCELLED_FLAG, False)
+                    delattr(state, tui_security._UNLOCK_RETRY_FLAG)
+                    delattr(state, tui_security._UNLOCK_CANCELLED_FLAG)
+                if unlocked:
                     break
+                if cancelled:
+                    return 0
+                if retry:
+                    continue
 
         # Load initial credentials
         if state.vault_unlocked and state.storage:
