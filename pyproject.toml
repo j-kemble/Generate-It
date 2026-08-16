@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 #   SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct) python -m build
 [project]
 name = "generate-it"
-version = "0.2.2"
+version = "0.2.3"
 description = "Terminal credential generator with a curses-based TUI."
 readme = "README.md"
 requires-python = ">=3.10"
