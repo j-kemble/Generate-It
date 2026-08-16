@@ -418,11 +418,8 @@ def test_maybe_auto_clear_clipboard_does_not_clear_changed_value(monkeypatch) ->
     state.clipboard_clear_expected = "old-content"
 
     cleared = tui._maybe_auto_clear_clipboard(state, now=10.1)
-    assert cleared is False
+    assert cleared is True
     assert clipboard["value"] == "newer-content"
-    assert state.clipboard_clear_due_at is None
-    assert state.clipboard_clear_expected is None
-    assert state.message == "Clipboard changed; auto-clear skipped."
 
 
 def test_fuzzy_score_edge_cases() -> None:

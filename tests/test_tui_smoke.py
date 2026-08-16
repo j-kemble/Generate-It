@@ -47,18 +47,12 @@ def test_tui_run_smoke_no_tty() -> None:
     # unlock flow advances instead of blocking on user input.
     fake_curses.newwin.return_value.getch.return_value = 10
 
-    fake_storage = mock.MagicMock(name="StorageManager")
-    fake_storage.vault_exists.return_value = True
-    fake_storage.get_failed_unlock_state.return_value = (0, None)
-    # tui.run() instantiates StorageManager(...); return the same configured mock.
-    fake_storage.return_value = fake_storage
-
     with mock.patch("generate_it.tui.curses", fake_curses), \
          mock.patch("generate_it.tui_render.curses", fake_curses), \
          mock.patch("generate_it.tui_modal.curses", fake_curses), \
          mock.patch("generate_it.tui_security.curses", fake_curses), \
          mock.patch("generate_it.tui_csv.curses", fake_curses), \
-         mock.patch("generate_it.tui.StorageManager", fake_storage):
+         mock.patch("generate_it.tui.StorageManager", mock.MagicMock()):
         result = tui.run()
 
     assert result == 0

@@ -42,8 +42,7 @@ def _copy_to_clipboard_with_policy(state: AppState, value: str) -> str:
     try:
         pyperclip.copy(value)
     except PyperclipException:
-        # Fallback for systems (like headless Linux) without a clipboard manager
-        return "Clipboard error: Install 'xclip' or 'xsel'."
+        raise
 
     seconds = tui._clipboard_auto_clear_seconds(state)
     if seconds is None:
