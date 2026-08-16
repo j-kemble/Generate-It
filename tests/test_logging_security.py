@@ -8,7 +8,36 @@ import pytest
 from generate_it import logging as app_logging
 
 
+def test_non_posix_log_file_setup_uses_normal_file_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log_path = tmp_path / "app.log"
+    monkeypatch.setattr(app_logging.os, "name", "nt")
+    monkeypatch.delattr(app_logging.os, "O_NOFOLLOW", raising=False)
+
+    assert app_logging._prepare_log_file(log_path) is True
+    assert log_path.is_file()
+    assert app_logging._prepare_log_file(log_path) is False
+
+
+def test_non_posix_log_file_setup_uses_atomic_creation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log_path = tmp_path / "app.log"
+    monkeypatch.setattr(app_logging.os, "name", "nt")
+    monkeypatch.delattr(app_logging.os, "O_NOFOLLOW", raising=False)
+
+    def fail_exists(self: Path) -> bool:
+        raise AssertionError("non-POSIX setup must not pre-check path existence")
+
+    monkeypatch.setattr(Path, "exists", fail_exists)
+
+    assert app_logging._prepare_log_file(log_path) is True
+
+
 def test_symlink_log_path_is_rejected(tmp_path: Path) -> None:
+    if app_logging.os.name != "posix":
+        pytest.skip("Symlink rejection is a POSIX-only logging guarantee")
     app_logging._reset_logging()
     target = tmp_path / "target.log"
     target.write_text("protected", encoding="utf-8")

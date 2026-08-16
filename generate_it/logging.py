@@ -94,6 +94,19 @@ def _set_private(path: Path, mode: int) -> None:
 
 def _prepare_log_file(path: Path) -> bool:
     """Create or validate a regular owner-only log file without following links."""
+    if os.name != "posix":
+        try:
+            path.open("x").close()
+            return True
+        except FileExistsError:
+            try:
+                path.open("a").close()
+            except OSError as exc:
+                raise LoggingError(f"Could not create or open log path {path}.") from exc
+            return False
+        except OSError as exc:
+            raise LoggingError(f"Could not create or open log path {path}.") from exc
+
     created = False
     try:
         file_stat = path.lstat()
