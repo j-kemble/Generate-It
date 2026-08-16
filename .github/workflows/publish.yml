@@ -15,6 +15,16 @@ jobs:
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7
         with:
           persist-credentials: false
+          fetch-depth: 0
+
+      - name: Validate tag is on main (production publish branch)
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "Tag ${GITHUB_REF} points to a commit not reachable from main."
+            echo "PyPI publishes only from main. Refusing to continue."
+            exit 1
+          fi
+          echo "Tag is reachable from main: ${GITHUB_REF}"
 
       - name: Validate tag matches project version
         run: |
