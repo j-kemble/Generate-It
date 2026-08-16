@@ -56,13 +56,13 @@ def test_new_vault_uses_aad_v3(tmp_path: Path) -> None:
 
     storage = StorageManager(db_path=db_path)
     storage.initialize_vault_v2(master)
-    assert storage._aad_version == 3
+    assert storage._aad_version == 4
 
     conn = sqlite3.connect(db_path)
     row = conn.execute("SELECT value FROM config WHERE key='aad_version'").fetchone()
     conn.close()
     assert row is not None
-    assert row[0].decode() if isinstance(row[0], bytes) else str(row[0]) == "3"
+    assert row[0].decode() if isinstance(row[0], bytes) else str(row[0]) == "4"
 
     storage.close()
 
@@ -85,15 +85,15 @@ def test_migrate_aad_v1_or_v2_to_v3(tmp_path: Path) -> None:
     c2 = storage.save_credential("ServiceB", "userB", "secretB")
     storage.close()
 
-    # Reopen and migrate to AAD v3
+    # Reopen and migrate to the current AAD (v4)
     storage2 = StorageManager(db_path=db_path)
     storage2.unlock_vault(master)
     assert storage2._aad_version == 2
 
     storage2.migrate_aad_to_v3()
-    assert storage2._aad_version == 3
+    assert storage2._aad_version == 4
 
-    # Decryption works under AAD v3
+    # Decryption works under AAD v4
     creds = storage2.list_credentials()
     assert len(creds) == 2
     p_map = {c["service"]: c["password"] for c in creds}

@@ -1018,7 +1018,15 @@ def _run_details_modal(
                 # Wrap note to fit
                 import textwrap
                 wrapped_note = textwrap.wrap(display_note, width=box_w-14)
-                for line in wrapped_note:
+                max_rows = max(0, box_h - row - 6)
+                visible_note = wrapped_note[:max_rows]
+                if len(visible_note) < len(wrapped_note):
+                    marker = " [truncated]"
+                    if visible_note:
+                        visible_note[-1] = visible_note[-1][: max(0, box_w - 14 - len(marker))] + marker
+                    else:
+                        visible_note = [marker]
+                for line in visible_note:
                     win.addstr(row, 2, R._sanitize_terminal_text(line[:box_w-14]), val_attr)
                     row += 1
 
@@ -1076,7 +1084,9 @@ def _run_details_modal(
                         feedback_until = time.monotonic() + 0.5
                         state.message = msg
                 except (StorageError, PyperclipException):
-                    pass
+                    feedback_text = "    CLIPBOARD COPY FAILED    "
+                    feedback_attr = theme.warn
+                    feedback_until = time.monotonic() + 1.5
 
             elif key in (ord('u'), ord('U')):
                 try:
@@ -1086,7 +1096,9 @@ def _run_details_modal(
                     feedback_until = time.monotonic() + 0.5
                     state.message = msg
                 except (StorageError, PyperclipException):
-                    pass
+                    feedback_text = "    CLIPBOARD COPY FAILED    "
+                    feedback_attr = theme.warn
+                    feedback_until = time.monotonic() + 1.5
 
             elif key in (ord('n'), ord('N')):
                 if note_text:
@@ -1097,7 +1109,9 @@ def _run_details_modal(
                         feedback_until = time.monotonic() + 0.5
                         state.message = msg
                     except (StorageError, PyperclipException):
-                        pass
+                        feedback_text = "    CLIPBOARD COPY FAILED    "
+                        feedback_attr = theme.warn
+                        feedback_until = time.monotonic() + 1.5
                 else:
                     feedback_text = "       NO NOTE TO COPY!      "
                     feedback_attr = theme.warn
@@ -1307,6 +1321,7 @@ def _run_vault_modal(
                 vault_filter += chr(key)
                 state.vault_selected_idx = 0
                 state.vault_scroll_y = 0
+                continue
         if key in (curses.KEY_UP, ord('k')):
             if filtered_credentials:
                 state.vault_selected_idx = max(0, state.vault_selected_idx - 1)
@@ -1526,14 +1541,20 @@ def run() -> int:
                 if pwd is None: # Cancelled
                     return 0
                 
+                setattr(state, tui_security._UNLOCK_RETRY_FLAG, False)
+                setattr(state, tui_security._UNLOCK_CANCELLED_FLAG, False)
                 try:
-                    state.storage.unlock_vault(pwd)
-                    state.vault_unlocked = True
-                    tui_security._maybe_show_identity_conflict(stdscr, theme, state)
-                    tui_security._maybe_prompt_aad_migration(stdscr, theme, state)
+                    unlocked = tui_security._try_unlock_vault(stdscr, theme, state, pwd)
+                finally:
+                    retry = getattr(state, tui_security._UNLOCK_RETRY_FLAG, False)
+                    cancelled = getattr(state, tui_security._UNLOCK_CANCELLED_FLAG, False)
+                    delattr(state, tui_security._UNLOCK_RETRY_FLAG)
+                    delattr(state, tui_security._UNLOCK_CANCELLED_FLAG)
+                if unlocked:
                     break
-                except InvalidPasswordError:
-                    # Visual feedback loop
+                if cancelled:
+                    return 0
+                if retry:
                     continue
 
         # Load initial credentials

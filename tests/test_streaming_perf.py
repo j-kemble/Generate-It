@@ -80,7 +80,7 @@ def test_aad_v1_to_v3_migration_streams(tmp_path: Path) -> None:
         storage.save_credential(f"Svc-{i:03d}", f"usr-{i:03d}", f"pass-{i}")
 
     storage.migrate_aad_to_v3()
-    assert storage._aad_version == 3
+    assert storage._aad_version == 4
 
     creds = storage.list_credentials()
     assert len(creds) == 200

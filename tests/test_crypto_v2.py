@@ -754,7 +754,7 @@ class TestVaultV2AssociatedDataBinding:
 
         storage = StorageManager(db_path=db_path)
         storage.initialize_vault_v2(pw)
-        assert storage._aad_version == 3
+        assert storage._aad_version == 4
 
         import sqlite3
         raw = sqlite3.connect(db_path)
@@ -763,7 +763,7 @@ class TestVaultV2AssociatedDataBinding:
         ).fetchone()
         raw.close()
         assert row is not None
-        assert int(row[0]) == 3
+        assert int(row[0]) == 4
         storage.close()
 
     def test_uuid_ciphertext_swap_rejected_on_aad_v2(self, tmp_path) -> None:
@@ -831,7 +831,7 @@ class TestVaultV2AssociatedDataBinding:
         storage2.unlock_vault(pw)
         storage2.migrate_v1_to_v2(pw)
         assert storage2._vault_version == 2
-        assert storage2._aad_version == 3
+        assert storage2._aad_version == 4
 
         import sqlite3
         raw = sqlite3.connect(db_path)
@@ -840,7 +840,7 @@ class TestVaultV2AssociatedDataBinding:
         ).fetchone()
         raw.close()
         assert row is not None
-        assert int(row[0]) == 3
+        assert int(row[0]) == 4
         storage2.close()
 
     def test_aad_v1_to_v2_migration_succeeds(self, tmp_path) -> None:
@@ -866,9 +866,9 @@ class TestVaultV2AssociatedDataBinding:
         storage2.unlock_vault(pw)
         assert storage2._aad_version == 1
 
-        # Migrate to AAD v3 (migrate_aad_v1_to_v2 delegates to v3).
+        # Migrate to the current AAD (migrate_aad_v1_to_v2 delegates to migrate_aad_to_v3).
         storage2.migrate_aad_v1_to_v2()
-        assert storage2._aad_version == 3
+        assert storage2._aad_version == 4
 
         # Credentials should still decrypt correctly.
         creds = storage2.list_credentials()
@@ -884,7 +884,7 @@ class TestVaultV2AssociatedDataBinding:
             "SELECT value FROM config WHERE key='aad_version'"
         ).fetchone()
         raw.close()
-        assert int(row[0]) == 3
+        assert int(row[0]) == 4
 
 
 class TestVaultV2CloseAndReopen:
