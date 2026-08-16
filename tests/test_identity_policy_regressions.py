@@ -28,6 +28,14 @@ def test_predictable_repeated_chunk_does_not_gain_entropy_from_length() -> None:
         _validate_master_password("Ab1!" * 20)
 
 
+def test_character_class_fallback_accepts_short_diverse_password() -> None:
+    # Below the 64-bit entropy threshold, but contains all four character
+    # classes and is >= 8 chars — the character-class fallback must accept it.
+    password = "Pass123!"
+    assert _estimate_password_entropy(password) < 64
+    _validate_master_password(password)  # must not raise
+
+
 def test_strong_password_still_initializes_v1_and_v2_vaults(tmp_path) -> None:
     for name, initializer in (("v1", "initialize_vault"), ("v2", "initialize_vault_v2")):
         storage = StorageManager(db_path=tmp_path / f"{name}.db")

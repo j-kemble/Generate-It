@@ -145,11 +145,13 @@ def _validate_master_password(password: str) -> None:
        minimum 8 characters.  This allows strong passphrases that might
        have lower entropy per-character (e.g., multiple lowercase words).
 
-    Also unconditionally rejects passwords in the common weak-password list.
+    Also unconditionally rejects passwords in the common weak-password list and
+    predictable repeated patterns.
 
     Raises:
         WeakMasterPasswordError: if the password is empty, too short, too long,
-            or fails both the entropy and character-class checks.
+            a predictable repeated pattern, or fails both the entropy and
+            character-class checks.
     """
     if not password:
         raise WeakMasterPasswordError("Master password cannot be empty.")
@@ -167,6 +169,11 @@ def _validate_master_password(password: str) -> None:
         return
 
     # Fallback: character-class check for passwords below the entropy threshold.
+    if _is_predictable_password_pattern(password):
+        raise WeakMasterPasswordError(
+            f"Master password is too weak (~{entropy:.0f} bits, need 64). "
+            "Consider using a longer passphrase or adding more character variety."
+        )
     if len(password) < 8:
         raise WeakMasterPasswordError(
             "Master password must be at least 8 characters "
@@ -188,10 +195,8 @@ def _validate_master_password(password: str) -> None:
         raise WeakMasterPasswordError(
             "Master password must contain at least 1 special character (e.g., !@#$%^&*)."
         )
-    raise WeakMasterPasswordError(
-        f"Master password is too weak (~{entropy:.0f} bits, need 64). "
-        "Consider using a longer passphrase or adding more character variety."
-    )
+    # All four character classes present and no predictable pattern: accept.
+    return
 
 class StorageManager:
     def __init__(self, db_path: Optional[Path] = None):
