@@ -88,17 +88,24 @@ jobs:
           head: HEAD
           extra_args: --only-verified
 
-  # Static type checking with mypy (report-only, doesn't fail CI).
+  # Static type checking with mypy (blocking).
   typecheck:
-    name: Static type check (report only)
+    name: Static type check
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
         with:
+          fetch-depth: 0
           persist-credentials: false
       - name: Check for trailing whitespace violations
-        run: git diff --check || true
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git diff --check "${{ github.event.pull_request.base.sha }}...${{ github.sha }}"
+          elif [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+            git diff --check "$(git hash-object -t tree /dev/null)..${{ github.sha }}"
+          else
+            git diff --check "${{ github.event.before }}...${{ github.sha }}"
+          fi
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
         with:
           python-version: "3.12"
@@ -107,7 +114,7 @@ jobs:
           python -m pip install --require-hashes -r constraints/ci.txt
           python -m pip install --no-deps -e .
       - name: Run mypy type checker
-        run: mypy generate_it || true
+        run: mypy generate_it
 
   # Test suite with pytest.
   test:
@@ -134,7 +141,7 @@ jobs:
       - name: Install package
         run: python -m pip install --no-deps -e .
       - name: Run tests
-        run: pytest tests/ -v --cov=generate_it --cov-report=xml || pytest tests/ -v
+        run: pytest tests/ -v --cov=generate_it --cov-report=xml
       - name: Upload coverage
         uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238  # v4.6.0
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
@@ -163,6 +170,13 @@ jobs:
       - name: Validate package
         run: |
           python -m twine check dist/*
+      - name: Smoke-test built wheel
+        run: |
+          python -m venv /tmp/generate-it-wheel-smoke
+          /tmp/generate-it-wheel-smoke/bin/python -m pip install --require-hashes -r constraints/ci.txt
+          /tmp/generate-it-wheel-smoke/bin/python -m pip install --no-deps dist/*.whl
+          cd /tmp
+          /tmp/generate-it-wheel-smoke/bin/python -c "import generate_it, generate_it.storage, generate_it.tui, generate_it.__main__; from importlib.resources import files; path = str(files('generate_it').joinpath('wordlist.txt')); assert 'site-packages' in generate_it.__file__; assert path.endswith('wordlist.txt'); print(generate_it.__file__)"
       - name: Upload build artifacts
         uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882  # v4.4.3
         with:

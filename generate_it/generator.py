@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import functools
+import hashlib
 import math
 import os
 import secrets
@@ -365,7 +366,7 @@ def resolve_wordlist_source(path: Path | None = None) -> tuple[Path | None, bool
     return path, is_custom
 
 
-_WORDLIST_CACHE: dict[tuple[Path | None, int, int], tuple[str, ...]] = {}
+_WORDLIST_CACHE: dict[Path | None, tuple[int, int, bytes, tuple[str, ...]]] = {}
 _WORDLIST_CACHE_MAX_SIZE = 8
 
 
@@ -375,7 +376,7 @@ def clear_wordlist_cache() -> None:
 
 
 def _get_file_signature(path: Path | None) -> tuple[Path | None, int, int]:
-    """Return (resolved_path, mtime_ns, size) for freshness-aware cache keying."""
+    """Return resolved path and metadata used for the wordlist fast path."""
     if path is None or not path.exists():
         return (None, 0, 0)
     try:
@@ -383,6 +384,15 @@ def _get_file_signature(path: Path | None) -> tuple[Path | None, int, int]:
         return (path.resolve(), st.st_mtime_ns, st.st_size)
     except OSError:
         return (path.resolve(), 0, 0)
+
+
+def _hash_wordlist(path: Path) -> bytes:
+    """Hash a wordlist only after its filesystem metadata changes."""
+    digest = hashlib.blake2b(digest_size=16)
+    with path.open("rb") as wordlist_file:
+        for chunk in iter(lambda: wordlist_file.read(65536), b""):
+            digest.update(chunk)
+    return digest.digest()
 
 
 def load_wordlist(path: Path | None = None) -> list[str]:
@@ -397,28 +407,36 @@ def load_wordlist(path: Path | None = None) -> list[str]:
     Custom wordlists (explicit path or env var) are validated against
     a 50-bit entropy floor at 4 words.
 
-    Cached by (resolved_path, mtime_ns, size) in a small bounded cache.
+    Cached by resolved path and metadata in a small bounded cache. Content is
+    hashed only when the path is first loaded or its metadata changes.
     Returns a defensive copy so caller mutations do not corrupt shared cached data.
     """
     resolved_path, is_custom = resolve_wordlist_source(path)
-    sig = _get_file_signature(resolved_path)
+    cache_path, mtime_ns, file_size = _get_file_signature(resolved_path)
+    cached = _WORDLIST_CACHE.get(cache_path)
+    if cached is not None:
+        cached_mtime_ns, cached_size, cached_hash, cached_words = cached
+        if (cached_mtime_ns, cached_size) == (mtime_ns, file_size):
+            if cache_path is None:
+                return list(cached_words)
+            if _hash_wordlist(cache_path) == cached_hash:
+                return list(cached_words)
 
-    if sig in _WORDLIST_CACHE:
-        return list(_WORDLIST_CACHE[sig])
-
-    if resolved_path is None or not resolved_path.exists():
-        return list(DEFAULT_WORDLIST)
+    if cache_path is None or not cache_path.exists():
+        words_tuple = tuple(DEFAULT_WORDLIST)
+        content_hash = b""
     else:
+        content_hash = _hash_wordlist(cache_path)
         raw_words: list[str] = []
-        for line in resolved_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        for line in cache_path.read_text(encoding="utf-8", errors="ignore").splitlines():
             w = line.strip()
             if not w or w.startswith("#"):
                 continue
             raw_words.append(w)
         words_tuple = tuple(_dedupe_preserve_order(raw_words))
 
-    # Validate custom wordlists against the entropy floor.
-    if is_custom:
+    # Validate only a file that was actually loaded as a custom wordlist.
+    if is_custom and cache_path is not None:
         bits = _ordered_sample_entropy_bits(len(words_tuple), 4)
         if bits < _MIN_PASSPHRASE_ENTROPY_BITS:
             raise WordlistSecurityError(
@@ -433,7 +451,7 @@ def load_wordlist(path: Path | None = None) -> list[str]:
         oldest_key = next(iter(_WORDLIST_CACHE))
         del _WORDLIST_CACHE[oldest_key]
 
-    _WORDLIST_CACHE[sig] = words_tuple
+    _WORDLIST_CACHE[cache_path] = (mtime_ns, file_size, content_hash, words_tuple)
     return list(words_tuple)
 
 
@@ -612,23 +630,20 @@ def generate_username_random(
         chars = [secrets.choice(USERNAME_ALPHANUMERIC) for _ in range(length)]
         return "".join(chars)
 
-    # For separator styles, create segments separated by _ or -
+    # Use as many separators as fit while keeping every segment non-empty.
     separator = "_" if separator_style == "underscore" else "-"
-    segment_length = length // 3
-    segments: list[str] = []
-
-    for _ in range(3):
-        seg = "".join(
-            secrets.choice(USERNAME_ALPHANUMERIC) for _ in range(segment_length)
-        )
-        segments.append(seg)
-
-    # Adjust last segment to match exact length
-    username = separator.join(segments)
-    while len(username) < length:
-        username += secrets.choice(USERNAME_ALPHANUMERIC)
-
-    return username[:length]
+    separator_count = min(2, max(1, (length - 1) // 2))
+    content_length = length - separator_count
+    segment_count = separator_count + 1
+    first_length, remainder = divmod(content_length, segment_count)
+    segment_lengths = [first_length] * segment_count
+    for index in range(remainder):
+        segment_lengths[index] += 1
+    segments = [
+        "".join(secrets.choice(USERNAME_ALPHANUMERIC) for _ in range(segment_length))
+        for segment_length in segment_lengths
+    ]
+    return separator.join(segments)
 
 
 def generate_username_adjective_noun(
