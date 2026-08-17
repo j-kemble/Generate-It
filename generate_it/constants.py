@@ -67,7 +67,7 @@ NUMBERS = "0123456789"
 SPECIAL_CHARACTERS = "!@#$%^&*()-_=+[]{};:,.?/"
 
 # Username-related character sets.
-USERNAME_ALPHANUMERIC = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+USERNAME_ALPHANUMERIC = "abcdefghijklmnopqrstuvwxyz0123456789"
 USERNAME_SEPARATORS = frozenset(["_", "-"])
 
 # Username styles

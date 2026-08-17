@@ -856,7 +856,7 @@ def _render_info_box(
             + math.log2(len(generator.PASSPHRASE_SPECIALS))
         )
     else:
-        max_bits = float(generator.MAX_PASSWORD_CHARS) * math.log2(
+        max_bits = float(generator.MAX_USERNAME_LENGTH) * math.log2(
             len(generator.USERNAME_ALPHANUMERIC)
         )
     bar = _bar(min(bits, max_bits), max_bits, bar_w)
