@@ -2063,9 +2063,9 @@ def run() -> int:
         return 0
 
 
-# Imported last to avoid a circular import: tui_render aliases a few
-# state-label helpers (e.g. _selected_category_count) that are defined
-# above in this module.
+# Imported last to avoid a circular import: tui_render now redefines a few
+# state-label helpers (e.g. _selected_category_count) locally rather
+# than importing them from this module.
 from . import tui_render as R
 from . import tui_flow
 
