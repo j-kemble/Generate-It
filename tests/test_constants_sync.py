@@ -1,16 +1,35 @@
-"""Test that every constant duplicated in ``constants.py`` matches its
-counterpart in ``generator.py``.
+"""Test that every constant duplicated across modules matches its counterpart.
 
-The duplication between ``generate_it/constants.py`` and
-``generate_it/generator.py`` is a known architectural debt — the former was
-extracted as a central registry after the latter already defined many module-
-level constants.  This test guards against silent drift (see
-``review-REJECTED-consolidated-remediation-20260816-2305.md`` §3, which caught
-``USERNAME_ALPHANUMERIC`` having diverged).
+This test currently guards a single duplication surface:
 
-If this test fails, the two modules are out of sync.  Fix the source of truth
-(first decide which one it is, then update the other) and add the correction
-to this test so future drift is caught.
+**``constants.py`` ↔ ``generator.py``** — generator-level constants
+(length bounds, character sets, wordlists, entropy minimums).  This is the
+original drift surface; ``USERNAME_ALPHANUMERIC`` was caught diverging here
+(``review-REJECTED-consolidated-remediation-20260816-2305.md`` §3).
+
+If a test here fails, the two modules are out of sync.  Fix the source of
+truth (first decide which one it is, then update the other) and add the
+correction to this test so future drift is caught.
+
+--------------------------------------------------------------------
+Known architectural debt — not yet guarded by this test suite
+--------------------------------------------------------------------
+
+**Policy-tuple duplication** — ``constants.py`` ↔ ``tui.py``
+  ``CLIPBOARD_AUTO_CLEAR_OPTIONS`` and ``AUTO_LOCK_OPTIONS`` are defined
+  independently in both modules (``tui.py`` at lines 52, 62 is the runtime
+  authority; ``constants.py`` at lines 10, 20 is imported by
+  ``tui_render.py``).  These are verified byte-identical at the time of
+  PR #3 remediation but are *not* guarded by a sync test — they could
+  silently diverge.
+
+**Constants single-source-of-truth migration**
+  Making ``generator.py`` and ``tui.py`` import from ``constants.py``
+  (rather than defining independent copies) is the intended resolution for
+  *all* duplication surfaces above.  The sync test is a pragmatic interim
+  guard; the full migration is deferred for scope-risk reasons.  When the
+  migration lands, this file should be updated to verify the *remaining*
+  guards rather than the duplication surfaces.
 """
 
 from __future__ import annotations
