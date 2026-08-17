@@ -33,21 +33,6 @@ def _as_str(value: object) -> str:
     return str(value)
 
 
-# --- Numeric boundaries ---------------------------------------------------
-
-SHARED_INTS: dict[str, int] = {
-    "MIN_PASSWORD_CHARS": 8,
-    "MAX_PASSWORD_CHARS": 64,
-    "MIN_PASSPHRASE_WORDS": 3,
-    "MAX_PASSPHRASE_WORDS": 10,
-    "MIN_USERNAME_LENGTH": 3,
-    "MAX_USERNAME_LENGTH": 64,
-    "MIN_USERNAME_WORDS": 1,
-    "MAX_USERNAME_WORDS": 3,
-    "_MIN_PASSPHRASE_ENTROPY_BITS": 50,
-}
-
-
 class TestConstantsSync:
     """Verify every shared constant matches between ``constants`` and ``generator``."""
 

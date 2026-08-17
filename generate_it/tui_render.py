@@ -772,16 +772,6 @@ def _render_info_box(
     inner_w = max(0, w - 4)
     row = y + 1
 
-    bits = _estimate_entropy_bits(state, wordlist_size)
-    label, kind = _strength_label(bits)
-
-    if kind == "bad":
-        kind_attr = theme.bad
-    elif kind == "warn":
-        kind_attr = theme.warn
-    else:
-        kind_attr = theme.ok
-
     mode_str = (
         "characters"
         if state.mode == "chars"
@@ -838,26 +828,33 @@ def _render_info_box(
         )
         row += 1
 
-    # Strength bar
-    _addstr_safe(stdscr, row, x + 2, f"Entropy: ~{bits:0.1f} bits"[:inner_w], theme.dim)
-    row += 1
+    if state.mode != "username":
+        bits = _estimate_entropy_bits(state, wordlist_size)
+        label, kind = _strength_label(bits)
 
-    prefix = "Strength: ["
-    suffix = f"] {label}"
-    bar_w = max(0, inner_w - len(prefix) - len(suffix))
-    if state.mode == "chars":
-        max_bits = float(generator.MAX_PASSWORD_CHARS) * math.log2(
-            len(generator.LETTERS) + len(generator.NUMBERS) + len(generator.SPECIAL_CHARACTERS)
-        )
-    elif state.mode == "words":
-        max_bits = (
-            float(generator.MAX_PASSPHRASE_WORDS) * math.log2(max(2, wordlist_size))
-            + 3.0 * math.log2(10.0)
-            + math.log2(len(generator.PASSPHRASE_SPECIALS))
-        )
-    else:
-        max_bits = float(generator.MAX_USERNAME_LENGTH) * math.log2(
-            len(generator.USERNAME_ALPHANUMERIC)
-        )
-    bar = _bar(min(bits, max_bits), max_bits, bar_w)
-    _addstr_safe(stdscr, row, x + 2, f"{prefix}{bar}{suffix}"[:inner_w], kind_attr)
+        if kind == "bad":
+            kind_attr = theme.bad
+        elif kind == "warn":
+            kind_attr = theme.warn
+        else:
+            kind_attr = theme.ok
+
+        # Strength bar
+        _addstr_safe(stdscr, row, x + 2, f"Entropy: ~{bits:0.1f} bits"[:inner_w], theme.dim)
+        row += 1
+
+        prefix = "Strength: ["
+        suffix = f"] {label}"
+        bar_w = max(0, inner_w - len(prefix) - len(suffix))
+        if state.mode == "chars":
+            max_bits = float(generator.MAX_PASSWORD_CHARS) * math.log2(
+                len(generator.LETTERS) + len(generator.NUMBERS) + len(generator.SPECIAL_CHARACTERS)
+            )
+        elif state.mode == "words":
+            max_bits = (
+                float(generator.MAX_PASSPHRASE_WORDS) * math.log2(max(2, wordlist_size))
+                + 3.0 * math.log2(10.0)
+                + math.log2(len(generator.PASSPHRASE_SPECIALS))
+            )
+        bar = _bar(min(bits, max_bits), max_bits, bar_w)
+        _addstr_safe(stdscr, row, x + 2, f"{prefix}{bar}{suffix}"[:inner_w], kind_attr)
