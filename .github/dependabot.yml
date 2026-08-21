@@ -1,0 +1,52 @@
+# Dependabot configuration for automated dependency updates
+# https://docs.github.com/en/code-security/dependabot/dependabot-version-updates
+
+version: 2
+updates:
+  # Enable version updates for Python packages
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    reviewers:
+      - "j-kemble"
+    assignees:
+      - "j-kemble"
+    # Labels for pull requests
+    labels:
+      - "dependencies"
+      - "python"
+    # Group related updates together
+    groups:
+      dev-dependencies:
+        patterns:
+          - "pytest*"
+          - "bandit*"
+          - "mypy*"
+          - "pre-commit*"
+          - "pip-audit*"
+      production-dependencies:
+        patterns:
+          - "cryptography*"
+          - "platformdirs*"
+          - "pyperclip*"
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    # Security updates are handled separately by Dependabot alerts
+
+  # Enable version updates for GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "ci"
+      include: "scope"
