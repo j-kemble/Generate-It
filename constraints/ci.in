@@ -1,0 +1,14 @@
+# CI dependencies for Generate-It
+# Runtime
+platformdirs
+cryptography>=50.0.0
+pyperclip
+# Dev/test
+pytest
+pytest-cov
+bandit[toml]
+pip-audit
+mypy
+pre-commit
+setuptools>=83.0.0
+exceptiongroup
