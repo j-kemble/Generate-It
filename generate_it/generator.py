@@ -6,13 +6,11 @@ This module is UI-agnostic: both the curses TUI and any CLI wrapper can use it.
 from __future__ import annotations
 
 from pathlib import Path
-import functools
 import hashlib
 import logging
 import math
 import os
 import secrets
-import string
 
 _log = logging.getLogger("generator")
 
@@ -364,15 +362,6 @@ def _secure_sample_without_replacement(words: list[str], count: int) -> list[str
     return result
 
 
-def _secure_sample_without_replacement_pool(words: list[str], count: int) -> list[str]:
-    """Legacy pool-copy sampler kept for reference — not used in hot path."""
-    pool = list(words)
-    for position in range(count):
-        selected_index = position + secrets.randbelow(len(pool) - position)
-        pool[position], pool[selected_index] = pool[selected_index], pool[position]
-    return pool[:count]
-
-
 def resolve_wordlist_source(path: Path | None = None) -> tuple[Path | None, bool]:
     """Resolve explicit path, $GENERATE_IT_WORDLIST env var, or packaged default.
 
@@ -390,7 +379,9 @@ def resolve_wordlist_source(path: Path | None = None) -> tuple[Path | None, bool
     return path, is_custom
 
 
-_WORDLIST_CACHE: dict[Path | None, tuple[int, int, bytes, tuple[str, ...]]] = {}
+from collections import OrderedDict as _OrderedDict
+
+_WORDLIST_CACHE: _OrderedDict[Path | None, tuple[int, int, bytes, tuple[str, ...]]] = _OrderedDict()
 _WORDLIST_CACHE_MAX_SIZE = _CONST_WORDLIST_CACHE_MAX_SIZE
 _WORDLIST_HASH_CHUNK_BYTES = _CONST_WORDLIST_HASH_CHUNK_BYTES
 _WORDLIST_HASH_DIGEST_SIZE = _CONST_WORDLIST_HASH_DIGEST_SIZE
@@ -503,8 +494,21 @@ def _read_wordlist_text_secure(path: Path) -> str:
     On POSIX uses ``O_NOFOLLOW``; on other platforms falls back to
     ``lstat`` symlink check before read.
     """
+    _, text = _hash_and_read_wordlist(path)
+    return text
+
+
+def _hash_and_read_wordlist(path: Path) -> tuple[bytes, str]:
+    """Single-pass hash+read for wordlist — halves I/O vs two opens.
+
+    POSIX: one ``os.open(O_NOFOLLOW)`` → ``fstat`` → loop ``os.read``
+    updating ``blake2b`` and collecting chunks.  Fallback: ``lstat`` +
+    ``path.read_text`` with separate hash pass (still 2 reads, but rare).
+    Returns ``(digest, text)``.
+    """
     no_follow = getattr(os, "O_NOFOLLOW", None)
     if os.name == "posix" and no_follow is not None:
+        digest = hashlib.blake2b(digest_size=_WORDLIST_HASH_DIGEST_SIZE)
         try:
             fd = os.open(str(path), os.O_RDONLY | no_follow)
         except OSError as exc:
@@ -525,17 +529,18 @@ def _read_wordlist_text_secure(path: Path) -> str:
                 raise WordlistSecurityError(
                     f"Custom wordlist too large ({st.st_size} bytes)."
                 )
-            # Read via fd to avoid TOCTOU between fstat and open.
             chunks: list[bytes] = []
             while True:
                 chunk = os.read(fd, _WORDLIST_HASH_CHUNK_BYTES)
                 if not chunk:
                     break
+                digest.update(chunk)
                 chunks.append(chunk)
-            return b"".join(chunks).decode("utf-8", errors="ignore")
+            text = b"".join(chunks).decode("utf-8", errors="ignore")
+            return digest.digest(), text
         finally:
             os.close(fd)
-    # Fallback
+    # Fallback (Windows / no O_NOFOLLOW): two passes but still secure via lstat
     import stat as _stat
 
     try:
@@ -546,19 +551,14 @@ def _read_wordlist_text_secure(path: Path) -> str:
             raise WordlistSecurityError("Custom wordlist is not a regular file.")
     except OSError as exc:
         raise WordlistSecurityError(f"Cannot stat wordlist: {exc}") from exc
-    return path.read_text(encoding="utf-8", errors="ignore")
-
-
-def _is_cache_valid(
-    cached: tuple[int, int, bytes, tuple[str, ...]] | None,
-    mtime_ns: int,
-    file_size: int,
-) -> bool:
-    """Flat helper: check metadata match without hashing — fast data travel."""
-    if cached is None:
-        return False
-    cached_mtime_ns, cached_size, _, _ = cached
-    return (cached_mtime_ns, cached_size) == (mtime_ns, file_size)
+    # Single read + hash in Python loop (one I/O pass)
+    digest = hashlib.blake2b(digest_size=_WORDLIST_HASH_DIGEST_SIZE)
+    text_bytes = path.read_bytes()
+    digest.update(text_bytes)
+    # Enforce file-size limit on actually-read bytes (covers race where file grew)
+    if len(text_bytes) > _MAX_WORDLIST_FILE_BYTES:
+        raise WordlistSecurityError(f"Custom wordlist too large ({len(text_bytes)} bytes).")
+    return digest.digest(), text_bytes.decode("utf-8", errors="ignore")
 
 
 def _parse_wordlist_lines(text: str) -> tuple[str, ...]:
@@ -604,10 +604,12 @@ def load_wordlist(path: Path | None = None) -> list[str]:
         cached_mtime_ns, cached_size, cached_hash, cached_words = cached
         if (cached_mtime_ns, cached_size) == (mtime_ns, file_size):
             if cache_path is None:
+                _WORDLIST_CACHE.move_to_end(cache_path)
                 return list(cached_words)
             # Flat helper would skip hash, but correctness requires hash verification
             # when metadata collides (e.g., same size/mtime after rapid rewrite).
             if _hash_wordlist(cache_path) == cached_hash:
+                _WORDLIST_CACHE.move_to_end(cache_path)
                 return list(cached_words)
 
     if cache_path is None or not cache_path.exists():
@@ -633,8 +635,7 @@ def load_wordlist(path: Path | None = None) -> list[str]:
                     )
             except OSError as exc:
                 raise WordlistSecurityError(f"Cannot stat wordlist: {exc}") from exc
-        content_hash = _hash_wordlist(cache_path)
-        text = _read_wordlist_text_secure(cache_path)
+        content_hash, text = _hash_and_read_wordlist(cache_path)
         words_tuple = _parse_wordlist_lines(text)
         if len(words_tuple) > _MAX_WORDLIST_WORDS:
             raise WordlistSecurityError(
@@ -652,11 +653,9 @@ def load_wordlist(path: Path | None = None) -> list[str]:
                 f"Need at least ~5,800 unique words."
             )
 
-    # Maintain bounded cache size.
+    # Maintain bounded cache size (true LRU via OrderedDict).
     if len(_WORDLIST_CACHE) >= _WORDLIST_CACHE_MAX_SIZE:
-        oldest_key = next(iter(_WORDLIST_CACHE))
-        del _WORDLIST_CACHE[oldest_key]
-
+        _WORDLIST_CACHE.popitem(last=False)
     _WORDLIST_CACHE[cache_path] = (mtime_ns, file_size, content_hash, words_tuple)
     return list(words_tuple)
 

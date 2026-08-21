@@ -10,9 +10,6 @@ from __future__ import annotations
 
 import os
 import struct
-from typing import Optional
-
-from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM, ChaCha20Poly1305
 from cryptography.hazmat.primitives.kdf.argon2 import Argon2id
 from cryptography.hazmat.primitives.keywrap import (

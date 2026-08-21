@@ -103,6 +103,10 @@ _TUI_MAX_BITS_CACHE_SIZE = 32
 # Vault integrity streaming (flat, reusable).
 _VAULT_INTEGRITY_BATCH_SIZE = 200
 
+# Backup retention (low-risk hardening: auto-prune to prevent disk fill).
+_MAX_BACKUP_RETAIN = 5
+_BACKUP_WARN_THRESHOLD = 8
+
 # Identity schema marker
 _IDENTITY_SCHEMA_VERSION = 1
 # Index names (also asserted by tests).
@@ -138,8 +142,7 @@ USERNAME_STYLE_WORDS = "words"
 # PASSPHRASE_SPECIALS moved from generator.py
 PASSPHRASE_SPECIALS = "!@#$%&*?"  # nosec B105 — character pool, not a credential
 
-# Wordlist
-PACKAGED_WORDLIST_PATH = "__default_wordlist_path__"  # Will be set at runtime from generator
+# Wordlist (single source: generate_it/generator.py PACKAGED_WORDLIST_PATH)
 
 # Default built-in wordlist (from generator.py)
 DEFAULT_WORDLIST = [

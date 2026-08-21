@@ -1,4 +1,5 @@
 import tempfile
+import time as _time
 import os
 import shutil
 import sqlite3
@@ -29,12 +30,13 @@ APP_AUTHOR = "j-kemble"
 
 # Single source of truth for vault/crypto limits — see generate_it/constants.py
 from .constants import (  # noqa: E402  (import after _log is intentional)
+    _BACKUP_WARN_THRESHOLD,
     _DEFAULT_PBKDF2_ITERATIONS,
     _DEFAULT_SALT_LENGTH,
     _IDENTITY_SCHEMA_VERSION,
-    _IDX_IDENTITY_ORDER,
     _IDX_IDENTITY_UNIQUE,
     _LEGACY_PBKDF2_ITERATIONS,
+    _MAX_BACKUP_RETAIN,
     _MAX_CSV_FIELD_BYTES,
     _MAX_CSV_FILE_BYTES,
     _MAX_CSV_ROWS,
@@ -43,6 +45,7 @@ from .constants import (  # noqa: E402  (import after _log is intentional)
     _SQLITE_BUSY_TIMEOUT_MS,
     _SQLITE_CACHE_SIZE_PAGES,
     _SQLITE_FOREIGN_KEYS,
+    _VAULT_INTEGRITY_BATCH_SIZE,
     _VAULT_SEARCH_SQL_LIMIT,
     _VAULT_SEARCH_SQL_LIKE_LIMIT,
     _SQLITE_JOURNAL_MODE,
@@ -267,6 +270,11 @@ class StorageManager:
         and AAD migrations so backup creation has one authoritative,
         security-critical implementation.
 
+        After creating the backup, auto-prunes oldest backups when the
+        total exceeds ``_MAX_BACKUP_RETAIN`` so disk usage stays bounded
+        (low-risk disk-fill hardening).  Pruning failures are logged but
+        never abort the caller.
+
         Raises:
             Any filesystem error from :func:`shutil.copy2` (the vault is
                 left untouched).
@@ -283,6 +291,15 @@ class StorageManager:
             raise
         backup_path = self.db_path.with_suffix(self.db_path.suffix + backup_suffix)
         os.replace(str(backup_tmp), str(backup_path))
+        self._ensure_private_permissions(backup_path, 0o600)
+        # Auto-prune oldest backups if we exceed the retain limit (low-risk).
+        try:
+            if len(self.list_backups()) > _MAX_BACKUP_RETAIN:
+                pruned = self.prune_backups(keep_latest=_MAX_BACKUP_RETAIN)
+                if pruned:
+                    _log.info("auto-pruned %d old backup(s) after %s", len(pruned), backup_suffix)
+        except Exception:
+            pass
         return backup_path
 
     def _configure_connection(self, conn: sqlite3.Connection) -> None:
@@ -386,6 +403,7 @@ class StorageManager:
     # --- Persistent lockout (survives restarts) -----------------------------
     _LOCKOUT_ATTEMPTS_KEY = "lockout_failed_attempts"
     _LOCKOUT_UNTIL_KEY = "lockout_until_epoch"
+    _LOCKOUT_SET_KEY = "lockout_set_epoch"
 
     def _read_optional_float_config(self, cursor: sqlite3.Cursor, key: str) -> Optional[float]:
         """Read a float config value, returning None if absent."""
@@ -412,7 +430,9 @@ class StorageManager:
         so it survives restarts, but is therefore subject to forward system-
         clock jumps that can clear the deadline early.  The attempt counter is
         preserved even after expiry so escalation is not reset by a jump
-        (see ``tui_security._sync_persistent_lockout_from_storage``).
+        (see ``tui_security._sync_persistent_lockout_from_storage``).  A
+        ``lockout_set_epoch`` is also stored to detect backward jumps and cap
+        the remaining window to the original delay.
         """
         if not self.vault_exists():
             return 0, None
@@ -432,6 +452,17 @@ class StorageManager:
             return 0, None
         return (attempts if attempts is not None else 0, until)
 
+    def get_persistent_lockout_set_epoch(self) -> Optional[float]:
+        """Return wall-clock epoch when the current lockout was set, if stored."""
+        if not self.vault_exists():
+            return None
+        try:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            return self._read_optional_float_config(cursor, self._LOCKOUT_SET_KEY)
+        except (StorageError, sqlite3.Error):
+            return None
+
     def set_persistent_lockout_state(self, attempts: int, lockout_until_epoch: Optional[float]) -> None:
         """Persist lockout state to the config table (plaintext)."""
         if not self.vault_exists():
@@ -444,10 +475,15 @@ class StorageManager:
         )
         if lockout_until_epoch is None:
             cursor.execute("DELETE FROM config WHERE key=?", (self._LOCKOUT_UNTIL_KEY,))
+            cursor.execute("DELETE FROM config WHERE key=?", (self._LOCKOUT_SET_KEY,))
         else:
             cursor.execute(
                 "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)",
                 (self._LOCKOUT_UNTIL_KEY, str(float(lockout_until_epoch))),
+            )
+            cursor.execute(
+                "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)",
+                (self._LOCKOUT_SET_KEY, str(float(_time.time()))),
             )
         conn.commit()
 
@@ -459,8 +495,8 @@ class StorageManager:
             conn = self._get_conn()
             cursor = conn.cursor()
             cursor.execute(
-                "DELETE FROM config WHERE key IN (?, ?)",
-                (self._LOCKOUT_ATTEMPTS_KEY, self._LOCKOUT_UNTIL_KEY),
+                "DELETE FROM config WHERE key IN (?, ?, ?)",
+                (self._LOCKOUT_ATTEMPTS_KEY, self._LOCKOUT_UNTIL_KEY, self._LOCKOUT_SET_KEY),
             )
             conn.commit()
         except sqlite3.Error:
@@ -484,6 +520,37 @@ class StorageManager:
             return int(str(raw))
         except (TypeError, ValueError):
             raise StorageError(f"Config key '{key}' has malformed value: {raw!r}")
+
+    def _load_kdf_params(self, cursor: sqlite3.Cursor) -> tuple[str, int, int, int]:
+        """Load KDF algorithm and Argon2 params with defaults — single authoritative reader.
+
+        Consolidates the 3 int lookups (memory/time/parallelism) plus algorithm
+        that were duplicated across unlock, verify, password-change, and DEK rotation.
+        All callers get the same defaults and validation path.
+        """
+        cursor.execute("SELECT value FROM config WHERE key='kdf_algorithm'")
+        row = cursor.fetchone()
+        if row is None or row["value"] is None:
+            kdf_algorithm = "argon2id"
+        else:
+            raw = row["value"]
+            kdf_algorithm = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+        memory_raw = self._read_optional_int_config(cursor, "kdf_memory_cost")
+        memory = memory_raw if memory_raw is not None else _crypto_v2.DEFAULT_ARGON2_MEMORY
+        time_raw = self._read_optional_int_config(cursor, "kdf_time_cost")
+        time_cost = time_raw if time_raw is not None else _crypto_v2.DEFAULT_ARGON2_TIME
+        parallelism_raw = self._read_optional_int_config(cursor, "kdf_parallelism")
+        parallelism = parallelism_raw if parallelism_raw is not None else _crypto_v2.DEFAULT_ARGON2_PARALLELISM
+        return kdf_algorithm, memory, time_cost, parallelism
+
+    def _load_aead_algorithm(self, cursor: sqlite3.Cursor) -> str:
+        """Load AEAD algorithm with default — single reader."""
+        cursor.execute("SELECT value FROM config WHERE key='aead_algorithm'")
+        row = cursor.fetchone()
+        if row is None or row["value"] is None:
+            return _crypto_v2.AEAD_AES_256_GCM
+        raw = row["value"]
+        return raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
 
     def _derive_key(self, password: str, salt: bytes, iterations: Optional[int] = None) -> bytes:
         """Derives a url-safe base64-encoded key from the password and salt."""
@@ -1202,50 +1269,22 @@ class StorageManager:
         conn = self._get_conn()
         cursor = conn.cursor()
 
-        # Read all required config values.
+        # Read required v2 config (salt/wrapped_dek/uuid/verification).
         try:
-            cursor.execute("SELECT value FROM config WHERE key = 'kdf_algorithm'")
-            kdf_algorithm_row = cursor.fetchone()
-            kdf_algorithm = (
-                kdf_algorithm_row["value"].decode("utf-8")
-                if isinstance(kdf_algorithm_row["value"], bytes)
-                else str(kdf_algorithm_row["value"])
-            ) if kdf_algorithm_row else "argon2id"
-
             cursor.execute("SELECT value FROM config WHERE key = 'kdf_salt'")
             kdf_salt = cursor.fetchone()["value"]
-
             cursor.execute("SELECT value FROM config WHERE key = 'wrapped_dek'")
             wrapped_dek = cursor.fetchone()["value"]
-
             cursor.execute("SELECT value FROM config WHERE key = 'vault_uuid'")
             vault_uuid = cursor.fetchone()["value"]
-
-            cursor.execute("SELECT value FROM config WHERE key = 'aead_algorithm'")
-            aead_row = cursor.fetchone()
-            if aead_row is None:
-                aead_algorithm = _crypto_v2.AEAD_AES_256_GCM
-            else:
-                raw = aead_row["value"]
-                aead_algorithm = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
-
             cursor.execute("SELECT value FROM config WHERE key = 'verification'")
             verification_ct = cursor.fetchone()["value"]
         except (TypeError, KeyError) as exc:
             raise StorageError("Vault v2 configuration corrupted or missing keys.") from exc
 
-        # Read optional KDF parameters.
-        memory_raw = self._read_optional_int_config(cursor, "kdf_memory_cost")
-        memory = memory_raw if memory_raw is not None else _crypto_v2.DEFAULT_ARGON2_MEMORY
-
-        time_raw = self._read_optional_int_config(cursor, "kdf_time_cost")
-        time = time_raw if time_raw is not None else _crypto_v2.DEFAULT_ARGON2_TIME
-
-        parallelism_raw = self._read_optional_int_config(cursor, "kdf_parallelism")
-        parallelism = (
-            parallelism_raw if parallelism_raw is not None
-            else _crypto_v2.DEFAULT_ARGON2_PARALLELISM
-        )
+        # KDF + AEAD via single authoritative helpers (deduped)
+        kdf_algorithm, memory, time, parallelism = self._load_kdf_params(cursor)
+        aead_algorithm = self._load_aead_algorithm(cursor)
 
         # Validate KDF config before running expensive Argon2id.
         try:
@@ -1613,18 +1652,8 @@ class StorageManager:
             verification_ct = cursor.fetchone()["value"]
         except (TypeError, KeyError) as exc:
             raise StorageError("Vault v2 configuration corrupted.") from exc
-        memory = self._read_optional_int_config(cursor, "kdf_memory_cost")
-        memory = memory if memory is not None else _crypto_v2.DEFAULT_ARGON2_MEMORY
-        time_cost = self._read_optional_int_config(cursor, "kdf_time_cost")
-        time_cost = time_cost if time_cost is not None else _crypto_v2.DEFAULT_ARGON2_TIME
-        paral = self._read_optional_int_config(cursor, "kdf_parallelism")
-        paral = paral if paral is not None else _crypto_v2.DEFAULT_ARGON2_PARALLELISM
-        cursor.execute("SELECT value FROM config WHERE key='kdf_algorithm'")
-        row = cursor.fetchone()
-        kdf_algorithm = row["value"].decode("utf-8") if row and isinstance(row["value"], bytes) else (str(row["value"]) if row else "argon2id")
-        cursor.execute("SELECT value FROM config WHERE key='aead_algorithm'")
-        aead_row = cursor.fetchone()
-        aead_algorithm = aead_row["value"].decode("utf-8") if aead_row and isinstance(aead_row["value"], bytes) else (str(aead_row["value"]) if aead_row else _crypto_v2.AEAD_AES_256_GCM)
+        kdf_algorithm, memory, time_cost, paral = self._load_kdf_params(cursor)
+        aead_algorithm = self._load_aead_algorithm(cursor)
         kek = _crypto_v2.derive_kek(current_password, kdf_salt, memory=memory, time=time_cost, parallelism=paral)
         try:
             dek = _crypto_v2.unwrap_dek(kek, wrapped_dek)
@@ -1677,12 +1706,9 @@ class StorageManager:
         if self._dek is None or self._vault_uuid is None:
             raise StorageError("Vault DEK is not available.")
         dek = self._dek
-        vault_uuid = self._vault_uuid
         conn = self._get_conn()
         cursor = conn.cursor()
-        cursor.execute("SELECT value FROM config WHERE key='aead_algorithm'")
-        row = cursor.fetchone()
-        aead_algorithm = row["value"].decode("utf-8") if row and isinstance(row["value"], bytes) else (str(row["value"]) if row else _crypto_v2.AEAD_AES_256_GCM)
+        aead_algorithm = self._load_aead_algorithm(cursor)
         new_salt = os.urandom(_crypto_v2.SALT_LEN)
         new_kek = _crypto_v2.derive_kek(new_password, new_salt)
         new_wrapped_dek = _crypto_v2.wrap_dek(new_kek, dek)
@@ -1727,18 +1753,8 @@ class StorageManager:
         cursor = conn.cursor()
         cursor.execute("SELECT value FROM config WHERE key='kdf_salt'")
         kdf_salt = cursor.fetchone()["value"]
-        cursor.execute("SELECT value FROM config WHERE key='kdf_algorithm'")
-        row = cursor.fetchone()
-        kdf_algorithm = row["value"].decode("utf-8") if row and isinstance(row["value"], bytes) else (str(row["value"]) if row else "argon2id")
-        memory = self._read_optional_int_config(cursor, "kdf_memory_cost")
-        memory = memory if memory is not None else _crypto_v2.DEFAULT_ARGON2_MEMORY
-        time_cost = self._read_optional_int_config(cursor, "kdf_time_cost")
-        time_cost = time_cost if time_cost is not None else _crypto_v2.DEFAULT_ARGON2_TIME
-        paral = self._read_optional_int_config(cursor, "kdf_parallelism")
-        paral = paral if paral is not None else _crypto_v2.DEFAULT_ARGON2_PARALLELISM
-        cursor.execute("SELECT value FROM config WHERE key='aead_algorithm'")
-        aead_row = cursor.fetchone()
-        aead_algorithm = aead_row["value"].decode("utf-8") if aead_row and isinstance(aead_row["value"], bytes) else (str(aead_row["value"]) if aead_row else _crypto_v2.AEAD_AES_256_GCM)
+        _, memory, time_cost, paral = self._load_kdf_params(cursor)
+        aead_algorithm = self._load_aead_algorithm(cursor)
         vault_uuid: bytes = self._vault_uuid  # type: ignore[assignment]
         old_dek: bytes = self._dek  # type: ignore[assignment]
         dek_generation = self._read_dek_generation(cursor)
@@ -2490,6 +2506,17 @@ class StorageManager:
             if not csv_path.is_file():
                 raise StorageError("Export path exists but is not a regular file.")
 
+        # Reject symlinked parent directory to avoid writing through a
+        # directory symlink to an unintended location (e.g., /etc).
+        try:
+            parent_lst = csv_path.parent.lstat()
+            import stat as _stat_parent
+
+            if _stat_parent.S_ISLNK(parent_lst.st_mode):
+                raise StorageError("Export parent directory is a symlink — refused for security.")
+        except OSError as exc:
+            raise StorageError(f"Cannot inspect export parent directory: {exc}") from exc
+
         conn = self._get_conn()
         cursor = conn.cursor()
         # Ensure url column exists even for legacy queries.
@@ -2598,14 +2625,22 @@ class StorageManager:
         total_rows = 0
         seen_keys: set[Tuple[str, str]] = set()
 
-        # Resource limit: file size
+        # Resource limit + symlink hardening: validate via lstat before any
+        # open, and use O_NOFOLLOW on POSIX so a symlink swap between the
+        # check and the open cannot be exploited.
+        import stat as _stat
+
         try:
-            file_size = csv_path.stat().st_size
+            lst = csv_path.lstat()
         except OSError as exc:
             raise StorageError(f"Cannot read CSV file: {exc}") from exc
-        if file_size > _MAX_CSV_FILE_BYTES:
+        if _stat.S_ISLNK(lst.st_mode):
+            raise StorageError("CSV path is a symlink — refused for security.")
+        if not _stat.S_ISREG(lst.st_mode):
+            raise StorageError("CSV file is not a regular file.")
+        if lst.st_size > _MAX_CSV_FILE_BYTES:
             raise StorageError(
-                f"CSV file too large ({file_size} bytes). "
+                f"CSV file too large ({lst.st_size} bytes). "
                 f"Maximum: {_MAX_CSV_FILE_BYTES} bytes."
             )
 
@@ -2620,8 +2655,44 @@ class StorageManager:
         # not collide with a leftover transaction.
         transaction_opened = False
         try:
+            # Secure open: O_NOFOLLOW on POSIX prevents symlink TOCTOU between
+            # lstat and read. Falls back to regular open on Windows / missing
+            # O_NOFOLLOW. Size already checked via lstat, but re-verify via
+            # fstat after open to catch a concurrent replacement.
+            csv_file = None
             try:
-                csv_file = open(csv_path, 'r', newline='', encoding='utf-8-sig')
+                no_follow = getattr(os, "O_NOFOLLOW", None)
+                if os.name == "posix" and no_follow is not None:
+                    try:
+                        fd = os.open(str(csv_path), os.O_RDONLY | no_follow)
+                    except OSError as exc:
+                        import errno as _errno
+
+                        if exc.errno in (_errno.ELOOP, _errno.EMLINK) or "symlink" in str(exc).lower() or "Too many levels" in str(exc):
+                            raise StorageError("CSV path is a symlink — refused for security.") from exc
+                        raise StorageError(f"Cannot read CSV file: {exc}") from exc
+                    try:
+                        st = os.fstat(fd)
+                        if _stat.S_ISLNK(st.st_mode):
+                            raise StorageError("CSV path is a symlink — refused for security.")
+                        if not _stat.S_ISREG(st.st_mode):
+                            raise StorageError("CSV file is not a regular file.")
+                        if st.st_size > _MAX_CSV_FILE_BYTES:
+                            raise StorageError(
+                                f"CSV file too large ({st.st_size} bytes). "
+                                f"Maximum: {_MAX_CSV_FILE_BYTES} bytes."
+                            )
+                        csv_file = os.fdopen(fd, "r", newline="", encoding="utf-8-sig")
+                    except BaseException:
+                        try:
+                            os.close(fd)
+                        except OSError:
+                            pass
+                        raise
+                else:
+                    csv_file = open(csv_path, "r", newline="", encoding="utf-8-sig")
+            except StorageError:
+                raise
             except OSError as exc:
                 raise StorageError(f"Cannot read CSV file: {exc}") from exc
             with csv_file as f:
@@ -2816,8 +2887,9 @@ class StorageManager:
             return []
         pattern = f"{self.db_path.name}.*.bak"
         backups = list(self.db_path.parent.glob(pattern))
-        # Exclude the original db itself and non-files.
-        backups = [p for p in backups if p.is_file() and p != self.db_path]
+        # Exclude the original db itself, symlinks, and non-files.
+        # is_file() follows symlinks, so check is_symlink() first.
+        backups = [p for p in backups if not p.is_symlink() and p.is_file() and p != self.db_path]
 
         def _backup_ctime(path: Path) -> float:
             """Sort key for backup files.
@@ -2866,6 +2938,7 @@ class StorageManager:
 
     def get_vault_status(self) -> Dict[str, object]:
         """Return non-sensitive vault status for health checks."""
+        backups = self.list_backups()
         status: Dict[str, object] = {
             "vault_path": str(self.db_path),
             "exists": self.vault_exists(),
@@ -2873,8 +2946,10 @@ class StorageManager:
             "version": self._vault_version,
             "aad_version": self._aad_version if self._vault_version == 2 else None,
             "credential_count": 0,
-            "backup_count": len(self.list_backups()),
-            "backups": [str(p) for p in self.list_backups()],
+            "backup_count": len(backups),
+            "backups": [str(p) for p in backups],
+            "backup_retain": _MAX_BACKUP_RETAIN,
+            "backup_warning": len(backups) > _BACKUP_WARN_THRESHOLD,
         }
         if self._vault_version is not None:
             try:
@@ -2918,10 +2993,8 @@ class StorageManager:
         Yields issues one-by-one without materializing all rows. If batch_size >0,
         yields in chunks for progress UI. No hard-coded inline limits.
         """
-        from .constants import _VAULT_INTEGRITY_BATCH_SIZE as _BATCH
-
         if batch_size == 0:
-            batch_size = _BATCH
+            batch_size = _VAULT_INTEGRITY_BATCH_SIZE
         self._require_unlocked()
         fernet = self._fernet
         batch: List[Dict[str, object]] = []

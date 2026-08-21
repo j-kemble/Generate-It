@@ -1,32 +1,32 @@
-"""Domain-specific exceptions for consistent error handling in Generate It."""
+"""Domain-specific exceptions for consistent error handling in Generate It.
+
+Single source of truth is ``generate_it.storage`` for storage-layer
+exceptions; this module re-exports them for public API stability and adds
+application-level helpers.  Keeping them here prevents drift between
+``storage.py`` and public ``exceptions``.
+"""
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+# Re-export canonical storage exceptions — single source of truth lives in
+# ``storage.py`` to avoid duplicate class identities (``except StorageError``
+# must catch the same object regardless of import path).
+from .storage import (
+    CredentialIdentityConflictError,
+    InvalidPasswordError,
+    StorageError,
+    VaultAlreadyInitializedError,
+    VaultNotInitializedError,
+    WeakMasterPasswordError,
+)
 
-
-class StorageError(Exception):
-    """Base exception for storage errors."""
-
-
-class CredentialIdentityConflictError(StorageError):
-    """Raised when rows collide under canonical identity rules."""
-
-    def __init__(self, message: str, conflicts: Optional[List[Dict[str, object]]] = None):
-        super().__init__(message)
-        self.conflicts: List[Dict[str, object]] = list(conflicts or [])
+# Public aliases — keep historic names for backwards compat
+WeakPasswordError = WeakMasterPasswordError
+VaultFormatError: type[StorageError] = StorageError  # legacy alias
 
 
 class AppError(StorageError):
     """Base application error."""
-
-
-class WeakPasswordError(StorageError):
-    """For password policy violations."""
-
-
-class VaultFormatError(StorageError):
-    """For unsupported vault formats."""
 
 
 class CropError(StorageError):

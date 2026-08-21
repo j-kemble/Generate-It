@@ -103,16 +103,16 @@ def _filter_vault_credentials(
         if best is None:
             continue
         ranked.append((best, service, username, cred))
-    if limit is not None and len(ranked) > limit * 4:
-        # Avoid full sort for large vaults when only top-k needed
-        ranked = heapq.nsmallest(limit, ranked, key=lambda item: (item[0], item[1], item[2]))
-        ranked.sort(key=lambda item: (item[0], item[1], item[2]))
-    else:
-        ranked.sort(key=lambda item: (item[0], item[1], item[2]))
-    result = [item[3] for item in ranked]
     if limit is not None:
-        return result[:limit]
-    return result
+        if len(ranked) > limit:
+            # Heap O(n log k) beats sort O(n log n) when k << n (typical for 10k+ vaults)
+            ranked = heapq.nsmallest(limit, ranked, key=lambda item: (item[0], item[1], item[2]))
+            ranked.sort(key=lambda item: (item[0], item[1], item[2]))
+        else:
+            ranked.sort(key=lambda item: (item[0], item[1], item[2]))
+        return [item[3] for item in ranked[:limit]]
+    ranked.sort(key=lambda item: (item[0], item[1], item[2]))
+    return [item[3] for item in ranked]
 
 
 def _find_duplicate_credential(

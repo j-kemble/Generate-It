@@ -4,14 +4,16 @@ import os
 import time
 from pathlib import Path
 
+from collections import OrderedDict as _OrderedDict
+
 from .constants import (
     _FILE_PICKER_CACHE_TTL_SECONDS,
     _FILE_PICKER_MAX_DEPTH,
     _FILE_PICKER_MAX_FILES,
 )
 
-# Flat modular cache — reusable, no hard-coded inline values.
-_FILE_PICKER_CACHE: dict[Path, tuple[float, tuple[Path, ...]]] = {}
+# LRU cache — true LRU, not FIFO.
+_FILE_PICKER_CACHE: _OrderedDict[Path, tuple[float, tuple[Path, ...]]] = _OrderedDict()
 
 
 def _is_hidden_name(name: str) -> bool:
@@ -67,12 +69,12 @@ def _collect_files_for_fuzzy(
     if cached is not None:
         cached_at, cached_files = cached
         if (now - cached_at) < _FILE_PICKER_CACHE_TTL_SECONDS:
+            _FILE_PICKER_CACHE.move_to_end(resolved)
             return list(cached_files)
     files = _walk_files_flat(resolved, max_files, max_depth)
-    # Bounded cache: keep at most 8 roots
+    # Bounded cache: keep at most 8 roots (LRU)
     if len(_FILE_PICKER_CACHE) >= 8:
-        oldest = next(iter(_FILE_PICKER_CACHE))
-        del _FILE_PICKER_CACHE[oldest]
+        _FILE_PICKER_CACHE.popitem(last=False)
     _FILE_PICKER_CACHE[resolved] = (now, tuple(files))
     return files
 

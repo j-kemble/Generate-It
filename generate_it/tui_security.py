@@ -206,7 +206,9 @@ def _sync_persistent_lockout_from_storage(state: AppState) -> None:
     is not reset by waiting out or by a clock jump; the next failure still
     escalates.  Within a single process the monotonic remaining is kept if
     it exceeds the wall-clock remaining, providing best-effort resistance to
-    intra-session NTP adjustments.
+    intra-session NTP adjustments.  Backward jumps are detected via
+    ``lockout_set_epoch`` and the remaining window is capped to the original
+    delay so the lockout is not extended indefinitely.
     """
     if not _storage_available(state) or state.storage is None:
         return
@@ -214,10 +216,31 @@ def _sync_persistent_lockout_from_storage(state: AppState) -> None:
         attempts, until_epoch = state.storage.get_persistent_lockout_state()
     except Exception:
         return
+    # Fetch set_epoch for backward-jump detection (best-effort, legacy vaults
+    # may not have it).
+    set_epoch = None
+    try:
+        set_epoch = state.storage.get_persistent_lockout_set_epoch()
+    except Exception:
+        set_epoch = None
     if attempts:
         state.failed_unlock_attempts = max(state.failed_unlock_attempts, attempts)
     if until_epoch is not None:
-        remaining = until_epoch - time.time()
+        now_wall = time.time()
+        remaining = until_epoch - now_wall
+        # Backward jump detection: if wall clock went backward after the
+        # lockout was set, remaining would exceed the original delay.
+        if set_epoch is not None and until_epoch is not None:
+            try:
+                delay = float(until_epoch - set_epoch)
+                if now_wall < set_epoch and remaining > delay:
+                    remaining = delay
+                # Also cap any remaining that somehow exceeds delay due to
+                # clock skew (defense-in-depth, never extend beyond original).
+                if remaining > delay:
+                    remaining = delay
+            except Exception:
+                pass
         if remaining > 0:
             # Keep the longer of in-memory (monotonic) vs persisted (wall)
             # remaining — defends against backward clock jumps within the
@@ -612,8 +635,10 @@ def _format_status_lines(status: dict) -> list[str]:
         f"Version: {status.get('version')}",
         f"AAD: {status.get('aad_version')}",
         f"Credentials: {status.get('credential_count', 0)}",
-        f"Backups: {status.get('backup_count', 0)}",
+        f"Backups: {status.get('backup_count', 0)} (retain {status.get('backup_retain', 5)})",
     ]
+    if status.get("backup_warning"):
+        lines.append("WARNING: many backups — consider pruning (p). Auto-prune keeps 5 newest.")
     if status.get("dek_generation") is not None:
         lines.append(f"DEK generation: {status.get('dek_generation')}")
     for backup in status.get("backups", [])[:6]:

@@ -23,6 +23,8 @@ from .constants import (
     TUI_OUTPUT_WRAP_CACHE_SIZE,
     _TUI_MAX_BITS_CACHE_SIZE,
 )
+from collections import OrderedDict as _OrderedDict
+
 from .tui_helpers import _estimate_entropy_bits, _sanitize_terminal_text, _strength_label
 
 if TYPE_CHECKING:
@@ -43,12 +45,12 @@ def _auto_lock_label(state: AppState) -> str:
 
 HEADER_SMALL = ["Generate It"]
 
-# Flat reusable caches for 60 fps streaming — no hard-coded inline sizes.
-_PIXEL_BANNER_CACHE: dict[str, list[str]] = {}
-_HEADER_LINES_CACHE: dict[int, list[str]] = {}
-_OUTPUT_WRAP_CACHE: dict[tuple[str, int], list[str]] = {}
-_ENTROPY_CACHE: dict[tuple[str, int, bool, bool, bool, int, bool, bool, int], tuple[float, str, str]] = {}
-_MAX_BITS_CACHE: dict[int, float] = {}
+# LRU caches for 60 fps streaming — true LRU via OrderedDict, not FIFO.
+_PIXEL_BANNER_CACHE: _OrderedDict[str, list[str]] = _OrderedDict()
+_HEADER_LINES_CACHE: _OrderedDict[int, list[str]] = _OrderedDict()
+_OUTPUT_WRAP_CACHE: _OrderedDict[tuple[str, int], list[str]] = _OrderedDict()
+_ENTROPY_CACHE: _OrderedDict[tuple[str, int, bool, bool, bool, int, bool, bool, int], tuple[float, str, str]] = _OrderedDict()
+_MAX_BITS_CACHE: _OrderedDict[int, float] = _OrderedDict()
 
 # A compact 5-row pixel font (only the glyphs we need).
 _FONT_H = 5
@@ -120,10 +122,11 @@ _PIXEL_FONT: dict[str, list[str]] = {
 }
 
 def _get_cached_pixel_banner(text: str) -> list[str]:
-    """Flat helper: cached pixel banner, reusable for 60 fps."""
+    """LRU pixel banner — true LRU via OrderedDict."""
     key = text.upper()
     cached = _PIXEL_BANNER_CACHE.get(key)
     if cached is not None:
+        _PIXEL_BANNER_CACHE.move_to_end(key)
         return cached
     lines = [""] * _FONT_H
     for ch in key:
@@ -232,10 +235,11 @@ def _bar(value: float, max_value: float, width: int) -> str:
 
 
 def _get_cached_max_bits(wordlist_size: int, mode: str) -> float:
-    """Flat helper: cached max entropy, reusable, no hard-coded recompute."""
+    """LRU max entropy — true LRU, not FIFO."""
     key = wordlist_size if mode == "words" else -1
     cached = _MAX_BITS_CACHE.get(key)
     if cached is not None:
+        _MAX_BITS_CACHE.move_to_end(key)
         return cached
     if mode == "chars":
         value = float(generator.MAX_PASSWORD_CHARS) * math.log2(
@@ -248,9 +252,7 @@ def _get_cached_max_bits(wordlist_size: int, mode: str) -> float:
             + math.log2(len(generator.PASSPHRASE_SPECIALS))
         )
     if len(_MAX_BITS_CACHE) >= _TUI_MAX_BITS_CACHE_SIZE:
-        oldest = next(iter(_MAX_BITS_CACHE))
-        del _MAX_BITS_CACHE[oldest]
-    # Username mode reuses words branch for bar-less path; still cache
+        _MAX_BITS_CACHE.popitem(last=False)
     _MAX_BITS_CACHE[key] = value
     return value
 
@@ -397,17 +399,16 @@ def _add_gradient(
 
 
 def _header_lines_for_width(w: int) -> list[str]:
-    # Flat helper: cached by width, reusable for 60 fps streaming.
+    # LRU cached by width — true LRU.
     cached = _HEADER_LINES_CACHE.get(w)
     if cached is not None:
+        _HEADER_LINES_CACHE.move_to_end(w)
         return cached
     large = _get_cached_pixel_banner("Generate It")
     needed = max((len(line) for line in large), default=0)
     result = large if w >= needed + 2 else HEADER_SMALL
-    # Bounded cache via constants-friendly size (reuses TUI_OUTPUT_WRAP_CACHE_SIZE)
     if len(_HEADER_LINES_CACHE) >= TUI_OUTPUT_WRAP_CACHE_SIZE:
-        oldest = next(iter(_HEADER_LINES_CACHE))
-        del _HEADER_LINES_CACHE[oldest]
+        _HEADER_LINES_CACHE.popitem(last=False)
     _HEADER_LINES_CACHE[w] = result
     return result
 
@@ -775,15 +776,15 @@ def _render_vault_box(
 
 
 def _get_cached_wrapped_output(output: str, width: int) -> list[str]:
-    """Flat helper: cached wrap for 60 fps, reusable."""
+    """LRU wrap cache — true LRU."""
     key = (output, width)
     cached = _OUTPUT_WRAP_CACHE.get(key)
     if cached is not None:
+        _OUTPUT_WRAP_CACHE.move_to_end(key)
         return cached
     wrapped = textwrap.wrap(output, width=width, break_long_words=True, break_on_hyphens=False)
     if len(_OUTPUT_WRAP_CACHE) >= TUI_OUTPUT_WRAP_CACHE_SIZE:
-        oldest = next(iter(_OUTPUT_WRAP_CACHE))
-        del _OUTPUT_WRAP_CACHE[oldest]
+        _OUTPUT_WRAP_CACHE.popitem(last=False)
     _OUTPUT_WRAP_CACHE[key] = wrapped
     return wrapped
 
@@ -901,13 +902,13 @@ def _render_info_box(
         )
         cached = _ENTROPY_CACHE.get(cache_key)
         if cached is not None:
+            _ENTROPY_CACHE.move_to_end(cache_key)
             bits, label, kind = cached
         else:
             bits = _estimate_entropy_bits(state, wordlist_size)
             label, kind = _strength_label(bits)
             if len(_ENTROPY_CACHE) >= TUI_ENTROPY_CACHE_SIZE:
-                oldest = next(iter(_ENTROPY_CACHE))
-                del _ENTROPY_CACHE[oldest]
+                _ENTROPY_CACHE.popitem(last=False)
             _ENTROPY_CACHE[cache_key] = (bits, label, kind)
 
         if kind == "bad":
