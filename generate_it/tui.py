@@ -15,6 +15,9 @@ Controls (default):
 - e: export CSV
 - a: add credential manually
 - t: security settings
+- p: change master password
+- k: rotate DEK (v2)
+- m: vault health / prune backups
 - ?: hotkey legend
 - b: jump focus to mode
 """
@@ -45,30 +48,25 @@ from .tui_helpers import (
 )
 
 APP_NAME = "Generate It"
-ESC_QUIT_WINDOW_SECONDS = 1.0
-AUTO_LOCK_SCREEN_OFF = "screen_off"
-SCREEN_OFF_LOCK_GAP_SECONDS = 20.0
-
-CLIPBOARD_AUTO_CLEAR_OPTIONS: tuple[tuple[str, int | None], ...] = (
-    ("No auto-clear", None),
-    ("15 seconds", 15),
-    ("30 seconds", 30),
-    ("45 seconds", 45),
-    ("1 minute", 60),
-    ("2 minutes", 120),
-    ("3 minutes", 180),
+# Single source of truth — see generate_it/constants.py
+from .constants import (  # noqa: E402
+    AUTO_LOCK_OPTIONS,
+    AUTO_LOCK_SCREEN_OFF,
+    CLIPBOARD_AUTO_CLEAR_OPTIONS,
+    ESC_QUIT_WINDOW_SECONDS,
+    SCREEN_OFF_LOCK_GAP_SECONDS,
+    SETTING_KEY_AUTO_LOCK_INDEX,
+    SETTING_KEY_CLIPBOARD_AUTO_CLEAR_INDEX,
+    TUI_CLOCK_REFRESH_S,
+    TUI_FRAME_INTERVAL_MS,
+    TUI_FRAME_INTERVAL_S,
+    TUI_INPUT_TIMEOUT_MS,
+    TUI_MIN_HEIGHT,
+    TUI_MIN_TERM_HEIGHT,
+    TUI_MIN_TERM_WIDTH,
+    TUI_MIN_WIDTH,
+    TUI_MODAL_TIMEOUT_MS,
 )
-
-AUTO_LOCK_OPTIONS: tuple[tuple[str, int | str | None], ...] = (
-    ("No auto-lock", None),
-    ("Lock when screen off", AUTO_LOCK_SCREEN_OFF),
-    ("5 minutes", 5 * 60),
-    ("10 minutes", 10 * 60),
-    ("15 minutes", 15 * 60),
-)
-
-SETTING_KEY_CLIPBOARD_AUTO_CLEAR_INDEX = "clipboard_auto_clear_index"
-SETTING_KEY_AUTO_LOCK_INDEX = "auto_lock_index"
 
 class QuitApp(Exception):
     """Raised when the user requests to quit from anywhere in the TUI."""
@@ -83,6 +81,7 @@ def _save_credential_duplicate_safe(
     password: str,
     note: str = "",
     note_is_hidden: bool = False,
+    url: str = "",
 ) -> str:
     """Save credential; prompt to overwrite if a duplicate exists."""
     if not state.storage:
@@ -99,14 +98,65 @@ def _save_credential_duplicate_safe(
         )
         if not confirm or confirm.strip().lower() != "overwrite":
             return "cancelled"
-
-        state.storage.update_credential(existing["id"], service, username, password, note, note_is_hidden)
+        # Preserve existing url if new url empty.
+        existing_url = existing.get("url", "") or ""
+        url_to_store = url if url else existing_url
+        state.storage.update_credential(existing["id"], service, username, password, note, note_is_hidden, url_to_store)
         state.vault_credentials = state.storage.list_credential_metadata()
         return "overwritten"
 
-    state.storage.save_credential(service, username, password, note, note_is_hidden)
+    state.storage.save_credential(service, username, password, note, note_is_hidden, url)
     state.vault_credentials = state.storage.list_credential_metadata()
     return "saved"
+
+
+def _vault_header(inner_w: int) -> str:
+    """Return column header; include URL column when width permits."""
+    if inner_w >= 70:
+        return f"{'Service':<18} {'Username':<18} {'URL':<20}"
+    return f"{'Service':<20} {'Username':<20}"
+
+
+def _vault_row(cred: dict, inner_w: int) -> str:
+    """Format a vault row; include URL when width permits (flat helper)."""
+    svc = str(cred.get("service", ""))
+    usr = str(cred.get("username", ""))
+    url = str(cred.get("url", "") or "")
+    if inner_w >= 70 and url:
+        # 18 + 1 + 18 + 1 + remainder for URL
+        url_w = max(12, inner_w - 38)
+        svc_col = svc[:18].ljust(18)
+        usr_col = usr[:18].ljust(18)
+        url_col = _truncate_middle(url, url_w)
+        return f"{svc_col} {usr_col} {url_col}"
+    return f"{svc:<20} {usr:<20}"
+
+
+def _get_filtered_vault_credentials(state: AppState, query: str) -> list[dict]:
+    """Flat helper: DB-side search for large vaults (2B/60fps), else in-memory fuzzy, reusable."""
+    from .constants import _VAULT_FILTER_MAX_RESULTS, _VAULT_PAGE_SIZE
+
+    # Use DB for large vaults to avoid materializing 2B list scan at 60 fps
+    if state.storage and state.vault_unlocked:
+        try:
+            total = len(state.vault_credentials)
+        except Exception:
+            total = 0
+        if total > _VAULT_PAGE_SIZE and query.strip():
+            try:
+                return state.storage.search_credential_metadata(
+                    query, limit=_VAULT_FILTER_MAX_RESULTS
+                )
+            except StorageError:
+                pass
+    # Fallback: in-memory fuzzy with streaming cap
+    from .constants import _VAULT_FILTER_MAX_RESULTS as _LIMIT
+
+    try:
+        return _filter_vault_credentials(state.vault_credentials, query, limit=_LIMIT)
+    except TypeError:
+        return _filter_vault_credentials(state.vault_credentials, query)
+
 
 def _resolve_start_dir(path_text: str) -> Path:
     if not path_text.strip():
@@ -139,6 +189,20 @@ def _run_fuzzy_file_picker(
     cached_query: str | None = None
     matches: list[tuple[int, str, Path]] = []
 
+    def _score_files_flat(q: str, file_list: list[Path]) -> list[tuple[int, str, Path]]:
+        """Flat helper: score files for streaming, reusable, no hard-coded limit."""
+        from .constants import _VAULT_FUZZY_MAX_CANDIDATES as _LIMIT
+
+        scored: list[tuple[int, str, Path]] = []
+        for p in file_list:
+            rel = str(p.relative_to(root_dir))
+            score = _fuzzy_score(q, rel)
+            if score is None:
+                continue
+            scored.append((score, rel, p))
+        scored.sort(key=lambda item: (item[0], len(item[1]), item[1]))
+        return scored[:_LIMIT]
+
     while True:
         h, w = stdscr.getmaxyx()
         box_h = min(max(14, int(h * 0.8)), max(12, h - 2))
@@ -146,6 +210,7 @@ def _run_fuzzy_file_picker(
         y, x = (h - box_h) // 2, (w - box_w) // 2
 
         win = window_cache.get(box_h, box_w, y, x)
+        win.timeout(TUI_MODAL_TIMEOUT_MS)
         win.erase()
         win.box()
 
@@ -167,15 +232,7 @@ def _run_fuzzy_file_picker(
             pass
 
         if cached_query != query:
-            scored: list[tuple[int, str, Path]] = []
-            for p in files:
-                rel = str(p.relative_to(root_dir))
-                score = _fuzzy_score(query, rel)
-                if score is None:
-                    continue
-                scored.append((score, rel, p))
-            scored.sort(key=lambda item: (item[0], len(item[1]), item[1]))
-            matches = scored[:500]
+            matches = _score_files_flat(query, files)
             cached_query = query
 
         content_y = 4
@@ -210,6 +267,8 @@ def _run_fuzzy_file_picker(
 
         win.refresh()
         key = win.getch()
+        if key == -1:
+            continue
 
         if key in (27, ord('q'), ord('Q')):
             return None
@@ -259,6 +318,7 @@ def _run_file_browser_modal(
         y, x = (h - box_h) // 2, (w - box_w) // 2
 
         win = window_cache.get(box_h, box_w, y, x)
+        win.timeout(TUI_MODAL_TIMEOUT_MS)
         win.erase()
         win.box()
 
@@ -340,6 +400,8 @@ def _run_file_browser_modal(
 
         win.refresh()
         key = win.getch()
+        if key == -1:
+            continue
 
         if key in (27, ord('q'), ord('Q')):
             return None
@@ -424,6 +486,7 @@ def _run_path_modal(
 
         y, x = (h - box_h) // 2, (w - box_w) // 2
         win = window_cache.get(box_h, box_w, y, x)
+        win.timeout(TUI_MODAL_TIMEOUT_MS)
         win.erase()
         win.box()
 
@@ -454,6 +517,8 @@ def _run_path_modal(
 
         win.refresh()
         key = win.getch()
+        if key == -1:
+            continue
 
         if key == 27:
             return None
@@ -535,7 +600,7 @@ def _run_security_settings_modal(
         inner_w = max(10, box_w - 4)
 
         win = window_cache.get(box_h, box_w, y, x)
-        win.timeout(250)
+        win.timeout(TUI_MODAL_TIMEOUT_MS)
         win.erase()
         win.box()
 
@@ -619,32 +684,34 @@ def _auto_lock_setting(state: AppState) -> int | str | None:
     return AUTO_LOCK_OPTIONS[state.auto_lock_index][1]
 
 def _persist_security_settings(state: AppState) -> None:
+    """Flat helper: batch persist security settings, reusable."""
     if not state.storage:
         return
     try:
-        state.storage.set_app_setting(
-            SETTING_KEY_CLIPBOARD_AUTO_CLEAR_INDEX,
-            str(state.clipboard_auto_clear_index),
-        )
-        state.storage.set_app_setting(
-            SETTING_KEY_AUTO_LOCK_INDEX,
-            str(state.auto_lock_index),
+        state.storage.set_app_settings(
+            {
+                SETTING_KEY_CLIPBOARD_AUTO_CLEAR_INDEX: str(state.clipboard_auto_clear_index),
+                SETTING_KEY_AUTO_LOCK_INDEX: str(state.auto_lock_index),
+            }
         )
     except StorageError:
         pass
 
+
 def _load_security_settings(state: AppState) -> None:
+    """Flat helper: batch load security settings, reusable."""
     if not state.storage:
         return
     try:
-        clip_raw = state.storage.get_app_setting(
-            SETTING_KEY_CLIPBOARD_AUTO_CLEAR_INDEX,
-            str(state.clipboard_auto_clear_index),
+        raw = state.storage.get_app_settings(
+            [SETTING_KEY_CLIPBOARD_AUTO_CLEAR_INDEX, SETTING_KEY_AUTO_LOCK_INDEX],
+            {
+                SETTING_KEY_CLIPBOARD_AUTO_CLEAR_INDEX: str(state.clipboard_auto_clear_index),
+                SETTING_KEY_AUTO_LOCK_INDEX: str(state.auto_lock_index),
+            },
         )
-        lock_raw = state.storage.get_app_setting(
-            SETTING_KEY_AUTO_LOCK_INDEX,
-            str(state.auto_lock_index),
-        )
+        clip_raw = raw.get(SETTING_KEY_CLIPBOARD_AUTO_CLEAR_INDEX)
+        lock_raw = raw.get(SETTING_KEY_AUTO_LOCK_INDEX)
         state.clipboard_auto_clear_index = _coerce_index(
             clip_raw,
             len(CLIPBOARD_AUTO_CLEAR_OPTIONS),
@@ -685,6 +752,16 @@ def _auto_lock_reason_text(state: AppState) -> str:
     if setting == AUTO_LOCK_SCREEN_OFF:
         return "Vault auto-locked after screen-off/sleep detection."
     return f"Vault auto-locked after {_auto_lock_label(state)} of inactivity."
+
+def _should_render_frame(now: float, last_render_at: float) -> bool:
+    """Flat helper: check if a 60 fps frame is due, reusable."""
+    return (now - last_render_at) >= TUI_FRAME_INTERVAL_S
+
+
+def _should_refresh_clock(now: float, last_clock_at: float) -> bool:
+    """Flat helper: clock needs 1 Hz update, reusable."""
+    return (now - last_clock_at) >= TUI_CLOCK_REFRESH_S
+
 
 def _maybe_auto_clear_clipboard(state: AppState, now: float | None = None) -> bool:
     if state.clipboard_clear_due_at is None:
@@ -738,6 +815,76 @@ def _lock_vault(state: AppState) -> None:
     state.vault_scroll_y = 0
     state.revealed_secret = None
     state.revealed_secret_id = None
+    # Clear caches that may retain sensitive material (passwords, service
+    # names) or user file-system traces after lock — defense in depth for
+    # memory retention.  Wordlist and file-picker caches are not secret
+    # per se, but their contents (which wordlists/files the user browsed)
+    # are sensitive on a shared machine and are evicted on lock.
+    try:
+        from . import tui_render as _R
+        _R._OUTPUT_WRAP_CACHE.clear()
+        _R._ENTROPY_CACHE.clear()
+    except Exception:
+        pass
+    try:
+        from .identity import clear_identity_cache
+        clear_identity_cache()
+    except Exception:
+        pass
+    try:
+        from . import generator as _gen
+        _gen.clear_wordlist_cache()
+    except Exception:
+        pass
+    try:
+        from . import tui_files as _tf
+        _tf.clear_file_picker_cache()
+    except Exception:
+        pass
+
+
+def _render_footer(stdscr: curses.window, theme: Theme, message: str) -> None:
+    """Flat helper: render footer bar, reusable, no hard-coded inline widths."""
+    h, w = stdscr.getmaxyx()
+    msg = message[: max(0, w - 1)]
+    combined = "Tab/↑/↓: Move • Enter/g: Generate • s: Save • t: Security • p: Pass • k: DEK • m: Health • /:Search • i/e:CSV • v:Vault • a:Add • Esc×2:Quit"
+    R._addstr_safe(stdscr, h - 2, 0, " " * max(0, w - 1), theme.dim)
+    R._addstr_safe(stdscr, h - 2, 1, msg, theme.accent)
+    R._addstr_safe(stdscr, h - 1, 0, " " * max(0, w - 1), theme.dim)
+    R._addstr_safe(stdscr, h - 1, 1, combined[: max(0, w - 2)], theme.dim)
+
+
+def _render_dashboard(
+    stdscr: curses.window,
+    theme: Theme,
+    state: AppState,
+    words: list[str],
+    header_end: int,
+) -> None:
+    """Flat helper: render all dashboard boxes, reusable for 60 fps streaming."""
+    h, w = stdscr.getmaxyx()
+    footer_h = 2
+    body_y = header_end
+    body_h = max(1, h - body_y - footer_h)
+    gap = 1
+    left_w = max(34, min((w - gap) // 2, w - gap - 30))
+    right_x = left_w + gap
+    right_w = max(1, w - right_x)
+    mode_h = 6
+    actions_h = 7
+    settings_h = max(6, body_h - mode_h - actions_h - 2 * gap)
+    info_h = 8
+    output_h = max(6, body_h - info_h - gap)
+    info_h = max(6, body_h - output_h - gap)
+    focus_items = _get_cached_focus_items(state)
+    state.focus_index = max(0, min(state.focus_index, len(focus_items) - 1))
+    focus_id = focus_items[state.focus_index]
+    R._render_mode_box(stdscr, theme, y=body_y, x=0, h=mode_h, w=left_w, state=state, focus_id=focus_id)
+    R._render_settings_box(stdscr, theme, y=body_y + mode_h + gap, x=0, h=settings_h, w=left_w, state=state, focus_id=focus_id)
+    R._render_actions_box(stdscr, theme, y=body_y + mode_h + gap + settings_h + gap, x=0, h=actions_h, w=left_w, state=state, focus_id=focus_id)
+    R._render_output_box(stdscr, theme, y=body_y, x=right_x, h=output_h, w=right_w, state=state)
+    R._render_info_box(stdscr, theme, y=body_y + output_h + gap, x=right_x, h=info_h, w=right_w, state=state, wordlist_size=len(words))
+    _render_footer(stdscr, theme, state.message)
 
 def _focus_items(state: AppState) -> list[str]:
     items = ["mode_chars", "mode_words", "mode_username"]
@@ -755,14 +902,14 @@ def _focus_items(state: AppState) -> list[str]:
         else:  # words
             items += ["username_word_count", "username_separator", "username_add_numbers"]
         items += ["generate"]
-    
+
     # Manual add is always available when vault is unlocked
     if state.vault_unlocked:
         items.append("manual_add")
     # Add Save button if there is output
     if state.output and state.vault_unlocked:
         items.append("save")
-        
+
     return items
 
 
@@ -926,6 +1073,8 @@ def _run_save_generated_flow(
                 state.message = "Save cancelled."
                 return
 
+            url = tui_modal._run_modal(stdscr, theme, "SAVE", "URL (optional, Enter to skip):", max_length=500)
+            url = (url or "").strip()
             note = tui_modal._run_modal(stdscr, theme, "SAVE", "Note (optional, Enter to skip):", max_length=500)
             note_is_hidden = False
             if note:
@@ -941,6 +1090,7 @@ def _run_save_generated_flow(
                 password=final_password,
                 note=note or "",
                 note_is_hidden=note_is_hidden,
+                url=url or "",
             )
             if result == "saved":
                 state.message = f"Saved credential for {service}."
@@ -962,12 +1112,12 @@ def _run_details_modal(
 ) -> None:
     """Runs a modal to show credential details and allow copying."""
     h, w = stdscr.getmaxyx()
-    box_h, box_w = 14, 60
+    box_h, box_w = 16, 60
     y, x = (h - box_h) // 2, (w - box_w) // 2
-    
+
     win = curses.newwin(box_h, box_w, y, x)
     win.keypad(True)
-    win.timeout(250)
+    win.timeout(TUI_MODAL_TIMEOUT_MS)
     feedback_text = ""
     feedback_attr = theme.dim
     feedback_until = 0.0
@@ -978,7 +1128,7 @@ def _run_details_modal(
         if state.storage and state.revealed_secret_id != credential['id']:
             state.revealed_secret = state.storage.get_credential_secret(credential['id'])
             state.revealed_secret_id = credential['id']
-        
+
         while True:
             if _maybe_auto_clear_clipboard(state):
                 state.message = "Clipboard auto-cleared."
@@ -989,17 +1139,17 @@ def _run_details_modal(
                 return
             win.erase()
             win.box()
-            
+
             # Title
             win.addstr(0, 2, " CREDENTIAL DETAILS ", theme.title)
-            
+
             # Content
             # We use safe addstr to avoid crashing if strings are too long
             row = 2
-            
+
             label_attr = theme.dim
             val_attr = curses.A_BOLD
-            
+
             win.addstr(row, 2, "Service:", label_attr)
             win.addstr(row, 12, R._sanitize_terminal_text(credential['service'][:box_w-14]), val_attr)
             row += 2
@@ -1007,7 +1157,14 @@ def _run_details_modal(
             win.addstr(row, 2, "Username:", label_attr)
             win.addstr(row, 12, R._sanitize_terminal_text(credential['username'][:box_w-14]), val_attr)
             row += 2
-            
+
+            # URL if present
+            url_text = state.revealed_secret.get('url', '') if state.revealed_secret else credential.get('url', '')
+            if url_text:
+                win.addstr(row, 2, "URL:", label_attr)
+                win.addstr(row, 12, R._sanitize_terminal_text(url_text[:box_w-14]), val_attr)
+                row += 2
+
             # Note
             note_text = state.revealed_secret.get('note', '') if state.revealed_secret else ''
             note_is_hidden = state.revealed_secret.get('note_is_hidden', False) if state.revealed_secret else False
@@ -1038,22 +1195,24 @@ def _run_details_modal(
                     masked = "*" * min(len(state.revealed_secret['password']), 20)
                     win.addstr(row, 12, masked[:box_w-14], val_attr)
             row += 2
-            
+
             win.addstr(row, 2, "Created:", label_attr)
             win.addstr(row, 12, R._sanitize_terminal_text(str(credential['created_at'])[:box_w-14]))
-            
+
             # Footer - stacked on two lines for better readability
             line1 = "c: Copy Pass  u: Copy User"
+            if url_text:
+                line1 += "  o: Copy URL"
             if note_text:
                 line1 += "  n: Copy Note"
             line1 += "  r: Hide" if password_revealed else "  r: Reveal"
-            
+
             line2_parts = []
             if note_text:
                 line2_parts.append("h: Show/Hide Note")
             line2_parts.append("Esc: Close")
             line2 = "  ".join(line2_parts)
-            
+
             footer_text = line2
             footer_attr = theme.dim
             if feedback_text and time.monotonic() < feedback_until:
@@ -1061,20 +1220,20 @@ def _run_details_modal(
                 footer_attr = feedback_attr
             win.addstr(box_h - 3, 2, R._sanitize_terminal_text(line1[:box_w-4]), theme.dim)
             win.addstr(box_h - 2, 2, R._sanitize_terminal_text(footer_text[:box_w-4]), footer_attr)
-            
+
             win.refresh()
-            
+
             key = win.getch()
             if key == -1:
                 continue
             _record_user_activity(state)
-            
+
             if key in (27, ord('q'), ord('Q')): # Esc/q
                 return
-                
+
             elif key in (ord('r'), ord('R')):
                 password_revealed = not password_revealed
-                
+
             elif key in (ord('c'), ord('C')):
                 try:
                     if state.revealed_secret:
@@ -1117,19 +1276,40 @@ def _run_details_modal(
                     feedback_attr = theme.warn
                     feedback_until = time.monotonic() + 0.5
 
+            elif key in (ord('o'), ord('O')):
+                url_to_copy = url_text
+                if url_to_copy:
+                    try:
+                        msg = tui_flow._copy_to_clipboard_with_policy(state, url_to_copy)
+                        feedback_text = "        COPIED URL!        "
+                        feedback_attr = theme.ok
+                        feedback_until = time.monotonic() + 0.5
+                        state.message = msg
+                    except (StorageError, PyperclipException):
+                        feedback_text = "    CLIPBOARD COPY FAILED    "
+                        feedback_attr = theme.warn
+                        feedback_until = time.monotonic() + 1.5
+                else:
+                    feedback_text = "       NO URL TO COPY!      "
+                    feedback_attr = theme.warn
+                    feedback_until = time.monotonic() + 0.5
+
             elif key in (ord('h'), ord('H')):
                 if note_text:
                     try:
                         cred_id = credential['id']
                         current_hidden = note_is_hidden
                         if state.storage and state.revealed_secret:
+                            # Preserve url on hide toggle
+                            url_to_preserve = url_text if 'url_text' in locals() else (state.revealed_secret.get('url', '') or credential.get('url',''))
                             state.storage.update_credential(
                                 cred_id,
                                 credential['service'],
                                 credential['username'],
                                 state.revealed_secret['password'],
                                 state.revealed_secret['note'],
-                                not current_hidden
+                                not current_hidden,
+                                url_to_preserve,
                             )
                             state.vault_credentials = state.storage.list_credential_metadata()
                             state.revealed_secret['note_is_hidden'] = not current_hidden
@@ -1158,7 +1338,7 @@ def _run_vault_modal(
     if not state.vault_unlocked or not state.storage:
         tui_modal._run_modal(stdscr, theme, "ERROR", "Vault locked or unavailable.")
         return
-        
+
     # Reload credentials
     state.vault_credentials = state.storage.list_credential_metadata()
     vault_filter = ""
@@ -1166,7 +1346,7 @@ def _run_vault_modal(
     window_cache = tui_modal._WindowCache()
     cached_filter_key: tuple[int, str] | None = None
     filtered_credentials: list[dict] = []
-    
+
     while True:
         if _maybe_auto_clear_clipboard(state):
             state.message = "Clipboard auto-cleared."
@@ -1176,37 +1356,40 @@ def _run_vault_modal(
             tui_security._prompt_unlock_vault(stdscr, theme, state, reason=reason)
             return
         h, w = stdscr.getmaxyx()
-        
+
         # Calculate box dimensions (80% of screen)
         box_h = max(10, int(h * 0.8))
         box_w = max(40, int(w * 0.8))
         y = (h - box_h) // 2
         x = (w - box_w) // 2
-        
+
         # Draw background shadow/dimming?
         # Standard curses doesn't support transparency easily, so just draw the box.
-        
-        # We need to clear the area or redraw the whole screen behind it? 
+
+        # We need to clear the area or redraw the whole screen behind it?
         # Easier to just draw a solid box on top.
         win = window_cache.get(box_h, box_w, y, x)
-        win.timeout(250)
+        win.timeout(TUI_MODAL_TIMEOUT_MS)
         win.erase()
         win.box()
-        
+
         # Title
         title = " VAULT EXPLORER "
         try:
             win.addstr(0, 2, title, theme.title)
         except curses.error:
             pass
-            
+
         inner_h = box_h - 2
         inner_w = box_w - 4
         list_y = 1
 
         filter_key = (id(state.vault_credentials), vault_filter)
         if cached_filter_key != filter_key:
-            filtered_credentials = _filter_vault_credentials(state.vault_credentials, vault_filter)
+            # Flat helper: choose DB vs in-memory path for 2B/60fps, reusable.
+            filtered_credentials = _get_filtered_vault_credentials(
+                state, vault_filter
+            )
             cached_filter_key = filter_key
 
         if not filtered_credentials:
@@ -1223,17 +1406,17 @@ def _run_vault_modal(
         except curses.error:
             pass
         list_y += 1
-        
+
         # Header
-        headers = f"{'Service':<20} {'Username':<20}"
+        headers = _vault_header(inner_w)
         try:
             win.addstr(list_y, 2, headers[:inner_w], theme.dim | curses.A_UNDERLINE)
         except curses.error:
             pass
-            
+
         list_y += 2
         content_h = max(1, inner_h - 4)  # Reserve space for filter line + footer
-        
+
         if not filtered_credentials:
             try:
                 win.addstr(list_y, 2, "No matching credentials.", theme.dim)
@@ -1241,28 +1424,25 @@ def _run_vault_modal(
                 pass
         else:
             total = len(filtered_credentials)
-            
+
             # Scrolling
             if state.vault_selected_idx < state.vault_scroll_y:
                 state.vault_scroll_y = state.vault_selected_idx
             elif state.vault_selected_idx >= state.vault_scroll_y + content_h:
                 state.vault_scroll_y = state.vault_selected_idx - content_h + 1
-            
+
             # Clamp scroll
             state.vault_scroll_y = max(0, min(state.vault_scroll_y, total - 1))
-            
+
             start = state.vault_scroll_y
             end = min(total, start + content_h)
-            
+
             for i in range(start, end):
                 cred = filtered_credentials[i]
                 is_selected = (i == state.vault_selected_idx)
-                
+
                 attr = theme.focus if is_selected else 0
-                s_serv = cred['service']
-                s_user = cred['username']
-                
-                line = f"{s_serv:<20} {s_user:<20}"
+                line = _vault_row(cred, inner_w)
                 try:
                     win.addstr(list_y + (i - start), 2, R._sanitize_terminal_text(line[:inner_w]), attr)
                 except curses.error:
@@ -1276,7 +1456,7 @@ def _run_vault_modal(
             ]
         else:
             footer_lines = [
-                "Enter: details  e: edit  c: copy pass  u: copy user",
+                "Enter: details  e: edit  c: copy pass  u: copy user  o: copy url",
                 "d: delete  /: search  Esc/v: close",
             ]
         try:
@@ -1284,9 +1464,9 @@ def _run_vault_modal(
                 win.addstr(box_h - 3 + i, 2, line[:inner_w], theme.dim)
         except curses.error:
             pass
-            
+
         win.refresh()
-        
+
         key = win.getch()
         if key == -1:
             continue
@@ -1297,10 +1477,10 @@ def _run_vault_modal(
                 search_mode = False
                 continue
             return
-        
+
         if key in (ord('v'), ord('V'), ord('q'), ord('Q')): # v/q
             return
-            
+
         if key == ord('/'):
             search_mode = True
             continue
@@ -1328,7 +1508,7 @@ def _run_vault_modal(
         elif key in (curses.KEY_DOWN, ord('j')):
             if filtered_credentials:
                 state.vault_selected_idx = min(len(filtered_credentials) - 1, state.vault_selected_idx + 1)
-        
+
         elif key in (ord('e'), ord('E')):
             if filtered_credentials:
                 cred = filtered_credentials[state.vault_selected_idx]
@@ -1376,26 +1556,31 @@ def _run_vault_modal(
                     continue
 
                 try:
+                    existing_url = secret.get("url", "") or cred.get("url", "")
+                    url = tui_modal._run_modal(stdscr, theme, "EDIT", "URL (optional):", max_length=500, initial_value=existing_url)
+                    if url is None:
+                        continue
+                    url = url.strip()
                     # Get existing note for the credential
                     existing_note = secret.get("note", "")
                     existing_hidden = secret.get("note_is_hidden", False)
                     note = tui_modal._run_modal(stdscr, theme, "EDIT", "Note (optional):", max_length=500, initial_value=existing_note)
                     if note is None:
                         continue
-                    
+
                     # Ask if user wants to hide the note
                     hide_option = "y" if existing_hidden else "n"
                     hide_note = tui_modal._run_modal(
-                        stdscr, theme, "EDIT", 
-                        f"Hide note? (y/n) [{hide_option}]:", 
-                        max_length=1, 
+                        stdscr, theme, "EDIT",
+                        f"Hide note? (y/n) [{hide_option}]:",
+                        max_length=1,
                         initial_value=hide_option
                     )
                     if hide_note is None:
                         continue
                     note_is_hidden = hide_note.lower() == "y"
-                    
-                    state.storage.update_credential(cred["id"], service, username, password, note, note_is_hidden)
+
+                    state.storage.update_credential(cred["id"], service, username, password, note, note_is_hidden, url)
                     state.vault_credentials = state.storage.list_credential_metadata()
 
                     refreshed_filtered = _filter_vault_credentials(state.vault_credentials, vault_filter)
@@ -1412,7 +1597,7 @@ def _run_vault_modal(
                     tui_modal._run_modal(stdscr, theme, "SUCCESS", "Credential updated.")
                 except StorageError as e:
                     tui_modal._run_modal(stdscr, theme, "ERROR", f"Update failed: {e}")
-        
+
         elif key in (ord('c'), ord('C')):
             if filtered_credentials:
                 cred = filtered_credentials[state.vault_selected_idx]
@@ -1433,11 +1618,30 @@ def _run_vault_modal(
                 except (StorageError, PyperclipException) as e:
                     tui_modal._run_modal(stdscr, theme, "ERROR", f"Copy failed: {e}")
 
+        elif key in (ord('o'), ord('O')):
+            if filtered_credentials:
+                cred = filtered_credentials[state.vault_selected_idx]
+                url_val = cred.get("url") or ""
+                if not url_val and state.storage:
+                    try:
+                        secret = state.storage.get_credential_secret(cred["id"])
+                        url_val = secret.get("url", "") or ""
+                    except StorageError:
+                        url_val = ""
+                if url_val:
+                    try:
+                        msg = tui_flow._copy_to_clipboard_with_policy(state, url_val)
+                        tui_modal._run_modal(stdscr, theme, "SUCCESS", msg)
+                    except (StorageError, PyperclipException) as e:
+                        tui_modal._run_modal(stdscr, theme, "ERROR", f"Copy failed: {e}")
+                else:
+                    tui_modal._run_modal(stdscr, theme, "ERROR", "No URL to copy.")
+
         elif key in (curses.KEY_ENTER, 10, 13):
             if filtered_credentials:
                 cred = filtered_credentials[state.vault_selected_idx]
                 _run_details_modal(stdscr, theme, state, cred)
-        
+
         elif key in (ord('d'), ord('D')):
             if filtered_credentials:
                 cred = filtered_credentials[state.vault_selected_idx]
@@ -1471,10 +1675,10 @@ def run() -> int:
             pass
 
         stdscr.keypad(True)
-        stdscr.timeout(250)
+        stdscr.timeout(TUI_INPUT_TIMEOUT_MS)
 
         h, w = stdscr.getmaxyx()
-        if h < 10 or w < 40:
+        if h < TUI_MIN_TERM_HEIGHT or w < TUI_MIN_TERM_WIDTH:
             stdscr.addstr(0, 0, "Terminal too small for Generate-It. Minimum: 40x10.")
             stdscr.refresh()
             curses.napms(2000)
@@ -1482,7 +1686,7 @@ def run() -> int:
 
         words = generator.load_wordlist()
         state = AppState()
-        
+
         # --- Storage Initialization ---
         try:
             state.storage = StorageManager()
@@ -1530,9 +1734,38 @@ def run() -> int:
                         break
                     except StorageError as e:
                         tui_modal._run_modal(stdscr, theme, "ERROR", f"Init failed: {e}. Press Enter.")
+                    finally:
+                        # Minimize lifetime of plaintext passwords in memory.
+                        try:
+                            # Overwrite local references (CPython strings are immutable;
+                            # this at least drops the reference promptly).
+                            pwd = "\x00" * len(pwd)
+                            pwd2 = "\x00" * len(pwd2)
+                        except Exception:
+                            pass
+                        try:
+                            del pwd, pwd2
+                        except Exception:
+                            pass
                 else:
                     tui_modal._run_modal(stdscr, theme, "ERROR", "Passwords do not match. Press Enter.")
+                    # Clear promptly on mismatch as well.
+                    try:
+                        pwd = "\x00" * len(pwd)
+                        pwd2 = "\x00" * len(pwd2)
+                    except Exception:
+                        pass
+                    try:
+                        del pwd, pwd2
+                    except Exception:
+                        pass
         else:
+            # Sync persisted lockout (survives restarts) into in-memory state
+            # before the first unlock attempt.
+            try:
+                tui_security._sync_persistent_lockout_from_storage(state)
+            except Exception:
+                pass
             # Unlock existing vault
             while True:
                 stdscr.erase()
@@ -1540,7 +1773,7 @@ def run() -> int:
                 pwd = tui_modal._run_modal(stdscr, theme, "LOGIN", "Enter Master Password:", is_password=True)
                 if pwd is None: # Cancelled
                     return 0
-                
+
                 setattr(state, tui_security._UNLOCK_RETRY_FLAG, False)
                 setattr(state, tui_security._UNLOCK_CANCELLED_FLAG, False)
                 try:
@@ -1550,6 +1783,15 @@ def run() -> int:
                     cancelled = getattr(state, tui_security._UNLOCK_CANCELLED_FLAG, False)
                     delattr(state, tui_security._UNLOCK_RETRY_FLAG)
                     delattr(state, tui_security._UNLOCK_CANCELLED_FLAG)
+                    # Minimize lifetime — clear plaintext pwd promptly.
+                    try:
+                        pwd = "\x00" * len(pwd)
+                    except Exception:
+                        pass
+                    try:
+                        del pwd
+                    except Exception:
+                        pass
                 if unlocked:
                     break
                 if cancelled:
@@ -1567,30 +1809,39 @@ def run() -> int:
         _generate(state, words)
         last_esc_quit_at: float | None = None
         redraw = True
+        last_render_at = 0.0
+        last_clock_at = time.monotonic()
 
         while True:
+            now = time.monotonic()
             if _maybe_auto_clear_clipboard(state):
                 state.message = "Clipboard auto-cleared."
+                redraw = True
             if _should_auto_lock_now(state):
                 reason = _auto_lock_reason_text(state)
                 _lock_vault(state)
                 tui_security._prompt_unlock_vault(stdscr, theme, state, reason=reason)
                 stdscr.clear()
                 redraw = True
+                last_render_at = 0.0
                 continue
-            if redraw:
+            needs_render = redraw or _should_render_frame(now, last_render_at) or _should_refresh_clock(now, last_clock_at)
+            if needs_render:
                 stdscr.erase()
                 header_end = R._render_header(stdscr, theme)
                 h, w = stdscr.getmaxyx()
-    
-                min_w, min_h = 70, 20
-                if w < min_w or h < min_h:
+                if w < TUI_MIN_WIDTH or h < TUI_MIN_HEIGHT:
                     R._render_resize_hint(stdscr, theme)
                     _render_footer(stdscr, theme, state.message)
                     stdscr.refresh()
+                    last_render_at = now
+                    if _should_refresh_clock(now, last_clock_at):
+                        last_clock_at = now
+                    # Stream input at 60 fps — poll without blocking
                     key = stdscr.getch()
                     if key == -1:
                         continue
+                    redraw = True
                     _record_user_activity(state)
                     if key == 27:
                         should_quit, last_esc_quit_at = tui_flow._handle_double_esc_quit(
@@ -1605,109 +1856,17 @@ def run() -> int:
                     if key in (ord("q"), ord("Q")):
                         state.message = "Press Esc twice to quit."
                     continue
-
-                footer_h = 2
-                body_y = header_end
-                body_h = max(1, h - body_y - footer_h)
-    
-                gap = 1
-                # Two columns
-                left_w = max(34, min((w - gap) // 2, w - gap - 30))
-                right_x = left_w + gap
-                right_w = max(1, w - right_x)
-    
-                # Standard layout heights
-                mode_h = 6
-                actions_h = 7 # Increased for Save button
-                settings_h = max(6, body_h - mode_h - actions_h - 2 * gap)
-    
-                # Right column: OUTPUT + INFO
-                info_h = 8
-                output_h = max(6, body_h - info_h - gap)
-                info_h = max(6, body_h - output_h - gap)
-
-                focus_items = _get_cached_focus_items(state)
-                state.focus_index = max(0, min(state.focus_index, len(focus_items) - 1))
-                focus_id = focus_items[state.focus_index]
-    
-                # --- Rendering ---
-
-                def _render_footer(stdscr: curses.window, theme: Theme, message: str) -> None:
-                    h, w = stdscr.getmaxyx()
-
-                    msg = message[: max(0, w - 1)]
-
-                    # Single combined hotkey line spanning the full width
-                    combined = "Tab/↑/↓: Move • Enter/g: Generate • s: Save • t: Security • /: Search • i/e: CSV • v: Vault • a: Add • Esc×2: Quit"
-
-                    R._addstr_safe(stdscr, h - 2, 0, " " * max(0, w - 1), theme.dim)
-                    R._addstr_safe(stdscr, h - 2, 1, msg, theme.accent)
-
-                    R._addstr_safe(stdscr, h - 1, 0, " " * max(0, w - 1), theme.dim)
-                    R._addstr_safe(stdscr, h - 1, 1, combined[: max(0, w - 2)], theme.dim)
-
-                # Mode box is always visible
-                R._render_mode_box(
-                    stdscr,
-                    theme,
-                    y=body_y,
-                    x=0,
-                    h=mode_h,
-                    w=left_w,
-                    state=state,
-                    focus_id=focus_id,
-                )
-    
-                # Standard Generator Layout
-                R._render_settings_box(
-                    stdscr,
-                    theme,
-                    y=body_y + mode_h + gap,
-                    x=0,
-                    h=settings_h,
-                    w=left_w,
-                    state=state,
-                    focus_id=focus_id,
-                )
-                R._render_actions_box(
-                    stdscr,
-                    theme,
-                    y=body_y + mode_h + gap + settings_h + gap,
-                    x=0,
-                    h=actions_h,
-                    w=left_w,
-                    state=state,
-                    focus_id=focus_id,
-                )
-    
-                R._render_output_box(
-                    stdscr,
-                    theme,
-                    y=body_y,
-                    x=right_x,
-                    h=output_h,
-                    w=right_w,
-                    state=state,
-                )
-                R._render_info_box(
-                    stdscr,
-                    theme,
-                    y=body_y + output_h + gap,
-                    x=right_x,
-                    h=info_h,
-                    w=right_w,
-                    state=state,
-                    wordlist_size=len(words),
-                )
-    
-                _render_footer(stdscr, theme, state.message)
+                _render_dashboard(stdscr, theme, state, words, header_end)
                 stdscr.refresh()
+                last_render_at = now
+                if _should_refresh_clock(now, last_clock_at):
+                    last_clock_at = now
                 redraw = False
 
             key = stdscr.getch()
-            redraw = (key != -1)
             if key == -1:
                 continue
+            redraw = True
             _record_user_activity(state)
             if key == 27:
                 should_quit, last_esc_quit_at = tui_flow._handle_double_esc_quit(
@@ -1727,6 +1886,10 @@ def run() -> int:
                 redraw = True
                 continue
 
+            focus_items = _get_cached_focus_items(state)
+            state.focus_index = max(0, min(state.focus_index, len(focus_items) - 1))
+            focus_id = focus_items[state.focus_index] if focus_items else ""
+
             # Navigation
             if key in (9,):  # Tab
                 state.focus_index = (state.focus_index + 1) % len(focus_items)
@@ -1734,7 +1897,7 @@ def run() -> int:
             if key == curses.KEY_BTAB:  # Shift-Tab
                 state.focus_index = (state.focus_index - 1) % len(focus_items)
                 continue
-            
+
             # Up/Down navigation (Standard)
             if key in (curses.KEY_UP, ord("k")):
                 state.focus_index = (state.focus_index - 1) % len(focus_items)
@@ -1779,6 +1942,9 @@ def run() -> int:
             import_csv = key in (ord("i"), ord("I"))
             export_csv = key in (ord("e"), ord("E"))
             manual_add = key in (ord("a"), ord("A"))
+            change_password = key in (ord("p"), ord("P"))
+            rotate_dek = key in (ord("k"), ord("K"))
+            vault_health = key in (ord("m"), ord("M"))
             show_help = key == ord("?")
 
             if show_help:
@@ -1787,6 +1953,9 @@ def run() -> int:
                     "g       : Generate new credential",
                     "s       : Save generated credential",
                     "t       : Security settings",
+                    "p       : Change master password",
+                    "k       : Rotate DEK (v2 vaults)",
+                    "m       : Vault health & backups",
                     "/       : Quick vault search",
                     "v       : Open Vault Explorer",
                     "i       : Import credentials from CSV (choose format)",
@@ -1824,6 +1993,21 @@ def run() -> int:
                     "Esc     : Close vault",
                 ]
                 tui_modal._run_scrollable_modal(stdscr, theme, "HOTKEY LEGEND", help_lines)
+                stdscr.clear()
+                continue
+
+            if change_password:
+                tui_security.prompt_change_master_password(stdscr, theme, state)
+                stdscr.clear()
+                continue
+
+            if rotate_dek:
+                tui_security.prompt_rotate_dek(stdscr, theme, state)
+                stdscr.clear()
+                continue
+
+            if vault_health:
+                tui_security.prompt_vault_health(stdscr, theme, state)
                 stdscr.clear()
                 continue
 
@@ -1903,13 +2087,15 @@ def run() -> int:
                         state.message = "Add cancelled."
                         stdscr.clear()
                         continue
-                    
+
+                    url = tui_modal._run_modal(stdscr, theme, "ADD", "URL (optional, Enter to skip):", max_length=500)
+                    url = (url or "").strip()
                     note = tui_modal._run_modal(stdscr, theme, "ADD", "Note (optional, Enter to skip):", max_length=500)
                     note_is_hidden = False
                     if note:
                         hide_note = tui_modal._run_modal(stdscr, theme, "ADD", "Hide note? (y/n) [n]:", max_length=1, initial_value="n")
                         note_is_hidden = bool(hide_note and hide_note.lower() == "y")
-                    
+
                     result = _save_credential_duplicate_safe(
                         stdscr,
                         theme,
@@ -1919,6 +2105,7 @@ def run() -> int:
                         password=password,
                         note=note or "",
                         note_is_hidden=note_is_hidden,
+                        url=url or "",
                     )
                     if result == "saved":
                         state.message = f"Added credential for {service}."
@@ -1935,7 +2122,7 @@ def run() -> int:
             if open_vault:
                 _run_vault_modal(stdscr, theme, state)
                 # Force full redraw after modal closes
-                stdscr.clear() 
+                stdscr.clear()
                 continue
 
             if generate_now:
@@ -1948,7 +2135,7 @@ def run() -> int:
                     tui_modal._run_modal(stdscr, theme, "ERROR", "Vault is locked or unavailable.")
                     stdscr.clear()
                     continue
-                
+
                 selected_export_format = _prompt_csv_format(stdscr, theme, mode="export")
                 if selected_export_format is None:
                     state.message = "Export cancelled."
@@ -1980,7 +2167,7 @@ def run() -> int:
                     tui_modal._run_modal(stdscr, theme, "ERROR", "Vault is locked or unavailable.")
                     stdscr.clear()
                     continue
-                
+
                 selected_import_format = _prompt_csv_format(stdscr, theme, mode="import")
                 if selected_import_format is None:
                     state.message = "Import cancelled."

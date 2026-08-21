@@ -7,6 +7,23 @@ ESC_QUIT_WINDOW_SECONDS = 1.0
 AUTO_LOCK_SCREEN_OFF = "screen_off"
 SCREEN_OFF_LOCK_GAP_SECONDS = 20.0
 
+# 60 fps redraw / streaming constants (no hard-coded inline values).
+TUI_TARGET_FPS = 60
+TUI_FRAME_INTERVAL_MS = 1000 // TUI_TARGET_FPS  # ~16 ms
+TUI_FRAME_INTERVAL_S = 1.0 / TUI_TARGET_FPS
+TUI_CLOCK_REFRESH_S = 1.0
+TUI_MIN_WIDTH = 70
+TUI_MIN_HEIGHT = 20
+TUI_MIN_TERM_WIDTH = 40
+TUI_MIN_TERM_HEIGHT = 10
+TUI_RESIZE_HINT_WIDTH = 80
+TUI_RESIZE_HINT_HEIGHT = 24
+TUI_INPUT_TIMEOUT_MS = TUI_FRAME_INTERVAL_MS  # streaming input poll
+TUI_MODAL_TIMEOUT_MS = TUI_FRAME_INTERVAL_MS
+TUI_RENDER_CACHE_TTL_S = TUI_FRAME_INTERVAL_S
+TUI_OUTPUT_WRAP_CACHE_SIZE = 32
+TUI_ENTROPY_CACHE_SIZE = 64
+
 CLIPBOARD_AUTO_CLEAR_OPTIONS: tuple[tuple[str, int | None], ...] = (
     ("No auto-clear", None),
     ("15 seconds", 15),
@@ -42,6 +59,49 @@ _MAX_MASTER_PASSWORD_LENGTH = 1024
 _MAX_CSV_FILE_BYTES = 10 * 1024 * 1024  # 10 MB
 _MAX_CSV_ROWS = 10_000
 _MAX_CSV_FIELD_BYTES = 500
+_MAX_URL_BYTES = 2048
+
+# SQLite performance / durability pragmas (reusable, no hard-coded inline values).
+_SQLITE_BUSY_TIMEOUT_MS = 5000
+_SQLITE_JOURNAL_MODE = "WAL"
+_SQLITE_SYNCHRONOUS = "NORMAL"
+_SQLITE_CACHE_SIZE_PAGES = -64000  # ~64 MiB (negative = KiB)
+_SQLITE_TEMP_STORE = "MEMORY"
+_SQLITE_FOREIGN_KEYS = "ON"
+
+# Batch settings fetch (reusable).
+_APP_SETTINGS_BATCH_KEYS: tuple[str, ...] = (
+    "clipboard_auto_clear_index",
+    "auto_lock_index",
+)
+
+# Vault pagination / filtering (reusable, no inline limits).
+_VAULT_PAGE_SIZE = 200
+_VAULT_FILTER_MAX_RESULTS = 500
+_VAULT_FUZZY_MAX_CANDIDATES = 500
+
+# File picker cache (reusable).
+_FILE_PICKER_MAX_FILES = 5000
+_FILE_PICKER_MAX_DEPTH = 8
+_FILE_PICKER_CACHE_TTL_SECONDS = 2.0
+
+# Wordlist cache (reusable).
+_WORDLIST_CACHE_MAX_SIZE = 8
+_WORDLIST_HASH_CHUNK_BYTES = 65536
+_WORDLIST_HASH_DIGEST_SIZE = 16
+_MAX_WORDLIST_FILE_BYTES = 5 * 1024 * 1024  # 5 MB — prevent DoS via huge wordlist
+_MAX_WORDLIST_WORDS = 1_000_000  # sanity cap for unique words
+
+# Identity cache / search (flat, reusable).
+_IDENTITY_CACHE_SIZE = 4096
+_VAULT_SEARCH_SQL_LIMIT = 500  # LIMIT for search_credential_metadata() LIKE query
+_VAULT_SEARCH_SQL_LIKE_LIMIT = 2000  # threshold: preload identity map only when count <= this (import_from_csv)
+
+# TUI render caches (flat, reusable).
+_TUI_MAX_BITS_CACHE_SIZE = 32
+
+# Vault integrity streaming (flat, reusable).
+_VAULT_INTEGRITY_BATCH_SIZE = 200
 
 # Identity schema marker
 _IDENTITY_SCHEMA_VERSION = 1

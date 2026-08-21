@@ -60,12 +60,14 @@ _IMPORT_FIELD_ALIASES: Dict[str, Dict[str, Sequence[str]]] = {
         "username": ("username", "login", "user", "email", "login_username"),
         "password": ("password", "pass", "login_password"),
         "note": ("note", "notes"),
+        "url": ("url", "login_uri", "website", "address"),
     },
     "bitwarden": {
         "service": ("name", "title", "service"),
         "username": ("login_username", "username", "login", "user"),
         "password": ("login_password", "password", "pass"),
         "note": ("notes", "note"),
+        "url": ("login_uri", "url", "website"),
         "type": ("type",),
     },
     "apple": {
@@ -73,12 +75,14 @@ _IMPORT_FIELD_ALIASES: Dict[str, Dict[str, Sequence[str]]] = {
         "username": ("username", "login", "user", "email"),
         "password": ("password", "pass"),
         "note": ("notes", "note"),
+        "url": ("url", "website", "address"),
     },
     "nordpass": {
         "service": ("name", "title", "service"),
         "username": ("username", "login", "user", "email"),
         "password": ("password", "pass"),
         "note": ("note", "notes"),
+        "url": ("url", "website", "address"),
         "type": ("type",),
     },
 }
@@ -130,18 +134,20 @@ def normalize_header_name(value: str) -> str:
     return value.strip().lower().replace(" ", "_").replace("-", "_")
 
 
-_FORMULA_TRIGGERS: frozenset[str] = frozenset({"=", "+", "-", "@"})
+_FORMULA_TRIGGERS: frozenset[str] = frozenset({"=", "+", "-", "@", "|", "%"})
 
 
 def _escape_formula(value: str) -> str:
     """Prefix values that start with formula-triggering characters with a single quote.
 
     Spreadsheet applications like Excel, LibreOffice, and Google Sheets interpret
-    cells starting with ``=``, ``+``, ``-``, or ``@`` as formulas.  Prepending a
-    single-quote character escapes the cell so it is treated as literal text.
+    cells starting with ``=``, ``+``, ``-``, ``@``, ``|``, ``%`` as formulas
+    (OWASP CSV Injection).  Prepending a single-quote escapes the cell so it
+    is treated as literal text.
 
-    Leading whitespace is stripped before checking for triggers, per the CSV
-    Injection Prevention OWASP guidance.
+    Leading whitespace is stripped before checking for triggers, per OWASP.
+    Tab-prefixed formulas like ``\\t+SUM`` are still caught because ``lstrip``
+    removes the tab and exposes the ``+``.
     """
     stripped = value.lstrip()
     if stripped and stripped[0] in _FORMULA_TRIGGERS:
@@ -228,13 +234,14 @@ def build_export_row(
     username: str,
     password: str,
     note: str = "",
+    url: str = "",
 ) -> list[str]:
     normalized = normalize_export_format(export_format)
 
     if normalized == "generic":
         return [
             _escape_formula(service),
-            "",
+            _escape_formula(url),
             _escape_formula(username),
             _escape_formula(password),
             _escape_formula(note),
@@ -243,7 +250,7 @@ def build_export_row(
     if normalized == "spreadsheet-safe":
         return [
             _escape_formula(service),
-            "",
+            _escape_formula(url),
             _escape_formula(username),
             _escape_formula(password),
             _escape_formula(note),
@@ -258,7 +265,7 @@ def build_export_row(
             _escape_formula(note),  # notes
             "",  # fields
             "0",  # reprompt
-            "",  # login_uri
+            _escape_formula(url),  # login_uri
             _escape_formula(username),  # login_username
             _escape_formula(password),  # login_password
             "",  # login_totp
@@ -267,7 +274,7 @@ def build_export_row(
     if normalized == "apple":
         return [
             _escape_formula(service),  # Title
-            "",  # URL
+            _escape_formula(url),  # URL
             _escape_formula(username),  # Username
             _escape_formula(password),  # Password
             _escape_formula(note),  # Notes
@@ -277,7 +284,7 @@ def build_export_row(
     # nordpass
     return [
         _escape_formula(service),  # name
-        "",  # url
+        _escape_formula(url),  # url
         _escape_formula(username),  # username
         _escape_formula(password),  # password
         _escape_formula(note),  # note
@@ -300,6 +307,44 @@ def build_export_row(
     ]
 
 
+def _normalize_row_flat(row: Mapping[str, str | None]) -> Dict[str, str]:
+    """Flat helper: normalize a CSV row's keys/values once, reusable."""
+    return {
+        normalize_header_name(k): (v or "").strip()
+        for k, v in row.items()
+        if k is not None
+    }
+
+
+def _normalized_aliases_flat(
+    aliases: Mapping[str, Sequence[str]],
+) -> Dict[str, tuple[str, ...]]:
+    """Flat helper: pre-normalize alias keys for fast lookup, reusable."""
+    return {
+        field: tuple(normalize_header_name(k) for k in keys)
+        for field, keys in aliases.items()
+    }
+
+
+def _validate_row_type_flat(
+    normalized_row: Mapping[str, str],
+    aliases: Mapping[str, Sequence[str]],
+    normalized_format: str,
+    row_num: int,
+) -> str | None:
+    """Flat helper: validate type field, return error or None, reusable."""
+    if "type" not in aliases:
+        return None
+    type_value = _first_present(normalized_row, aliases["type"]).lower()
+    if normalized_format == "bitwarden":
+        if type_value not in ("", "login", "1"):
+            return f"Row {row_num}: Unsupported item type '{type_value or 'unknown'}'"
+    elif normalized_format == "nordpass":
+        if type_value and type_value not in ("password", "login", "credential"):
+            return f"Row {row_num}: Unsupported item type '{type_value}'"
+    return None
+
+
 def parse_import_row(
     row: Mapping[str, str | None],
     *,
@@ -309,28 +354,17 @@ def parse_import_row(
     normalized_format = normalize_import_format(import_format)
     if normalized_format == "auto":
         raise ValueError("parse_import_row() requires a resolved import format, not 'auto'.")
-
-    aliases = _IMPORT_FIELD_ALIASES[normalized_format]
-    normalized_row = {
-        normalize_header_name(k): (v or "").strip()
-        for k, v in row.items()
-        if k is not None
-    }
-
-    if "type" in aliases:
-        type_value = _first_present(normalized_row, aliases["type"]).lower()
-        if normalized_format == "bitwarden":
-            if type_value not in ("", "login", "1"):
-                return None, f"Row {row_num}: Unsupported item type '{type_value or 'unknown'}'"
-        elif normalized_format == "nordpass":
-            if type_value and type_value not in ("password", "login", "credential"):
-                return None, f"Row {row_num}: Unsupported item type '{type_value}'"
-
+    raw_aliases = _IMPORT_FIELD_ALIASES[normalized_format]
+    aliases = _normalized_aliases_flat(raw_aliases)
+    normalized_row = _normalize_row_flat(row)
+    err = _validate_row_type_flat(normalized_row, aliases, normalized_format, row_num)
+    if err:
+        return None, err
     service = _first_present(normalized_row, aliases["service"])
     username = _first_present(normalized_row, aliases["username"])
     password = _first_present(normalized_row, aliases["password"])
     note = _first_present(normalized_row, aliases.get("note", ("note", "notes")))
-
+    url = _first_present(normalized_row, aliases.get("url", ("url", "login_uri")))
     missing = []
     if not service:
         missing.append("service/name")
@@ -338,11 +372,10 @@ def parse_import_row(
         missing.append("username/login")
     if not password:
         missing.append("password")
-
     if missing:
         return None, f"Row {row_num}: Missing required field(s): {', '.join(missing)}"
+    return {"service": service, "username": username, "password": password, "note": note, "url": url}, None
 
-    return {"service": service, "username": username, "password": password, "note": note}, None
 
 def extract_row_identity(
     row: Mapping[str, str | None],
@@ -352,22 +385,17 @@ def extract_row_identity(
     normalized_format = normalize_import_format(import_format)
     if normalized_format == "auto":
         raise ValueError("extract_row_identity() requires a resolved import format, not 'auto'.")
-
-    aliases = _IMPORT_FIELD_ALIASES[normalized_format]
-    normalized_row = {
-        normalize_header_name(k): (v or "").strip()
-        for k, v in row.items()
-        if k is not None
-    }
+    aliases = _normalized_aliases_flat(_IMPORT_FIELD_ALIASES[normalized_format])
+    normalized_row = _normalize_row_flat(row)
     service = _first_present(normalized_row, aliases["service"])
     username = _first_present(normalized_row, aliases["username"])
     return service, username
 
 
 def _first_present(row: Mapping[str, str], keys: Sequence[str]) -> str:
+    """Flat helper: first present key, assumes keys already normalized."""
     for key in keys:
-        normalized_key = normalize_header_name(key)
-        value = row.get(normalized_key, "")
+        value = row.get(key, "")
         if value:
             return value
     return ""

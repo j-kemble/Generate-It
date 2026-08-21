@@ -143,12 +143,12 @@ def test_save_credential_duplicate_safe_saves_when_no_duplicate(monkeypatch) -> 
                 self.list_credential_metadata(), service, username, exclude_id=exclude_id
             )
 
-        def save_credential(self, service: str, username: str, password: str, note: str = "", note_is_hidden: bool = False) -> int:
-            self.saved.append((service, username, password, note, note_is_hidden))
+        def save_credential(self, service: str, username: str, password: str, note: str = "", note_is_hidden: bool = False, url: str = "") -> int:
+            self.saved.append((service, username, password, note, note_is_hidden, url))
             return 99
 
-        def update_credential(self, credential_id: int, service: str, username: str, password: str, note: str = "", note_is_hidden: bool = False) -> None:
-            self.updated.append((credential_id, service, username, password, note, note_is_hidden))
+        def update_credential(self, credential_id: int, service: str, username: str, password: str, note: str = "", note_is_hidden: bool = False, url: str = "") -> None:
+            self.updated.append((credential_id, service, username, password, note, note_is_hidden, url))
 
     storage = FakeStorage()
     state = SimpleNamespace(storage=storage, vault_credentials=[])
@@ -167,7 +167,7 @@ def test_save_credential_duplicate_safe_saves_when_no_duplicate(monkeypatch) -> 
     )
 
     assert result == "saved"
-    assert storage.saved == [("GitLab", "dev", "new-pass", "", False)]
+    assert storage.saved == [("GitLab", "dev", "new-pass", "", False, "")]
     assert storage.updated == []
     assert any(c["service"] == "GitLab" for c in state.vault_credentials)
 
@@ -192,12 +192,12 @@ def test_save_credential_duplicate_safe_allows_same_service_different_username(m
                 self.list_credential_metadata(), service, username, exclude_id=exclude_id
             )
 
-        def save_credential(self, service: str, username: str, password: str, note: str = "", note_is_hidden: bool = False) -> int:
-            self.saved.append((service, username, password, note, note_is_hidden))
+        def save_credential(self, service: str, username: str, password: str, note: str = "", note_is_hidden: bool = False, url: str = "") -> int:
+            self.saved.append((service, username, password, note, note_is_hidden, url))
             return 99
 
-        def update_credential(self, credential_id: int, service: str, username: str, password: str, note: str = "", note_is_hidden: bool = False) -> None:
-            self.updated.append((credential_id, service, username, password, note, note_is_hidden))
+        def update_credential(self, credential_id: int, service: str, username: str, password: str, note: str = "", note_is_hidden: bool = False, url: str = "") -> None:
+            self.updated.append((credential_id, service, username, password, note, note_is_hidden, url))
 
     storage = FakeStorage()
     state = SimpleNamespace(storage=storage, vault_credentials=[])
@@ -216,7 +216,7 @@ def test_save_credential_duplicate_safe_allows_same_service_different_username(m
     )
 
     assert result == "saved"
-    assert storage.saved == [("GitHub", "work-account", "new-pass", "", False)]
+    assert storage.saved == [("GitHub", "work-account", "new-pass", "", False, "")]
     assert storage.updated == []
 
 
@@ -236,11 +236,11 @@ def test_save_credential_duplicate_safe_overwrites_on_confirmation(monkeypatch) 
                 self.list_credential_metadata(), service, username, exclude_id=exclude_id
             )
 
-        def save_credential(self, service: str, username: str, password: str, note: str = "", note_is_hidden: bool = False) -> int:
+        def save_credential(self, service: str, username: str, password: str, note: str = "", note_is_hidden: bool = False, url: str = "") -> int:
             raise AssertionError("save_credential should not be called for duplicates")
 
-        def update_credential(self, credential_id: int, service: str, username: str, password: str, note: str = "", note_is_hidden: bool = False) -> None:
-            self.updated.append((credential_id, service, username, password, note, note_is_hidden))
+        def update_credential(self, credential_id: int, service: str, username: str, password: str, note: str = "", note_is_hidden: bool = False, url: str = "") -> None:
+            self.updated.append((credential_id, service, username, password, note, note_is_hidden, url))
 
     storage = FakeStorage()
     state = SimpleNamespace(storage=storage, vault_credentials=[])
@@ -259,7 +259,7 @@ def test_save_credential_duplicate_safe_overwrites_on_confirmation(monkeypatch) 
     )
 
     assert result == "overwritten"
-    assert storage.updated == [(42, "github", "DEV", "new-pass", "", False)]
+    assert storage.updated == [(42, "github", "DEV", "new-pass", "", False, "")]
 
 
 def test_save_credential_duplicate_safe_cancels_without_overwrite(monkeypatch) -> None:
@@ -279,11 +279,11 @@ def test_save_credential_duplicate_safe_cancels_without_overwrite(monkeypatch) -
                 self.list_credential_metadata(), service, username, exclude_id=exclude_id
             )
 
-        def save_credential(self, service: str, username: str, password: str, note: str = "") -> int:
+        def save_credential(self, service: str, username: str, password: str, note: str = "", *args, **kwargs) -> int:
             self.saved.append((service, username, password, note))
             return 99
 
-        def update_credential(self, credential_id: int, service: str, username: str, password: str, note: str = "") -> None:
+        def update_credential(self, credential_id: int, service: str, username: str, password: str, note: str = "", *args, **kwargs) -> None:
             self.updated.append((credential_id, service, username, password, note))
 
     storage = FakeStorage()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ def _reset() -> None:
     app_logging._reset_logging()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlink/directory checks not applicable on Windows")
 def test_init_logging_rejects_existing_symlink(tmp_path: Path) -> None:
     _reset()
     victim = tmp_path / "victim.log"
@@ -25,6 +27,7 @@ def test_init_logging_rejects_existing_symlink(tmp_path: Path) -> None:
     assert victim.read_text() == "original"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX directory check not applicable on Windows")
 def test_init_logging_rejects_existing_directory(tmp_path: Path) -> None:
     _reset()
     log_path = tmp_path / "app.log"
@@ -56,6 +59,7 @@ def test_logging_can_retry_after_setup_failure(tmp_path: Path, monkeypatch: pyte
     assert "initialized after retry" in log_path.read_text()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX chmod not enforced on Windows")
 def test_permission_failure_is_not_silenced(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _reset()
     log_path = tmp_path / "app.log"

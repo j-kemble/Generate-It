@@ -34,14 +34,14 @@ class AppState:
     focus_index: int = 0
     focus_items_cache_key: tuple[str, str, bool, bool] | None = None
     focus_items_cache: tuple[str, ...] = ()
-    
+
     # Vault / Storage
     storage: StorageManager | None = None
     vault_unlocked: bool = False
     vault_credentials: list[dict] = field(default_factory=list)
     vault_scroll_y: int = 0
     vault_selected_idx: int = 0
-    
+
     # Security settings
     clipboard_auto_clear_index: int = 2  # 30 seconds
     auto_lock_index: int = 2  # 5 minutes

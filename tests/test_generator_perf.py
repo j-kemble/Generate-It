@@ -45,13 +45,13 @@ def test_dedupe_edge_cases():
 def test_signature_cache_actually_caches():
     """The file read must happen exactly ONCE across two identical calls when the file is unchanged."""
     read_count = {"n": 0}
-    original_read_text = generator.Path.read_text
+    original_secure_read = generator._read_wordlist_text_secure
 
-    def counting_read_text(self, *args, **kwargs):
+    def counting_secure_read(path, *args, **kwargs):
         read_count["n"] += 1
-        return original_read_text(self, *args, **kwargs)
+        return original_secure_read(path, *args, **kwargs)
 
-    with mock.patch.object(generator.Path, "read_text", counting_read_text):
+    with mock.patch.object(generator, "_read_wordlist_text_secure", counting_secure_read):
         generator.clear_wordlist_cache()
         _ = generator.load_wordlist()  # miss -> reads the file
         _ = generator.load_wordlist()  # hit  -> must NOT read again
