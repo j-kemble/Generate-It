@@ -8,10 +8,13 @@ from __future__ import annotations
 from pathlib import Path
 import functools
 import hashlib
+import logging
 import math
 import os
 import secrets
 import string
+
+_log = logging.getLogger("generator")
 
 from .constants import (
     DEFAULT_WORDLIST,
@@ -416,23 +419,134 @@ def _validate_custom_wordlist_path(path: Path) -> None:
 
 
 def _get_file_signature(path: Path | None) -> tuple[Path | None, int, int]:
-    """Return resolved path and metadata used for the wordlist fast path."""
+    """Return resolved path and metadata used for the wordlist fast path.
+
+    Uses ``lstat`` so a symlink is not followed — the caller must have already
+    validated the path via :func:`_validate_custom_wordlist_path`.  If the
+    path is a symlink at this point it is treated as missing (0, 0) so the
+    cache cannot be poisoned via a TOCTOU swap.
+    """
     if path is None or not path.exists():
         return (None, 0, 0)
     try:
-        st = path.stat()
-        return (path.resolve(), st.st_mtime_ns, st.st_size)
+        import stat as _stat
+
+        lst = path.lstat()
+        if _stat.S_ISLNK(lst.st_mode):
+            return (path.resolve(), 0, 0)
+        return (path.resolve(), lst.st_mtime_ns, lst.st_size)
     except OSError:
         return (path.resolve(), 0, 0)
 
 
 def _hash_wordlist(path: Path) -> bytes:
-    """Hash a wordlist only after its filesystem metadata changes — reusable."""
+    """Hash a wordlist only after its filesystem metadata changes — reusable.
+
+    On POSIX opens the file with ``O_NOFOLLOW`` so a symlink swap between
+    validation and hashing cannot be exploited.  Falls back to ``lstat``
+    + regular ``open`` on platforms without ``O_NOFOLLOW``.
+    """
     digest = hashlib.blake2b(digest_size=_WORDLIST_HASH_DIGEST_SIZE)
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    if os.name == "posix" and no_follow is not None:
+        try:
+            fd = os.open(str(path), os.O_RDONLY | no_follow)
+        except OSError as exc:
+            # ELOOP (Too many levels of symbolic links) means O_NOFOLLOW
+            # blocked a symlink — normalize to WordlistSecurityError.
+            import errno as _errno
+
+            if exc.errno in (_errno.ELOOP, _errno.EMLINK) or "symlink" in str(exc).lower() or "Too many levels" in str(exc):
+                raise WordlistSecurityError("Custom wordlist path is a symlink — refused for security.") from exc
+            raise WordlistSecurityError(f"Cannot open wordlist: {exc}") from exc
+        try:
+            import stat as _stat
+
+            st = os.fstat(fd)
+            if _stat.S_ISLNK(st.st_mode):
+                raise WordlistSecurityError("Custom wordlist path is a symlink — refused for security.")
+            if not _stat.S_ISREG(st.st_mode):
+                raise WordlistSecurityError("Custom wordlist is not a regular file.")
+            if st.st_size > _MAX_WORDLIST_FILE_BYTES:
+                raise WordlistSecurityError(
+                    f"Custom wordlist too large ({st.st_size} bytes). Maximum: {_MAX_WORDLIST_FILE_BYTES} bytes."
+                )
+            # Stream from the already-validated fd to avoid a second open race.
+            while True:
+                chunk = os.read(fd, _WORDLIST_HASH_CHUNK_BYTES)
+                if not chunk:
+                    break
+                digest.update(chunk)
+        finally:
+            os.close(fd)
+        return digest.digest()
+    # Fallback for non-POSIX or missing O_NOFOLLOW.
+    import stat as _stat
+
+    try:
+        lst = path.lstat()
+        if _stat.S_ISLNK(lst.st_mode):
+            raise WordlistSecurityError("Custom wordlist path is a symlink — refused for security.")
+        if not _stat.S_ISREG(lst.st_mode):
+            raise WordlistSecurityError("Custom wordlist is not a regular file.")
+    except OSError as exc:
+        raise WordlistSecurityError(f"Cannot stat wordlist: {exc}") from exc
     with path.open("rb") as wordlist_file:
         for chunk in iter(lambda: wordlist_file.read(_WORDLIST_HASH_CHUNK_BYTES), b""):
             digest.update(chunk)
     return digest.digest()
+
+
+def _read_wordlist_text_secure(path: Path) -> str:
+    """Read wordlist text without following symlinks (TOCTOU defense).
+
+    On POSIX uses ``O_NOFOLLOW``; on other platforms falls back to
+    ``lstat`` symlink check before read.
+    """
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    if os.name == "posix" and no_follow is not None:
+        try:
+            fd = os.open(str(path), os.O_RDONLY | no_follow)
+        except OSError as exc:
+            import errno as _errno
+
+            if exc.errno in (_errno.ELOOP, _errno.EMLINK) or "symlink" in str(exc).lower() or "Too many levels" in str(exc):
+                raise WordlistSecurityError("Custom wordlist path is a symlink — refused for security.") from exc
+            raise WordlistSecurityError(f"Cannot open wordlist: {exc}") from exc
+        try:
+            import stat as _stat
+
+            st = os.fstat(fd)
+            if _stat.S_ISLNK(st.st_mode):
+                raise WordlistSecurityError("Custom wordlist path is a symlink — refused for security.")
+            if not _stat.S_ISREG(st.st_mode):
+                raise WordlistSecurityError("Custom wordlist is not a regular file.")
+            if st.st_size > _MAX_WORDLIST_FILE_BYTES:
+                raise WordlistSecurityError(
+                    f"Custom wordlist too large ({st.st_size} bytes)."
+                )
+            # Read via fd to avoid TOCTOU between fstat and open.
+            chunks: list[bytes] = []
+            while True:
+                chunk = os.read(fd, _WORDLIST_HASH_CHUNK_BYTES)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            return b"".join(chunks).decode("utf-8", errors="ignore")
+        finally:
+            os.close(fd)
+    # Fallback
+    import stat as _stat
+
+    try:
+        lst = path.lstat()
+        if _stat.S_ISLNK(lst.st_mode):
+            raise WordlistSecurityError("Custom wordlist path is a symlink — refused for security.")
+        if not _stat.S_ISREG(lst.st_mode):
+            raise WordlistSecurityError("Custom wordlist is not a regular file.")
+    except OSError as exc:
+        raise WordlistSecurityError(f"Cannot stat wordlist: {exc}") from exc
+    return path.read_text(encoding="utf-8", errors="ignore")
 
 
 def _is_cache_valid(
@@ -478,6 +592,12 @@ def load_wordlist(path: Path | None = None) -> list[str]:
     # Security: validate custom wordlist path before any read.
     if is_custom and resolved_path is not None and resolved_path.exists():
         _validate_custom_wordlist_path(resolved_path)
+    elif is_custom and resolved_path is not None and not resolved_path.exists():
+        _log.warning(
+            "Custom wordlist %s not found — falling back to bundled default. "
+            "Check GENERATE_IT_WORDLIST or the --wordlist path.",
+            resolved_path,
+        )
     cache_path, mtime_ns, file_size = _get_file_signature(resolved_path)
     cached = _WORDLIST_CACHE.get(cache_path)
     if cached is not None:
@@ -494,17 +614,27 @@ def load_wordlist(path: Path | None = None) -> list[str]:
         words_tuple = tuple(DEFAULT_WORDLIST)
         content_hash = b""
     else:
-        # Re-validate size after signature (TOCTOU defense) and before read.
+        # Re-validate symlink + size after signature (TOCTOU defense) and
+        # before read.  Uses lstat so a swapped-in symlink is caught even if
+        # the original validation passed.  Size is also checked inside
+        # _hash_wordlist / _read_wordlist_text_secure via fstat.
         if is_custom:
+            import stat as _stat
+
             try:
-                if cache_path.stat().st_size > _MAX_WORDLIST_FILE_BYTES:
+                lst = cache_path.lstat()
+                if _stat.S_ISLNK(lst.st_mode):
+                    raise WordlistSecurityError("Custom wordlist path is a symlink — refused for security.")
+                if not _stat.S_ISREG(lst.st_mode):
+                    raise WordlistSecurityError("Custom wordlist is not a regular file.")
+                if lst.st_size > _MAX_WORDLIST_FILE_BYTES:
                     raise WordlistSecurityError(
-                        f"Custom wordlist too large ({cache_path.stat().st_size} bytes)."
+                        f"Custom wordlist too large ({lst.st_size} bytes)."
                     )
             except OSError as exc:
                 raise WordlistSecurityError(f"Cannot stat wordlist: {exc}") from exc
         content_hash = _hash_wordlist(cache_path)
-        text = cache_path.read_text(encoding="utf-8", errors="ignore")
+        text = _read_wordlist_text_secure(cache_path)
         words_tuple = _parse_wordlist_lines(text)
         if len(words_tuple) > _MAX_WORDLIST_WORDS:
             raise WordlistSecurityError(

@@ -94,8 +94,8 @@ _MAX_WORDLIST_WORDS = 1_000_000  # sanity cap for unique words
 
 # Identity cache / search (flat, reusable).
 _IDENTITY_CACHE_SIZE = 4096
-_VAULT_SEARCH_SQL_LIMIT = 500
-_VAULT_SEARCH_SQL_LIKE_LIMIT = 2000  # pre-filter rows before Python fuzzy ranking
+_VAULT_SEARCH_SQL_LIMIT = 500  # LIMIT for search_credential_metadata() LIKE query
+_VAULT_SEARCH_SQL_LIKE_LIMIT = 2000  # threshold: preload identity map only when count <= this (import_from_csv)
 
 # TUI render caches (flat, reusable).
 _TUI_MAX_BITS_CACHE_SIZE = 32

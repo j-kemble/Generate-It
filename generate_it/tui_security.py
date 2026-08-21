@@ -193,7 +193,21 @@ def _maybe_migrate_aad_v4(
 
 
 def _sync_persistent_lockout_from_storage(state: AppState) -> None:
-    """Load persisted lockout into in-memory state (survives restarts)."""
+    """Load persisted lockout into in-memory state (survives restarts).
+
+    Lockout persistence is inherently wall-clock based (``time.time()`` epoch
+    stored in the config table) so it survives restarts, while in-memory
+    enforcement uses ``time.monotonic()`` to resist intra-session clock
+    adjustments.  A forward system-clock jump between sessions can make
+    ``until_epoch - time.time()`` negative and clear the persisted deadline
+    prematurely — the wall-clock value cannot be bound to monotonic time
+    across reboots.  The ``failed_unlock_attempts`` counter is *preserved*
+    even when the deadline has expired, so escalation (30s → 5min → 30min)
+    is not reset by waiting out or by a clock jump; the next failure still
+    escalates.  Within a single process the monotonic remaining is kept if
+    it exceeds the wall-clock remaining, providing best-effort resistance to
+    intra-session NTP adjustments.
+    """
     if not _storage_available(state) or state.storage is None:
         return
     try:
@@ -205,7 +219,9 @@ def _sync_persistent_lockout_from_storage(state: AppState) -> None:
     if until_epoch is not None:
         remaining = until_epoch - time.time()
         if remaining > 0:
-            # Keep the longer of in-memory vs persisted remaining.
+            # Keep the longer of in-memory (monotonic) vs persisted (wall)
+            # remaining — defends against backward clock jumps within the
+            # same process lifetime.
             in_mem_remaining = _get_lockout_remaining(state)
             needed_monotonic = time.monotonic() + remaining
             if in_mem_remaining <= 0 or remaining > in_mem_remaining:
@@ -213,7 +229,9 @@ def _sync_persistent_lockout_from_storage(state: AppState) -> None:
         else:
             # Expired — keep attempt count (escalation) but clear the wall-clock deadline.
             # Do not delete the persisted attempt counter, otherwise a restart after
-            # waiting out the lockout would reset escalation.
+            # waiting out the lockout would reset escalation.  Forward clock
+            # jumps are an inherent limitation of wall-clock persistence
+            # (see docstring).
             try:
                 state.storage.set_persistent_lockout_state(attempts, None)
             except Exception:

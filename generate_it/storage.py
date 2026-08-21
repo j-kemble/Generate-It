@@ -407,6 +407,12 @@ class StorageManager:
         Reads without requiring the vault to be unlocked.  Returns (0, None)
         if the vault does not exist or keys are absent.  Malformed values
         are treated as (0, None) and cleared.
+
+        Note: ``lockout_until_epoch`` is a wall-clock epoch (``time.time()``)
+        so it survives restarts, but is therefore subject to forward system-
+        clock jumps that can clear the deadline early.  The attempt counter is
+        preserved even after expiry so escalation is not reset by a jump
+        (see ``tui_security._sync_persistent_lockout_from_storage``).
         """
         if not self.vault_exists():
             return 0, None
@@ -1249,7 +1255,12 @@ class StorageManager:
         except ValueError as exc:
             raise StorageError(f"Invalid KDF configuration: {exc}") from exc
 
-        # Downgrade warning — any non-default KDF params may indicate tampering.
+        # Downgrade detection — any non-default KDF params may indicate
+        # tampering.  This is a *detection* control (log only); the *prevention*
+        # control is _validate_kdf_config() above which rejects anything below
+        # the OWASP 2023 low minima (19 MiB / 2 iter / 1 lane) before Argon2id
+        # runs.  Values between minima and defaults (e.g. 19 MiB) still unlock
+        # but emit this warning so the user/health check can investigate.
         if (
             memory != _crypto_v2.DEFAULT_ARGON2_MEMORY
             or time != _crypto_v2.DEFAULT_ARGON2_TIME
@@ -2251,8 +2262,13 @@ class StorageManager:
     ) -> list[dict]:
         """DB-side vault search — 60 fps streaming for 2B vaults, flat & reusable.
 
-        Uses indexed LIKE pre-filter capped by _VAULT_SEARCH_SQL_LIKE_LIMIT,
-        then orders by indexed keys. No hard-coded inline limits.
+        Uses an indexed ``LIKE`` pre-filter (escaped, parameterized) ordered by
+        ``service_key/username_key`` and capped by the ``limit`` argument
+        (default ``_VAULT_SEARCH_SQL_LIMIT`` = 500).  The constant
+        ``_VAULT_SEARCH_SQL_LIKE_LIMIT`` (2000) is *not* the ``LIMIT`` for
+        this query; it only gates the ``import_from_csv`` identity-map preload
+        decision (``count_credentials() <= _VAULT_SEARCH_SQL_LIKE_LIMIT``).
+        No hard-coded inline limits.
         """
         self._require_unlocked()
         conn = self._get_conn()
@@ -2264,7 +2280,7 @@ class StorageManager:
         if not clause:
             # Empty query — fall back to paginated list
             return self.list_credential_metadata_paginated(limit=limit, offset=offset)
-        # LIKE pre-filter is naturally capped by final LIMIT (500 < LIKE_LIMIT 2000);
+        # Result size is bounded by the caller's ``limit`` (default 500);
         # full FTS5 would be needed for true 2B-scale, but current indexed
         # service_key/username_key ORDER BY keeps scan bounded for typical vaults.
         query_sql = f"{base}{clause} ORDER BY service_key, username_key, id LIMIT ? OFFSET ?"  # nosec B608 — clause is fixed LIKE with parameterized ?
@@ -2804,10 +2820,19 @@ class StorageManager:
         backups = [p for p in backups if p.is_file() and p != self.db_path]
 
         def _backup_ctime(path: Path) -> float:
-            """Prefer ctime (inode change, not forgeable via touch -m) over mtime."""
+            """Sort key for backup files.
+
+            On POSIX ``st_ctime`` is the inode *change* time (updated when file
+            content or metadata changes), not creation time; on Windows it is
+            creation time.  In either case it cannot be set with ``touch -m``
+            (which only changes *mtime*), so it is harder to forge than
+            ``st_mtime``, though an attacker with write access to the backup
+            directory can still affect it by rewriting the file.  Within the
+            same second ``st_ctime`` may collide, so ``sort()`` stability
+            preserves ``glob()`` order for ties.
+            """
             try:
                 st = path.stat()
-                # ctime is creation/change on POSIX/Windows; mtime is forgeable
                 return getattr(st, "st_ctime", st.st_mtime)
             except OSError:
                 return 0

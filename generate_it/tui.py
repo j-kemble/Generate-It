@@ -816,7 +816,10 @@ def _lock_vault(state: AppState) -> None:
     state.revealed_secret = None
     state.revealed_secret_id = None
     # Clear caches that may retain sensitive material (passwords, service
-    # names) after lock — defense in depth for memory retention.
+    # names) or user file-system traces after lock — defense in depth for
+    # memory retention.  Wordlist and file-picker caches are not secret
+    # per se, but their contents (which wordlists/files the user browsed)
+    # are sensitive on a shared machine and are evicted on lock.
     try:
         from . import tui_render as _R
         _R._OUTPUT_WRAP_CACHE.clear()
@@ -826,6 +829,16 @@ def _lock_vault(state: AppState) -> None:
     try:
         from .identity import clear_identity_cache
         clear_identity_cache()
+    except Exception:
+        pass
+    try:
+        from . import generator as _gen
+        _gen.clear_wordlist_cache()
+    except Exception:
+        pass
+    try:
+        from . import tui_files as _tf
+        _tf.clear_file_picker_cache()
     except Exception:
         pass
 
