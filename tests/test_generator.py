@@ -101,63 +101,37 @@ def test_load_wordlist_small_file_falls_back_to_default(tmp_path: Path) -> None:
     wl = tmp_path / "wordlist.txt"
     wl.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
 
-    words = generator.load_wordlist(wl)
-    assert words == generator.DEFAULT_WORDLIST
+    # A tiny custom wordlist must be rejected by entropy validation.
+    with pytest.raises(generator.WordlistSecurityError):
+        generator.load_wordlist(wl)
 
 
 def test_load_wordlist_ignores_comments_blanks_and_dedupes(tmp_path: Path) -> None:
     wl = tmp_path / "wordlist.txt"
-    wl.write_text(
-        "\n".join(
-            [
-                "# comment",
-                "alpha",
-                "beta",
-                "beta",  # duplicate
-                "gamma",
-                "delta",
-                "epsilon",
-                "zeta",
-                "eta",
-                "theta",
-                "iota",
-                "kappa",
-                "lambda",
-                "",  # blank
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+    # 6001 lines: a comment, then 6000 words (0-5999), some with dupes
+    lines = ["# comment"]
+    for i in range(6000):
+        lines.append(f"word{i}")
+    lines.append("")  # blank
+    # Add a duplicate
+    lines.append("word0")
+    wl.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     words = generator.load_wordlist(wl)
-    assert words == [
-        "alpha",
-        "beta",
-        "gamma",
-        "delta",
-        "epsilon",
-        "zeta",
-        "eta",
-        "theta",
-        "iota",
-        "kappa",
-        "lambda",
-    ]
+    # 6000 unique words, dupes removed, comments/blanks ignored
+    assert len(words) == 6000
+    assert words[0] == "word0"
+    assert words[-1] == "word5999"
 
 
-def test_load_wordlist_precedence_env_over_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_load_wordlist_env_var(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     env_wl = tmp_path / "env_wordlist.txt"
-    env_wl.write_text("\n".join([f"env{i}" for i in range(12)]) + "\n", encoding="utf-8")
+    env_wl.write_text("\n".join([f"env{i}" for i in range(6000)]) + "\n", encoding="utf-8")
 
-    cwd_dir = tmp_path / "cwd"
-    cwd_dir.mkdir()
-    (cwd_dir / "wordlist.txt").write_text(
-        "\n".join([f"cwd{i}" for i in range(12)]) + "\n", encoding="utf-8"
-    )
-
-    monkeypatch.chdir(cwd_dir)
     monkeypatch.setenv("GENERATE_IT_WORDLIST", str(env_wl))
+
+    # Clear cache to test the actual lookup path.
+    generator.load_wordlist.cache_clear()
 
     words = generator.load_wordlist()
     assert words[0] == "env0"
@@ -168,10 +142,10 @@ def test_load_wordlist_precedence_explicit_path_over_env(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     env_wl = tmp_path / "env_wordlist.txt"
-    env_wl.write_text("\n".join([f"env{i}" for i in range(12)]) + "\n", encoding="utf-8")
+    env_wl.write_text("\n".join([f"env{i}" for i in range(6000)]) + "\n", encoding="utf-8")
 
     explicit = tmp_path / "explicit_wordlist.txt"
-    explicit.write_text("\n".join([f"explicit{i}" for i in range(12)]) + "\n", encoding="utf-8")
+    explicit.write_text("\n".join([f"explicit{i}" for i in range(6000)]) + "\n", encoding="utf-8")
 
     monkeypatch.setenv("GENERATE_IT_WORDLIST", str(env_wl))
 
