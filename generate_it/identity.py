@@ -29,19 +29,29 @@ ciphertext depends on the legacy byte representation.
 
 from __future__ import annotations
 
+import functools
 import unicodedata
+
+from .constants import _IDENTITY_CACHE_SIZE
 
 _ZW_RANGE = range(0x200B, 0x2010)  # 0x200B..0x200F
 _ZW_EXTRAS: frozenset[int] = frozenset({0xFEFF})
 
 
 def _remove_zero_width(value: str) -> str:
-    """Return *value* with zero-width format characters removed."""
+    """Flat helper: remove zero-width, reusable."""
     return "".join(
         character
         for character in value
         if not (ord(character) in _ZW_RANGE or ord(character) in _ZW_EXTRAS)
     )
+
+
+def _canonical_stripped_uncached(value: str) -> str:
+    """Flat helper: uncached core, reusable."""
+    normalized = unicodedata.normalize("NFC", value)
+    stripped = _remove_zero_width(normalized).strip().casefold()
+    return stripped
 
 
 def canonical_identity(value: str) -> str:
@@ -58,16 +68,28 @@ def canonical_identity(value: str) -> str:
 
 
 def canonical_identity_stripped(value: str) -> str:
-    """Return the canonical identity with zero-width format chars removed.
+    """Return the canonical identity with zero-width format chars removed — 60 fps / 2B path.
 
-    ``unicodedata.normalize("NFC", value)``, then strip zero-width
-    characters (U+200B..U+200F and U+FEFF), then ``strip()``, then
-    ``casefold()``.  This is the canonical form used for new data writes,
-    index lookups, and AAD v4.
+    Cached via LRU bounded by _IDENTITY_CACHE_SIZE so repeated service/username
+    normalization during vault scans, CSV import, and TUI filtering travels
+    without per-call NFC overhead. Flat, reusable.
     """
-    normalized = unicodedata.normalize("NFC", value)
-    stripped = _remove_zero_width(normalized).strip().casefold()
-    return stripped
+    return _canonical_stripped_cached(value)
+
+
+@functools.lru_cache(maxsize=_IDENTITY_CACHE_SIZE)
+def _canonical_stripped_cached(value: str) -> str:
+    """LRU-cached wrapper around stripped canonicalization, reusable."""
+    return _canonical_stripped_uncached(value)
+
+
+def clear_identity_cache() -> None:
+    """Clear LRU cache — reusable for tests."""
+    _canonical_stripped_cached.cache_clear()
+
+
+# Backward-compat alias for callers checking cache_clear on the public function
+canonical_identity_stripped.cache_clear = clear_identity_cache  # type: ignore[attr-defined]
 
 
 def canonical_service_username(service: str, username: str) -> tuple[str, str]:

@@ -77,7 +77,7 @@ def test_parse_import_row_bitwarden_type_handling() -> None:
         row_num=2,
     )
     assert issue is None
-    assert parsed == {"service": "GitHub", "username": "dev", "password": "pw", "note": ""}
+    assert parsed == {"service": "GitHub", "username": "dev", "password": "pw", "note": "", "url": ""}
 
     parsed, issue = csv_formats.parse_import_row(
         {

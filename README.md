@@ -128,9 +128,9 @@ When you generate a credential you will:
   - `bitwarden`: supports login CSV fields (`name`, `login_username`, `login_password`, `type`, etc.). Non-login item types are skipped.
   - `apple`: supports Apple-style title/url/username/password exports (with optional notes/OTP columns).
   - `nordpass`: supports NordPass CSV template columns.
-- **Data model note**: The vault currently stores only `service`, `username`, and `password`.
-  - During export, unsupported provider fields (folder, notes, TOTP, cards, custom fields, etc.) are emitted as empty/default values.
-  - During import, unsupported/non-credential rows are ignored with a reason.
+- **Data model note**: The vault stores `service`, `username`, `password`, `url`, and `note` (with optional hidden flag).
+  - During export, unsupported provider fields (folder, TOTP, cards, custom fields, etc.) are emitted as empty/default values.
+  - During import, unsupported/non-credential rows are ignored with a reason. Imported `url` values (e.g., `login_uri`) are preserved.
 
 > **⚠️ Security:** CSV exports are plaintext — they are not encrypted and anyone with filesystem access can read them.
 > All export formats automatically escape formula-triggering characters (`=`, `+`, `-`, `@`) to prevent
@@ -194,32 +194,44 @@ All security checks run automatically on every commit via GitHub Actions.
 For a security-sensitive offline credential vault, the following scope limits
 are documented so users can make an informed decision about acceptable risk.
 
-- **Brute-force lockout is process-local, not persistent.** The escalating
-  unlock lockout (`30s`, `5m`, `30m`) is enforced only while the application
-  is running. A restart resets the counter; the delay is never persisted to
-  disk. An attacker with local restart capability could attempt unlimited
-  guesses across restarts. This is a deliberate trade-off (no durable
-  anti-bruteforce state is written to disk).
+- **Brute-force lockout is now persistent.** Since `0.2.4` the escalating
+  unlock lockout (`30s`, `5m`, `30m`) is persisted in the vault `config` table
+  (`lockout_failed_attempts`/`lockout_until_epoch`) and survives restarts. A
+  successful unlock clears it. Pre-`0.2.4` vaults had process-local only lockout.
 - **Migration backups are retained indefinitely.** Each one-time upgrade
   (v1→v2, identity schema, zero-width identity, AAD re-encryption) writes a
   backup next to the vault (e.g. `vault.db.identity_zw.bak`). These backups
-  are encrypted with the same vault key and are never auto-deleted; you should
-  remove obsolete backups manually once you are confident the vault is healthy.
+  are encrypted with the same vault key and are never auto-deleted; prune via
+  `generate-it --prune-backups 1` or `m` → `p` (pruning now orders by `st_ctime`
+  not forgeable `st_mtime`). Remove obsolete backups once vault is healthy.
 - **Metadata sanitization is partial.** Stored credential notes are clamped
   and truncated to a safe bound before rendering, but the raw `service` and
   `username` fields are drawn to the screen as provided. A malicious or
   unexpected value could display terminal control sequences. Only enter
-  service/usernames you trust into your own vault.
+  service/usernames you trust into your own vault. CSV export now escapes
+  `=+-@|%` (and tab/CR-prefixed formulas via stripped check) for spreadsheet
+  safety; vault search is `LIKE` on `service/username/url` (final `LIMIT 500`
+  < `LIKE_LIMIT 2000`) — true FTS5 would be needed for 2B-scale.
 
 ## Custom word list
 
-The included word list contains **5,800** lowercase words filtered from `/usr/share/dict/words` (a-z only, 4–10 characters), providing ~50 bits of entropy for a 4-word passphrase.
+The included word list contains **7,690** lowercase words sourced from the EFF Large Wordlist (filtered to lowercase a-z, 4–10 characters), providing ~51.6 bits of entropy for a 4-word passphrase.
 
 Override the word list with the `GENERATE_IT_WORDLIST` environment variable:
 
 1) Set `GENERATE_IT_WORDLIST` to a file path
 
 Otherwise, Generate It uses the bundled default word list.
+
+## Vault maintenance
+
+Migration and rotation operations create backups next to the vault (e.g., `vault.db.v1.bak`, `vault.db.dek.bak`, `vault.db.pwd.bak`, `vault.db.aad_v*.bak`).
+
+- Check vault health: `generate-it --check-vault` or press `m` in the TUI (vault health view).
+- Check integrity: `generate-it --check-integrity` or `m` → `c` in the TUI.
+- Prune old backups: `generate-it --prune-backups 1` or `m` → `p` in the TUI (keeps newest 1).
+
+Backups are never auto-deleted; remove obsolete backups manually once you are confident the vault is healthy.
 
 ## Development
 

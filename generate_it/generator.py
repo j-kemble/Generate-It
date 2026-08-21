@@ -13,66 +13,54 @@ import os
 import secrets
 import string
 
-MIN_PASSWORD_CHARS = 8
-MAX_PASSWORD_CHARS = 64
+from .constants import (
+    DEFAULT_WORDLIST,
+    LETTERS,
+    MAX_PASSPHRASE_WORDS,
+    MAX_PASSWORD_CHARS,
+    MAX_USERNAME_LENGTH,
+    MAX_USERNAME_WORDS,
+    MIN_PASSPHRASE_WORDS,
+    MIN_PASSWORD_CHARS,
+    MIN_USERNAME_LENGTH,
+    MIN_USERNAME_WORDS,
+    NUMBERS,
+    PASSPHRASE_SPECIALS,
+    SPECIAL_CHARACTERS,
+    USERNAME_ALPHANUMERIC,
+    USERNAME_SEPARATORS,
+    _MAX_WORDLIST_FILE_BYTES,
+    _MAX_WORDLIST_WORDS,
+    _MIN_PASSPHRASE_ENTROPY_BITS,
+    _WORDLIST_CACHE_MAX_SIZE as _CONST_WORDLIST_CACHE_MAX_SIZE,
+    _WORDLIST_HASH_CHUNK_BYTES as _CONST_WORDLIST_HASH_CHUNK_BYTES,
+    _WORDLIST_HASH_DIGEST_SIZE as _CONST_WORDLIST_HASH_DIGEST_SIZE,
+)
 
-MIN_PASSPHRASE_WORDS = 3
-MAX_PASSPHRASE_WORDS = 10
-
-MIN_USERNAME_LENGTH = 3
-MAX_USERNAME_LENGTH = 64
-MIN_USERNAME_WORDS = 1
-MAX_USERNAME_WORDS = 3
-
-LETTERS = string.ascii_letters
-NUMBERS = string.digits
-SPECIAL_CHARACTERS = "!@#$%^&*()-_=+[]{};:,.?/"
-
-# Used when the user asks to add special characters to a passphrase.
-PASSPHRASE_SPECIALS = "!@#$%&*?"  # nosec B105 — character pool, not a credential
-
-# Username-related character sets.
-USERNAME_ALPHANUMERIC = string.ascii_lowercase + string.digits
-USERNAME_SEPARATORS = frozenset(["_", "-"])
+# Re-export for backwards compatibility; constants.py is the single source of truth.
+__all__ = [
+    "DEFAULT_WORDLIST",
+    "MIN_PASSWORD_CHARS",
+    "MAX_PASSWORD_CHARS",
+    "MIN_PASSPHRASE_WORDS",
+    "MAX_PASSPHRASE_WORDS",
+    "MIN_USERNAME_LENGTH",
+    "MAX_USERNAME_LENGTH",
+    "MIN_USERNAME_WORDS",
+    "MAX_USERNAME_WORDS",
+    "LETTERS",
+    "NUMBERS",
+    "SPECIAL_CHARACTERS",
+    "PASSPHRASE_SPECIALS",
+    "USERNAME_ALPHANUMERIC",
+    "USERNAME_SEPARATORS",
+]
 
 # Wordlist lookup order:
 # 1) explicit `path` argument
 # 2) $GENERATE_IT_WORDLIST env var
 # 3) packaged default: generate_it/wordlist.txt
 PACKAGED_WORDLIST_PATH = Path(__file__).with_name("wordlist.txt")
-
-DEFAULT_WORDLIST = [
-    # Small built-in fallback list (you can expand by editing wordlist.txt).
-    "apple",
-    "brisk",
-    "candle",
-    "delta",
-    "ember",
-    "forest",
-    "glacier",
-    "harbor",
-    "island",
-    "jupiter",
-    "kitten",
-    "lantern",
-    "meadow",
-    "nebula",
-    "ocean",
-    "pepper",
-    "quartz",
-    "river",
-    "sunrise",
-    "tiger",
-    "umbrella",
-    "violet",
-    "willow",
-    "xenon",
-    "yellow",
-    "zephyr",
-]
-
-# Minimum entropy the wordlist must provide for a 4-word passphrase.
-_MIN_PASSPHRASE_ENTROPY_BITS = 50.0
 
 
 class WordlistSecurityError(ValueError):
@@ -82,15 +70,13 @@ class WordlistSecurityError(ValueError):
 
 def _ordered_sample_entropy_bits(n: int, k: int) -> float:
     """Entropy (bits) of selecting k items without replacement from n.
-    
-    bits = log2(n! / (n-k)!) = sum(log2(i)) for i in range(n-k+1, n+1)
+
+    bits = log2(n! / (n-k)!) — uses lgamma for O(1) without loop.
     """
     if k > n or n <= 0 or k <= 0:
         return 0.0
-    total = 0.0
-    for i in range(n - k + 1, n + 1):
-        total += math.log2(i)
-    return total
+    # lgamma(n+1) = ln(n!), so bits = (ln(n!) - ln((n-k)!)) / ln2
+    return (math.lgamma(n + 1) - math.lgamma(n - k + 1)) / math.log(2)
 
 
 # Adjectives for username generation.
@@ -337,11 +323,46 @@ def secure_shuffle(items: list[str]) -> None:
 
 
 def _dedupe_preserve_order(items: list[str]) -> list[str]:
+    """Flat helper: dedupe while preserving order, reusable."""
     return list(dict.fromkeys(items))
 
 
 def _secure_sample_without_replacement(words: list[str], count: int) -> list[str]:
-    """Select distinct words with CSPRNG indices and no shifting removals."""
+    """Select distinct words with CSPRNG indices — O(k) allocations, reusable.
+
+    Avoids copying the entire wordlist. Uses a flat, modular partial-sample
+    with a dict mapping for swapped indices, so memory travel stays constant
+    for large wordlists (2B-scale).
+    """
+    if count <= 0:
+        return []
+    if count > len(words):
+        raise ValueError("count exceeds wordlist size")
+    # Flat O(k) sampling without full pool copy.
+    index_map: dict[int, int] = {}
+    result: list[str] = []
+    n = len(words)
+    for position in range(count):
+        # Random index in [position, n-1]
+        rand_offset = secrets.randbelow(n - position)
+        selected_index = position + rand_offset
+        # Resolve actual indices via swap map
+        pos_val = index_map.get(position, position)
+        sel_val = index_map.get(selected_index, selected_index)
+        # Record selection and update map
+        result.append(words[sel_val])
+        index_map[selected_index] = pos_val
+        # No need to keep position entry beyond this iteration
+        if selected_index != position:
+            index_map[position] = sel_val
+        else:
+            # When we swapped with itself, keep map consistent
+            index_map[position] = pos_val
+    return result
+
+
+def _secure_sample_without_replacement_pool(words: list[str], count: int) -> list[str]:
+    """Legacy pool-copy sampler kept for reference — not used in hot path."""
     pool = list(words)
     for position in range(count):
         selected_index = position + secrets.randbelow(len(pool) - position)
@@ -367,12 +388,31 @@ def resolve_wordlist_source(path: Path | None = None) -> tuple[Path | None, bool
 
 
 _WORDLIST_CACHE: dict[Path | None, tuple[int, int, bytes, tuple[str, ...]]] = {}
-_WORDLIST_CACHE_MAX_SIZE = 8
+_WORDLIST_CACHE_MAX_SIZE = _CONST_WORDLIST_CACHE_MAX_SIZE
+_WORDLIST_HASH_CHUNK_BYTES = _CONST_WORDLIST_HASH_CHUNK_BYTES
+_WORDLIST_HASH_DIGEST_SIZE = _CONST_WORDLIST_HASH_DIGEST_SIZE
 
 
 def clear_wordlist_cache() -> None:
     """Clear the wordlist cache (used by tests and cache invalidation)."""
     _WORDLIST_CACHE.clear()
+
+
+def _validate_custom_wordlist_path(path: Path) -> None:
+    """Reject symlinks, non-regular files, and oversize files."""
+    try:
+        lst = path.lstat()
+    except OSError as exc:
+        raise WordlistSecurityError(f"Cannot stat wordlist: {exc}") from exc
+    import stat as _stat
+    if _stat.S_ISLNK(lst.st_mode):
+        raise WordlistSecurityError("Custom wordlist path is a symlink — refused for security.")
+    if not _stat.S_ISREG(lst.st_mode):
+        raise WordlistSecurityError("Custom wordlist is not a regular file.")
+    if lst.st_size > _MAX_WORDLIST_FILE_BYTES:
+        raise WordlistSecurityError(
+            f"Custom wordlist too large ({lst.st_size} bytes). Maximum: {_MAX_WORDLIST_FILE_BYTES} bytes."
+        )
 
 
 def _get_file_signature(path: Path | None) -> tuple[Path | None, int, int]:
@@ -387,12 +427,35 @@ def _get_file_signature(path: Path | None) -> tuple[Path | None, int, int]:
 
 
 def _hash_wordlist(path: Path) -> bytes:
-    """Hash a wordlist only after its filesystem metadata changes."""
-    digest = hashlib.blake2b(digest_size=16)
+    """Hash a wordlist only after its filesystem metadata changes — reusable."""
+    digest = hashlib.blake2b(digest_size=_WORDLIST_HASH_DIGEST_SIZE)
     with path.open("rb") as wordlist_file:
-        for chunk in iter(lambda: wordlist_file.read(65536), b""):
+        for chunk in iter(lambda: wordlist_file.read(_WORDLIST_HASH_CHUNK_BYTES), b""):
             digest.update(chunk)
     return digest.digest()
+
+
+def _is_cache_valid(
+    cached: tuple[int, int, bytes, tuple[str, ...]] | None,
+    mtime_ns: int,
+    file_size: int,
+) -> bool:
+    """Flat helper: check metadata match without hashing — fast data travel."""
+    if cached is None:
+        return False
+    cached_mtime_ns, cached_size, _, _ = cached
+    return (cached_mtime_ns, cached_size) == (mtime_ns, file_size)
+
+
+def _parse_wordlist_lines(text: str) -> tuple[str, ...]:
+    """Flat helper: parse wordlist text into deduped tuple, reusable."""
+    raw_words: list[str] = []
+    for line in text.splitlines():
+        w = line.strip()
+        if not w or w.startswith("#"):
+            continue
+        raw_words.append(w)
+    return tuple(_dedupe_preserve_order(raw_words))
 
 
 def load_wordlist(path: Path | None = None) -> list[str]:
@@ -412,6 +475,9 @@ def load_wordlist(path: Path | None = None) -> list[str]:
     Returns a defensive copy so caller mutations do not corrupt shared cached data.
     """
     resolved_path, is_custom = resolve_wordlist_source(path)
+    # Security: validate custom wordlist path before any read.
+    if is_custom and resolved_path is not None and resolved_path.exists():
+        _validate_custom_wordlist_path(resolved_path)
     cache_path, mtime_ns, file_size = _get_file_signature(resolved_path)
     cached = _WORDLIST_CACHE.get(cache_path)
     if cached is not None:
@@ -419,6 +485,8 @@ def load_wordlist(path: Path | None = None) -> list[str]:
         if (cached_mtime_ns, cached_size) == (mtime_ns, file_size):
             if cache_path is None:
                 return list(cached_words)
+            # Flat helper would skip hash, but correctness requires hash verification
+            # when metadata collides (e.g., same size/mtime after rapid rewrite).
             if _hash_wordlist(cache_path) == cached_hash:
                 return list(cached_words)
 
@@ -426,14 +494,22 @@ def load_wordlist(path: Path | None = None) -> list[str]:
         words_tuple = tuple(DEFAULT_WORDLIST)
         content_hash = b""
     else:
+        # Re-validate size after signature (TOCTOU defense) and before read.
+        if is_custom:
+            try:
+                if cache_path.stat().st_size > _MAX_WORDLIST_FILE_BYTES:
+                    raise WordlistSecurityError(
+                        f"Custom wordlist too large ({cache_path.stat().st_size} bytes)."
+                    )
+            except OSError as exc:
+                raise WordlistSecurityError(f"Cannot stat wordlist: {exc}") from exc
         content_hash = _hash_wordlist(cache_path)
-        raw_words: list[str] = []
-        for line in cache_path.read_text(encoding="utf-8", errors="ignore").splitlines():
-            w = line.strip()
-            if not w or w.startswith("#"):
-                continue
-            raw_words.append(w)
-        words_tuple = tuple(_dedupe_preserve_order(raw_words))
+        text = cache_path.read_text(encoding="utf-8", errors="ignore")
+        words_tuple = _parse_wordlist_lines(text)
+        if len(words_tuple) > _MAX_WORDLIST_WORDS:
+            raise WordlistSecurityError(
+                f"Custom wordlist has {len(words_tuple)} unique words, exceeding maximum {_MAX_WORDLIST_WORDS}."
+            )
 
     # Validate only a file that was actually loaded as a custom wordlist.
     if is_custom and cache_path is not None:

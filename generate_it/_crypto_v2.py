@@ -44,9 +44,12 @@ DEFAULT_ARGON2_PARALLELISM: int = 4
 SALT_LEN: int = 32
 
 # Argon2id min/max bounds for config validation.
-MIN_ARGON2_MEMORY: int = 4096     # 4 MiB
+# Hardened to OWASP 2023 low recommendation (19 MiB / ~19,456 KiB, time>=2)
+# to prevent downgrade attacks via tampered vault config. Defaults remain
+# at 64 MiB / 3 iter for stronger posture.
+MIN_ARGON2_MEMORY: int = 19456    # 19 MiB (OWASP low)
 MAX_ARGON2_MEMORY: int = 1048576  # 1 GiB
-MIN_ARGON2_TIME: int = 1
+MIN_ARGON2_TIME: int = 2
 MAX_ARGON2_TIME: int = 100
 MIN_ARGON2_PARALLELISM: int = 1
 MAX_ARGON2_PARALLELISM: int = 64

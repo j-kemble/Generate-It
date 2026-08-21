@@ -108,7 +108,7 @@ def test_details_modal_bounds_long_note_and_marks_truncation(monkeypatch: pytest
     tui._run_details_modal(stdscr, theme, state, credential)
 
     addstr_calls = [call for call in window.method_calls if call[0] == "addstr"]
-    assert all(call.args[0] < 14 for call in addstr_calls)
+    assert all(call.args[0] < 16 for call in addstr_calls)
     assert any("[truncated]" in str(call.args[2]) for call in addstr_calls)
 
 

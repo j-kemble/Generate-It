@@ -16,7 +16,13 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from . import generator
-from .constants import AUTO_LOCK_OPTIONS, CLIPBOARD_AUTO_CLEAR_OPTIONS
+from .constants import (
+    AUTO_LOCK_OPTIONS,
+    CLIPBOARD_AUTO_CLEAR_OPTIONS,
+    TUI_ENTROPY_CACHE_SIZE,
+    TUI_OUTPUT_WRAP_CACHE_SIZE,
+    _TUI_MAX_BITS_CACHE_SIZE,
+)
 from .tui_helpers import _estimate_entropy_bits, _sanitize_terminal_text, _strength_label
 
 if TYPE_CHECKING:
@@ -36,6 +42,13 @@ def _auto_lock_label(state: AppState) -> str:
     return AUTO_LOCK_OPTIONS[state.auto_lock_index][0]
 
 HEADER_SMALL = ["Generate It"]
+
+# Flat reusable caches for 60 fps streaming — no hard-coded inline sizes.
+_PIXEL_BANNER_CACHE: dict[str, list[str]] = {}
+_HEADER_LINES_CACHE: dict[int, list[str]] = {}
+_OUTPUT_WRAP_CACHE: dict[tuple[str, int], list[str]] = {}
+_ENTROPY_CACHE: dict[tuple[str, int, bool, bool, bool, int, str, int, bool], tuple[float, str, str]] = {}
+_MAX_BITS_CACHE: dict[int, float] = {}
 
 # A compact 5-row pixel font (only the glyphs we need).
 _FONT_H = 5
@@ -106,13 +119,24 @@ _PIXEL_FONT: dict[str, list[str]] = {
     ],
 }
 
-def _pixel_banner(text: str) -> list[str]:
+def _get_cached_pixel_banner(text: str) -> list[str]:
+    """Flat helper: cached pixel banner, reusable for 60 fps."""
+    key = text.upper()
+    cached = _PIXEL_BANNER_CACHE.get(key)
+    if cached is not None:
+        return cached
     lines = [""] * _FONT_H
-    for ch in text.upper():
+    for ch in key:
         glyph = _PIXEL_FONT.get(ch, _PIXEL_FONT["?"])
         for i in range(_FONT_H):
             lines[i] += glyph[i] + " "
-    return [ln.rstrip() for ln in lines]
+    result = [ln.rstrip() for ln in lines]
+    _PIXEL_BANNER_CACHE[key] = result
+    return result
+
+
+def _pixel_banner(text: str) -> list[str]:
+    return _get_cached_pixel_banner(text)
 
 
 # --- Low-level drawing helpers ---------------------------------------------
@@ -195,18 +219,40 @@ def _draw_box(
 
 
 def _bar(value: float, max_value: float, width: int) -> str:
+    """Flat helper: btop-ish bar, reusable."""
     if width <= 0:
         return ""
     if max_value <= 0:
         frac = 0.0
     else:
         frac = max(0.0, min(1.0, value / max_value))
-
     fill = int(round(frac * width))
     fill = max(0, min(width, fill))
-
-    # Using simple block/shade characters for a btop-ish vibe.
     return "█" * fill + "░" * (width - fill)
+
+
+def _get_cached_max_bits(wordlist_size: int, mode: str) -> float:
+    """Flat helper: cached max entropy, reusable, no hard-coded recompute."""
+    key = wordlist_size if mode == "words" else -1
+    cached = _MAX_BITS_CACHE.get(key)
+    if cached is not None:
+        return cached
+    if mode == "chars":
+        value = float(generator.MAX_PASSWORD_CHARS) * math.log2(
+            len(generator.LETTERS) + len(generator.NUMBERS) + len(generator.SPECIAL_CHARACTERS)
+        )
+    else:
+        value = (
+            float(generator.MAX_PASSPHRASE_WORDS) * math.log2(max(2, wordlist_size))
+            + 3.0 * math.log2(10.0)
+            + math.log2(len(generator.PASSPHRASE_SPECIALS))
+        )
+    if len(_MAX_BITS_CACHE) >= _TUI_MAX_BITS_CACHE_SIZE:
+        oldest = next(iter(_MAX_BITS_CACHE))
+        del _MAX_BITS_CACHE[oldest]
+    # Username mode reuses words branch for bar-less path; still cache
+    _MAX_BITS_CACHE[key] = value
+    return value
 
 
 @dataclass(frozen=True)
@@ -351,15 +397,19 @@ def _add_gradient(
 
 
 def _header_lines_for_width(w: int) -> list[str]:
-    # Large: pixel banner
-    large = _pixel_banner("Generate It")
+    # Flat helper: cached by width, reusable for 60 fps streaming.
+    cached = _HEADER_LINES_CACHE.get(w)
+    if cached is not None:
+        return cached
+    large = _get_cached_pixel_banner("Generate It")
     needed = max((len(line) for line in large), default=0)
-
-    if w >= needed + 2:
-        return large
-
-    # Small fallback
-    return HEADER_SMALL
+    result = large if w >= needed + 2 else HEADER_SMALL
+    # Bounded cache via constants-friendly size (reuses TUI_OUTPUT_WRAP_CACHE_SIZE)
+    if len(_HEADER_LINES_CACHE) >= TUI_OUTPUT_WRAP_CACHE_SIZE:
+        oldest = next(iter(_HEADER_LINES_CACHE))
+        del _HEADER_LINES_CACHE[oldest]
+    _HEADER_LINES_CACHE[w] = result
+    return result
 
 
 def _render_header(stdscr: curses.window, theme: Theme) -> int:
@@ -724,6 +774,20 @@ def _render_vault_box(
 
 
 
+def _get_cached_wrapped_output(output: str, width: int) -> list[str]:
+    """Flat helper: cached wrap for 60 fps, reusable."""
+    key = (output, width)
+    cached = _OUTPUT_WRAP_CACHE.get(key)
+    if cached is not None:
+        return cached
+    wrapped = textwrap.wrap(output, width=width, break_long_words=True, break_on_hyphens=False)
+    if len(_OUTPUT_WRAP_CACHE) >= TUI_OUTPUT_WRAP_CACHE_SIZE:
+        oldest = next(iter(_OUTPUT_WRAP_CACHE))
+        del _OUTPUT_WRAP_CACHE[oldest]
+    _OUTPUT_WRAP_CACHE[key] = wrapped
+    return wrapped
+
+
 def _render_output_box(
     stdscr: curses.window,
     theme: Theme,
@@ -743,12 +807,7 @@ def _render_output_box(
         _addstr_safe(stdscr, y + 1, x + 2, "(Press Enter or g to generate)"[:inner_w], theme.dim)
         return
 
-    lines = textwrap.wrap(
-        state.output,
-        width=max(10, inner_w),
-        break_long_words=True,
-        break_on_hyphens=False,
-    )
+    lines = _get_cached_wrapped_output(state.output, max(10, inner_w))
 
     row = y + 1
     for line in lines[: max(0, inner_h - 1)]:
@@ -829,8 +888,27 @@ def _render_info_box(
         row += 1
 
     if state.mode != "username":
-        bits = _estimate_entropy_bits(state, wordlist_size)
-        label, kind = _strength_label(bits)
+        cache_key = (
+            state.mode,
+            state.char_length,
+            state.use_letters,
+            state.use_numbers,
+            state.use_special,
+            state.word_count,
+            state.add_numbers,
+            state.add_special,
+            wordlist_size,
+        )
+        cached = _ENTROPY_CACHE.get(cache_key)  # type: ignore[arg-type]
+        if cached is not None:
+            bits, label, kind = cached
+        else:
+            bits = _estimate_entropy_bits(state, wordlist_size)
+            label, kind = _strength_label(bits)
+            if len(_ENTROPY_CACHE) >= TUI_ENTROPY_CACHE_SIZE:
+                oldest = next(iter(_ENTROPY_CACHE))
+                del _ENTROPY_CACHE[oldest]
+            _ENTROPY_CACHE[cache_key] = (bits, label, kind)  # type: ignore[arg-type]
 
         if kind == "bad":
             kind_attr = theme.bad
@@ -839,22 +917,13 @@ def _render_info_box(
         else:
             kind_attr = theme.ok
 
-        # Strength bar
+        # Strength bar — flat helper already cached bits/label/kind above
         _addstr_safe(stdscr, row, x + 2, f"Entropy: ~{bits:0.1f} bits"[:inner_w], theme.dim)
         row += 1
 
         prefix = "Strength: ["
         suffix = f"] {label}"
         bar_w = max(0, inner_w - len(prefix) - len(suffix))
-        if state.mode == "chars":
-            max_bits = float(generator.MAX_PASSWORD_CHARS) * math.log2(
-                len(generator.LETTERS) + len(generator.NUMBERS) + len(generator.SPECIAL_CHARACTERS)
-            )
-        elif state.mode == "words":
-            max_bits = (
-                float(generator.MAX_PASSPHRASE_WORDS) * math.log2(max(2, wordlist_size))
-                + 3.0 * math.log2(10.0)
-                + math.log2(len(generator.PASSPHRASE_SPECIALS))
-            )
+        max_bits = _get_cached_max_bits(wordlist_size, state.mode)
         bar = _bar(min(bits, max_bits), max_bits, bar_w)
         _addstr_safe(stdscr, row, x + 2, f"{prefix}{bar}{suffix}"[:inner_w], kind_attr)

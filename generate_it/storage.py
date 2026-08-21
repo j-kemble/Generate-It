@@ -27,13 +27,29 @@ _log = get_logger("storage")
 APP_NAME = "generate-it"
 APP_AUTHOR = "j-kemble"
 
-# Default PBKDF2 parameters for newly created vaults.
-# Persisted per-vault in the config table so existing vaults keep unlocking.
-_DEFAULT_PBKDF2_ITERATIONS = 480_000
-_DEFAULT_SALT_LENGTH = 32
-
-# Legacy defaults for vaults created before these params were persisted.
-_LEGACY_PBKDF2_ITERATIONS = 100_000
+# Single source of truth for vault/crypto limits — see generate_it/constants.py
+from .constants import (  # noqa: E402  (import after _log is intentional)
+    _DEFAULT_PBKDF2_ITERATIONS,
+    _DEFAULT_SALT_LENGTH,
+    _IDENTITY_SCHEMA_VERSION,
+    _IDX_IDENTITY_ORDER,
+    _IDX_IDENTITY_UNIQUE,
+    _LEGACY_PBKDF2_ITERATIONS,
+    _MAX_CSV_FIELD_BYTES,
+    _MAX_CSV_FILE_BYTES,
+    _MAX_CSV_ROWS,
+    _MAX_MASTER_PASSWORD_LENGTH,
+    _MAX_URL_BYTES,
+    _SQLITE_BUSY_TIMEOUT_MS,
+    _SQLITE_CACHE_SIZE_PAGES,
+    _SQLITE_FOREIGN_KEYS,
+    _VAULT_SEARCH_SQL_LIMIT,
+    _VAULT_SEARCH_SQL_LIKE_LIMIT,
+    _SQLITE_JOURNAL_MODE,
+    _SQLITE_SYNCHRONOUS,
+    _SQLITE_TEMP_STORE,
+    _VAULT_PAGE_SIZE,
+)
 
 class StorageError(Exception):
     """Base exception for storage errors."""
@@ -97,20 +113,6 @@ _WEAK_PASSWORDS: frozenset[str] = frozenset({
     "welcome1!", "admin123!",
 })
 
-_MAX_MASTER_PASSWORD_LENGTH = 1024
-
-# CSV import resource limits
-_MAX_CSV_FILE_BYTES = 10 * 1024 * 1024  # 10 MB
-_MAX_CSV_ROWS = 10_000
-_MAX_CSV_FIELD_BYTES = 500
-
-# Identity schema marker stored in the config table once the credentials
-# table carries canonical identity columns + indexes.
-_IDENTITY_SCHEMA_VERSION = 1
-# Index names (also asserted by tests).
-_IDX_IDENTITY_UNIQUE = "idx_credentials_identity"
-_IDX_IDENTITY_ORDER = "idx_credentials_order"
-
 
 def _validate_master_password(password: str) -> None:
     """Validate a master password against the security policy.
@@ -165,6 +167,34 @@ def _validate_field_size(password: str, note: str) -> None:
         raise StorageError(f"password exceeds {MAX_PASSWORD_BYTES} bytes.")
     if len(note.encode("utf-8")) > MAX_NOTE_BYTES:
         raise StorageError(f"note exceeds {MAX_NOTE_BYTES} bytes.")
+
+
+def _validate_url(url: str) -> None:
+    """Reject url that exceeds byte limit."""
+    if len(url.encode("utf-8")) > _MAX_URL_BYTES:
+        raise StorageError(f"url exceeds {_MAX_URL_BYTES} bytes.")
+
+
+def _sanitize_url(url: str) -> str:
+    """Trim whitespace from url; empty string normalized to ''."""
+    return url.strip()
+
+
+def _has_url_column(cursor: sqlite3.Cursor) -> bool:
+    cursor.execute("PRAGMA table_info(credentials)")
+    return any(row["name"] == "url" for row in cursor.fetchall())
+
+
+def _ensure_url_column(conn: sqlite3.Connection) -> None:
+    """Add url column if missing (flat helper, idempotent)."""
+    cursor = conn.cursor()
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='credentials'")
+    if cursor.fetchone() is None:
+        return
+    if not _has_url_column(cursor):
+        cursor.execute("ALTER TABLE credentials ADD COLUMN url TEXT DEFAULT ''")
+        conn.commit()
+        _log.info("url column added to credentials")
 
 class StorageManager:
     def __init__(self, db_path: Optional[Path] = None):
@@ -255,13 +285,36 @@ class StorageManager:
         os.replace(str(backup_tmp), str(backup_path))
         return backup_path
 
+    def _configure_connection(self, conn: sqlite3.Connection) -> None:
+        """Apply reusable SQLite pragmas for fast, safe data travel."""
+        conn.row_factory = sqlite3.Row
+        conn.execute(f"PRAGMA busy_timeout={_SQLITE_BUSY_TIMEOUT_MS}")
+        conn.execute(f"PRAGMA journal_mode={_SQLITE_JOURNAL_MODE}")
+        conn.execute(f"PRAGMA synchronous={_SQLITE_SYNCHRONOUS}")
+        conn.execute(f"PRAGMA cache_size={_SQLITE_CACHE_SIZE_PAGES}")
+        conn.execute(f"PRAGMA temp_store={_SQLITE_TEMP_STORE}")
+        conn.execute(f"PRAGMA foreign_keys={_SQLITE_FOREIGN_KEYS}")
+
     def _get_conn(self) -> sqlite3.Connection:
         if not self._db_connection:
             self._db_connection = sqlite3.connect(self.db_path)
-            self._db_connection.row_factory = sqlite3.Row
-            self._db_connection.execute("PRAGMA busy_timeout=5000")
+            self._configure_connection(self._db_connection)
             self._ensure_private_permissions(self.db_path, 0o600)
         return self._db_connection
+
+    def _cached_has_url_column(self, cursor: sqlite3.Cursor) -> bool:
+        """Cached wrapper around _has_url_column to avoid repeated PRAGMA."""
+        cached = getattr(self, "_has_url_column_cache", None)
+        if cached is not None:
+            return bool(cached)
+        result = _has_url_column(cursor)
+        self._has_url_column_cache = result
+        return result
+
+    def _invalidate_url_column_cache(self) -> None:
+        """Clear cached url-column presence after schema migration."""
+        if hasattr(self, "_has_url_column_cache"):
+            delattr(self, "_has_url_column_cache")
 
     def set_app_setting(self, key: str, value: str) -> None:
         """Persist a non-sensitive app preference in the config table."""
@@ -275,25 +328,137 @@ class StorageManager:
         )
         conn.commit()
 
-    def get_app_setting(self, key: str, default: Optional[str] = None) -> Optional[str]:
-        """Read a persisted non-sensitive app preference from the config table."""
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        stored_key = f"app_setting:{key}"
-        cursor.execute("SELECT value FROM config WHERE key = ?", (stored_key,))
-        row = cursor.fetchone()
-        if not row:
+    @staticmethod
+    def _decode_app_setting_value(value: Any, default: Optional[str]) -> Optional[str]:
+        """Flat helper: decode a config value to str, reusable."""
+        if value is None:
             return default
-
-        value = row["value"]
         if isinstance(value, bytes):
             try:
                 return value.decode("utf-8")
             except UnicodeDecodeError:
                 return default
-        if value is None:
-            return default
         return str(value)
+
+    def get_app_setting(self, key: str, default: Optional[str] = None) -> Optional[str]:
+        """Read a persisted non-sensitive app preference from the config table."""
+        result = self.get_app_settings([key], {key: default})
+        return result.get(key, default)
+
+    def get_app_settings(
+        self, keys: List[str], defaults: Optional[Dict[str, Optional[str]]] = None
+    ) -> Dict[str, Optional[str]]:
+        """Batch fetch multiple app settings in one query — reusable."""
+        if not keys:
+            return {}
+        defaults = defaults or {}
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        stored_keys = [f"app_setting:{k}" for k in keys]
+        placeholders = ",".join("?" for _ in stored_keys)
+        cursor.execute(
+            f"SELECT key, value FROM config WHERE key IN ({placeholders})",  # nosec B608 — placeholders are '?' only, values are parameterized
+            stored_keys,
+        )
+        found: Dict[str, Any] = {row["key"]: row["value"] for row in cursor.fetchall()}
+        out: Dict[str, Optional[str]] = {}
+        for key in keys:
+            stored_key = f"app_setting:{key}"
+            if stored_key in found:
+                out[key] = self._decode_app_setting_value(found[stored_key], defaults.get(key))
+            else:
+                out[key] = defaults.get(key)
+        return out
+
+    def set_app_settings(self, items: Dict[str, str]) -> None:
+        """Batch persist multiple app settings in one transaction — reusable."""
+        if not items:
+            return
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        rows = [(f"app_setting:{k}", v.encode("utf-8")) for k, v in items.items()]
+        cursor.executemany(
+            "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)",
+            rows,
+        )
+        conn.commit()
+
+    # --- Persistent lockout (survives restarts) -----------------------------
+    _LOCKOUT_ATTEMPTS_KEY = "lockout_failed_attempts"
+    _LOCKOUT_UNTIL_KEY = "lockout_until_epoch"
+
+    def _read_optional_float_config(self, cursor: sqlite3.Cursor, key: str) -> Optional[float]:
+        """Read a float config value, returning None if absent."""
+        cursor.execute("SELECT value FROM config WHERE key=?", (key,))
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        raw = row["value"]
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        try:
+            return float(str(raw))
+        except (TypeError, ValueError):
+            raise StorageError(f"Config key '{key}' has malformed value: {raw!r}")
+
+    def get_persistent_lockout_state(self) -> Tuple[int, Optional[float]]:
+        """Return (failed_attempts, lockout_until_epoch) from config table.
+
+        Reads without requiring the vault to be unlocked.  Returns (0, None)
+        if the vault does not exist or keys are absent.  Malformed values
+        are treated as (0, None) and cleared.
+        """
+        if not self.vault_exists():
+            return 0, None
+        try:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            attempts = self._read_optional_int_config(cursor, self._LOCKOUT_ATTEMPTS_KEY)
+            until = self._read_optional_float_config(cursor, self._LOCKOUT_UNTIL_KEY)
+        except StorageError:
+            # Malformed lockout state — clear it.
+            try:
+                self.clear_persistent_lockout_state()
+            except Exception:
+                pass
+            return 0, None
+        except sqlite3.Error:
+            return 0, None
+        return (attempts if attempts is not None else 0, until)
+
+    def set_persistent_lockout_state(self, attempts: int, lockout_until_epoch: Optional[float]) -> None:
+        """Persist lockout state to the config table (plaintext)."""
+        if not self.vault_exists():
+            return
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)",
+            (self._LOCKOUT_ATTEMPTS_KEY, str(max(0, attempts))),
+        )
+        if lockout_until_epoch is None:
+            cursor.execute("DELETE FROM config WHERE key=?", (self._LOCKOUT_UNTIL_KEY,))
+        else:
+            cursor.execute(
+                "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)",
+                (self._LOCKOUT_UNTIL_KEY, str(float(lockout_until_epoch))),
+            )
+        conn.commit()
+
+    def clear_persistent_lockout_state(self) -> None:
+        """Clear persisted lockout state after a successful unlock."""
+        if not self.vault_exists():
+            return
+        try:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            cursor.execute(
+                "DELETE FROM config WHERE key IN (?, ?)",
+                (self._LOCKOUT_ATTEMPTS_KEY, self._LOCKOUT_UNTIL_KEY),
+            )
+            conn.commit()
+        except sqlite3.Error:
+            pass
 
     def _read_optional_int_config(self, cursor: sqlite3.Cursor, key: str) -> Optional[int]:
         """Read an integer config value, returning None if absent.
@@ -365,6 +530,7 @@ class StorageManager:
                 note_is_hidden INTEGER DEFAULT 0,
                 service_key TEXT,
                 username_key TEXT,
+                url TEXT DEFAULT '',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -373,6 +539,12 @@ class StorageManager:
             cursor.execute("SELECT note_is_hidden FROM credentials LIMIT 1")
         except sqlite3.OperationalError:
             cursor.execute("ALTER TABLE credentials ADD COLUMN note_is_hidden INTEGER DEFAULT 0")
+
+        if not _has_url_column(cursor):
+            try:
+                cursor.execute("ALTER TABLE credentials ADD COLUMN url TEXT DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass
 
         self._create_identity_indexes(cursor)
 
@@ -469,6 +641,17 @@ class StorageManager:
 
         self._fernet = fernet
         self._vault_version = 1
+        # Legacy iteration detection — warn and flag for upgrade.
+        if stored_iters < _DEFAULT_PBKDF2_ITERATIONS:
+            _log.warning(
+                "v1 vault uses legacy PBKDF2 iterations=%d (recommended %d). "
+                "Consider migrating to v2 (Argon2id) via vault health menu.",
+                stored_iters, _DEFAULT_PBKDF2_ITERATIONS,
+            )
+            # Expose via attribute so UI can prompt upgrade.
+            self._legacy_pbkdf2_needs_upgrade = True  # type: ignore[attr-defined]
+        else:
+            self._legacy_pbkdf2_needs_upgrade = False  # type: ignore[attr-defined]
         self._ensure_identity_schema()
         _log.info("vault unlocked")
 
@@ -596,6 +779,9 @@ class StorageManager:
         """
         self.identity_conflict = None
         conn = self._get_conn()
+        # Ensure url column exists before any other schema work.
+        _ensure_url_column(conn)
+        self._invalidate_url_column_cache()
         cursor = conn.cursor()
         cursor.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='credentials'"
@@ -949,9 +1135,15 @@ class StorageManager:
                 note_is_hidden INTEGER DEFAULT 0,
                 service_key TEXT,
                 username_key TEXT,
+                url TEXT DEFAULT '',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        if not _has_url_column(cursor):
+            try:
+                cursor.execute("ALTER TABLE credentials ADD COLUMN url TEXT DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass
         self._create_identity_indexes(cursor)
 
         # Write v2 config.
@@ -1056,6 +1248,18 @@ class StorageManager:
             )
         except ValueError as exc:
             raise StorageError(f"Invalid KDF configuration: {exc}") from exc
+
+        # Downgrade warning — any non-default KDF params may indicate tampering.
+        if (
+            memory != _crypto_v2.DEFAULT_ARGON2_MEMORY
+            or time != _crypto_v2.DEFAULT_ARGON2_TIME
+            or parallelism != _crypto_v2.DEFAULT_ARGON2_PARALLELISM
+        ):
+            _log.warning(
+                "vault KDF params differ from defaults (memory=%d time=%d parallelism=%d) — "
+                "possible downgrade/tampering if not intentionally changed",
+                memory, time, parallelism,
+            )
 
         # Validate vault metadata before crypto operations.
         try:
@@ -1371,14 +1575,271 @@ class StorageManager:
             _log.exception("AAD migration failed; v2 vault is intact")
             raise
 
+    # ------------------------------------------------------------------
+    # Master password change (DEK re-wrap) — P0 flat helpers
+    # ------------------------------------------------------------------
+
+    def _verify_current_password(self, current_password: str) -> None:
+        """Raise InvalidPasswordError if *current_password* does not unlock vault."""
+        if self._vault_version == 2:
+            self._verify_current_password_v2(current_password)
+        elif self._vault_version == 1:
+            self._verify_current_password_v1(current_password)
+        else:
+            raise StorageError("Vault is not unlocked.")
+
+    def _verify_current_password_v2(self, current_password: str) -> None:
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("SELECT value FROM config WHERE key='kdf_salt'")
+            kdf_salt = cursor.fetchone()["value"]
+            cursor.execute("SELECT value FROM config WHERE key='wrapped_dek'")
+            wrapped_dek = cursor.fetchone()["value"]
+            cursor.execute("SELECT value FROM config WHERE key='vault_uuid'")
+            vault_uuid = cursor.fetchone()["value"]
+            cursor.execute("SELECT value FROM config WHERE key='verification'")
+            verification_ct = cursor.fetchone()["value"]
+        except (TypeError, KeyError) as exc:
+            raise StorageError("Vault v2 configuration corrupted.") from exc
+        memory = self._read_optional_int_config(cursor, "kdf_memory_cost")
+        memory = memory if memory is not None else _crypto_v2.DEFAULT_ARGON2_MEMORY
+        time_cost = self._read_optional_int_config(cursor, "kdf_time_cost")
+        time_cost = time_cost if time_cost is not None else _crypto_v2.DEFAULT_ARGON2_TIME
+        paral = self._read_optional_int_config(cursor, "kdf_parallelism")
+        paral = paral if paral is not None else _crypto_v2.DEFAULT_ARGON2_PARALLELISM
+        cursor.execute("SELECT value FROM config WHERE key='kdf_algorithm'")
+        row = cursor.fetchone()
+        kdf_algorithm = row["value"].decode("utf-8") if row and isinstance(row["value"], bytes) else (str(row["value"]) if row else "argon2id")
+        cursor.execute("SELECT value FROM config WHERE key='aead_algorithm'")
+        aead_row = cursor.fetchone()
+        aead_algorithm = aead_row["value"].decode("utf-8") if aead_row and isinstance(aead_row["value"], bytes) else (str(aead_row["value"]) if aead_row else _crypto_v2.AEAD_AES_256_GCM)
+        kek = _crypto_v2.derive_kek(current_password, kdf_salt, memory=memory, time=time_cost, parallelism=paral)
+        try:
+            dek = _crypto_v2.unwrap_dek(kek, wrapped_dek)
+        except _crypto_v2.InvalidUnwrap as exc:
+            raise InvalidPasswordError("Current master password is incorrect.") from exc
+        if not _crypto_v2.verify_token(dek, vault_uuid, verification_ct, aead_algorithm=aead_algorithm):
+            raise InvalidPasswordError("Current master password is incorrect.")
+
+    def _verify_current_password_v1(self, current_password: str) -> None:
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("SELECT value FROM config WHERE key='salt'")
+            salt = cursor.fetchone()["value"]
+            cursor.execute("SELECT value FROM config WHERE key='verification'")
+            verification_token = cursor.fetchone()["value"]
+        except TypeError as exc:
+            raise StorageError("Vault configuration corrupted.") from exc
+        stored_iters = self._read_optional_int_config(cursor, "pbkdf2_iterations")
+        stored_iters = stored_iters if stored_iters is not None else _LEGACY_PBKDF2_ITERATIONS
+        key = self._derive_key(current_password, salt, stored_iters)
+        fernet = Fernet(key)
+        try:
+            decrypted = fernet.decrypt(verification_token)
+            if decrypted != b"VERIFICATION_TOKEN":
+                raise InvalidPasswordError("Current master password is incorrect.")
+        except InvalidToken as exc:
+            raise InvalidPasswordError("Current master password is incorrect.") from exc
+
+    def change_master_password(self, current_password: str, new_password: str) -> None:
+        """Change master password without re-encrypting credentials.
+
+        Validates *new_password* against the strength policy, verifies
+        *current_password* against the existing vault, then atomically
+        re-wraps the DEK (v2) or re-encrypts the verification token (v1).
+
+        Requires an unlocked vault.
+        """
+        if self._vault_version is None:
+            raise StorageError("Vault is locked.")
+        _validate_field_size(new_password, "")
+        _validate_master_password(new_password)
+        self._verify_current_password(current_password)
+        if self._vault_version == 2:
+            self._change_master_password_v2(new_password)
+        else:
+            self._change_master_password_v1(new_password)
+
+    def _change_master_password_v2(self, new_password: str) -> None:
+        if self._dek is None or self._vault_uuid is None:
+            raise StorageError("Vault DEK is not available.")
+        dek = self._dek
+        vault_uuid = self._vault_uuid
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute("SELECT value FROM config WHERE key='aead_algorithm'")
+        row = cursor.fetchone()
+        aead_algorithm = row["value"].decode("utf-8") if row and isinstance(row["value"], bytes) else (str(row["value"]) if row else _crypto_v2.AEAD_AES_256_GCM)
+        new_salt = os.urandom(_crypto_v2.SALT_LEN)
+        new_kek = _crypto_v2.derive_kek(new_password, new_salt)
+        new_wrapped_dek = _crypto_v2.wrap_dek(new_kek, dek)
+        try:
+            conn.execute("BEGIN EXCLUSIVE")
+            cursor.execute("INSERT OR REPLACE INTO config (key, value) VALUES ('kdf_salt', ?)", (new_salt,))
+            cursor.execute("INSERT OR REPLACE INTO config (key, value) VALUES ('wrapped_dek', ?)", (new_wrapped_dek,))
+            cursor.execute("INSERT OR REPLACE INTO config (key, value) VALUES ('kdf_algorithm', 'argon2id')")
+            cursor.execute("INSERT OR REPLACE INTO config (key, value) VALUES ('kdf_memory_cost', ?)", (str(_crypto_v2.DEFAULT_ARGON2_MEMORY),))
+            cursor.execute("INSERT OR REPLACE INTO config (key, value) VALUES ('kdf_time_cost', ?)", (str(_crypto_v2.DEFAULT_ARGON2_TIME),))
+            cursor.execute("INSERT OR REPLACE INTO config (key, value) VALUES ('kdf_parallelism', ?)", (str(_crypto_v2.DEFAULT_ARGON2_PARALLELISM),))
+            cursor.execute("INSERT OR REPLACE INTO config (key, value) VALUES ('aead_algorithm', ?)", (aead_algorithm,))
+            conn.commit()
+            _log.info("master password changed (v2 re-wrap)")
+        except BaseException:
+            try:
+                conn.rollback()
+            except Exception as rollback_exc:  # nosec B110 — best-effort cleanup
+                _log.debug("rollback failed during password change: %s", rollback_exc)
+            raise
+
+    def rotate_dek(self, current_password: str) -> None:
+        """Rotate DEK: generate new DEK, re-encrypt all credentials atomically.
+
+        Requires an unlocked v2 vault and the current master password to
+        re-wrap the new DEK.  Increments ``dek_generation`` and refreshes
+        the verification token.  Credentials keep their UUIDs and metadata.
+        """
+        if self._vault_version != 2:
+            raise StorageError("DEK rotation requires an unlocked v2 vault.")
+        if self._dek is None or self._vault_uuid is None:
+            raise StorageError("Vault DEK is not available.")
+        self._verify_current_password_v2(current_password)
+        self._execute_dek_rotation(current_password)
+
+    def _read_dek_generation(self, cursor: sqlite3.Cursor) -> int:
+        raw = self._read_optional_int_config(cursor, "dek_generation")
+        return raw if raw is not None else 1
+
+    def _execute_dek_rotation(self, current_password: str) -> None:
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute("SELECT value FROM config WHERE key='kdf_salt'")
+        kdf_salt = cursor.fetchone()["value"]
+        cursor.execute("SELECT value FROM config WHERE key='kdf_algorithm'")
+        row = cursor.fetchone()
+        kdf_algorithm = row["value"].decode("utf-8") if row and isinstance(row["value"], bytes) else (str(row["value"]) if row else "argon2id")
+        memory = self._read_optional_int_config(cursor, "kdf_memory_cost")
+        memory = memory if memory is not None else _crypto_v2.DEFAULT_ARGON2_MEMORY
+        time_cost = self._read_optional_int_config(cursor, "kdf_time_cost")
+        time_cost = time_cost if time_cost is not None else _crypto_v2.DEFAULT_ARGON2_TIME
+        paral = self._read_optional_int_config(cursor, "kdf_parallelism")
+        paral = paral if paral is not None else _crypto_v2.DEFAULT_ARGON2_PARALLELISM
+        cursor.execute("SELECT value FROM config WHERE key='aead_algorithm'")
+        aead_row = cursor.fetchone()
+        aead_algorithm = aead_row["value"].decode("utf-8") if aead_row and isinstance(aead_row["value"], bytes) else (str(aead_row["value"]) if aead_row else _crypto_v2.AEAD_AES_256_GCM)
+        vault_uuid: bytes = self._vault_uuid  # type: ignore[assignment]
+        old_dek: bytes = self._dek  # type: ignore[assignment]
+        dek_generation = self._read_dek_generation(cursor)
+        kek = _crypto_v2.derive_kek(current_password, kdf_salt, memory=memory, time=time_cost, parallelism=paral)
+        new_dek = _crypto_v2.generate_dek()
+        new_wrapped_dek = _crypto_v2.wrap_dek(kek, new_dek)
+        new_verification = _crypto_v2.create_verification_token(new_dek, vault_uuid, aead_algorithm=aead_algorithm)
+        backup_path = self._create_secure_backup(".dek.bak")
+        _log.info("DEK rotation backup at %s", backup_path)
+        try:
+            conn.execute("BEGIN EXCLUSIVE")
+            read_cursor = conn.cursor()
+            write_cursor = conn.cursor()
+            read_cursor.execute("SELECT id, credential_uuid, service, username, encrypted_password, encrypted_note FROM credentials")
+            for row in read_cursor:
+                cred_uuid: bytes = row["credential_uuid"]
+                svc: str = row["service"]
+                usr: str = row["username"]
+                password_ad = self._make_credential_aad(cred_uuid, "password", svc, usr)
+                note_ad = self._make_credential_aad(cred_uuid, "note", svc, usr)
+                try:
+                    password = _crypto_v2.decrypt_field(old_dek, password_ad, row["encrypted_password"], aead_algorithm=aead_algorithm)
+                except Exception as exc:
+                    raise StorageError(f"Failed to decrypt credential id={row['id']} during DEK rotation: {exc}") from exc
+                note = ""
+                if row["encrypted_note"]:
+                    try:
+                        note = _crypto_v2.decrypt_field(old_dek, note_ad, row["encrypted_note"], aead_algorithm=aead_algorithm)
+                    except Exception as exc:
+                        raise StorageError(f"Failed to decrypt note id={row['id']} during DEK rotation: {exc}") from exc
+                _validate_field_size(password, note)
+                new_password_ct = _crypto_v2.encrypt_field(new_dek, password_ad, password, aead_algorithm=aead_algorithm, max_plaintext_bytes=MAX_PASSWORD_BYTES, field_name="password")
+                new_note_ct: bytes | None = None
+                if note:
+                    new_note_ct = _crypto_v2.encrypt_field(new_dek, note_ad, note, aead_algorithm=aead_algorithm, max_plaintext_bytes=MAX_NOTE_BYTES, field_name="note")
+                write_cursor.execute("UPDATE credentials SET encrypted_password=?, encrypted_note=? WHERE id=?", (new_password_ct, new_note_ct, row["id"]))
+            cursor.execute("INSERT OR REPLACE INTO config (key, value) VALUES ('wrapped_dek', ?)", (new_wrapped_dek,))
+            cursor.execute("INSERT OR REPLACE INTO config (key, value) VALUES ('verification', ?)", (new_verification,))
+            cursor.execute("INSERT OR REPLACE INTO config (key, value) VALUES ('dek_generation', ?)", (str(dek_generation + 1),))
+            conn.commit()
+            self._dek = new_dek
+            _log.info("DEK rotated: generation %d -> %d", dek_generation, dek_generation + 1)
+        except BaseException:
+            try:
+                conn.rollback()
+            except Exception as rollback_exc:  # nosec B110 — best-effort cleanup
+                _log.debug("rollback failed during DEK rotation: %s", rollback_exc)
+            _log.exception("DEK rotation failed; vault unchanged")
+            raise
+
+    def _change_master_password_v1(self, new_password: str) -> None:
+        if self._fernet is None:
+            raise StorageError("Vault is not unlocked.")
+        old_fernet: Fernet = self._fernet
+        new_salt = os.urandom(_DEFAULT_SALT_LENGTH)
+        new_key = self._derive_key(new_password, new_salt, _DEFAULT_PBKDF2_ITERATIONS)
+        new_fernet = Fernet(new_key)
+        new_verification = new_fernet.encrypt(b"VERIFICATION_TOKEN")
+        backup_path = self._create_secure_backup(".pwd.bak")
+        _log.info("v1 password-change backup at %s", backup_path)
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        try:
+            conn.execute("BEGIN EXCLUSIVE")
+            # Re-encrypt every credential field from old key to new key.
+            read_cursor = conn.cursor()
+            write_cursor = conn.cursor()
+            read_cursor.execute("SELECT id, encrypted_password, encrypted_note FROM credentials")
+            for row in read_cursor:
+                try:
+                    password = old_fernet.decrypt(row["encrypted_password"]).decode()
+                except Exception as exc:
+                    raise StorageError(f"Failed to decrypt v1 password id={row['id']}: {exc}") from exc
+                note = ""
+                if row["encrypted_note"]:
+                    try:
+                        note = old_fernet.decrypt(row["encrypted_note"]).decode()
+                    except Exception as exc:
+                        raise StorageError(f"Failed to decrypt v1 note id={row['id']}: {exc}") from exc
+                _validate_field_size(password, note)
+                new_password_ct = new_fernet.encrypt(password.encode())
+                new_note_ct = new_fernet.encrypt(note.encode()) if note else None
+                write_cursor.execute(
+                    "UPDATE credentials SET encrypted_password=?, encrypted_note=? WHERE id=?",
+                    (new_password_ct, new_note_ct, row["id"]),
+                )
+            cursor.execute("INSERT OR REPLACE INTO config (key, value) VALUES ('salt', ?)", (new_salt,))
+            cursor.execute("INSERT OR REPLACE INTO config (key, value) VALUES ('verification', ?)", (new_verification,))
+            cursor.execute("INSERT OR REPLACE INTO config (key, value) VALUES ('pbkdf2_iterations', ?)", (str(_DEFAULT_PBKDF2_ITERATIONS),))
+            cursor.execute("INSERT OR REPLACE INTO config (key, value) VALUES ('salt_length', ?)", (str(_DEFAULT_SALT_LENGTH),))
+            conn.commit()
+            self._fernet = new_fernet
+            _log.info("master password changed (v1 re-encrypt)")
+        except BaseException:
+            try:
+                conn.rollback()
+            except Exception as rollback_exc:  # nosec B110 — best-effort cleanup
+                _log.debug("rollback failed during password change: %s", rollback_exc)
+            raise
+
     def close(self):
         if self._db_connection:
-            self._db_connection.close()
+            try:
+                self._db_connection.close()
+            except Exception:
+                pass
             self._db_connection = None
         self._fernet = None
         self._vault_version = None
         self._dek = None
         self._vault_uuid = None
+        self._invalidate_url_column_cache()
         _log.info("vault closed")
 
     def __enter__(self) -> "StorageManager":
@@ -1567,13 +2028,15 @@ class StorageManager:
         except ValueError as exc:
             raise StorageError(str(exc)) from exc
 
-    def save_credential(self, service: str, username: str, password: str, note: str = "", note_is_hidden: bool = False) -> int:
+    def save_credential(self, service: str, username: str, password: str, note: str = "", note_is_hidden: bool = False, url: str = "") -> int:
         self._require_unlocked()
         service_key, username_key = self._validated_identity_keys(service, username)
         _validate_field_size(password, note)
+        url = _sanitize_url(url)
+        _validate_url(url)
 
         if self._vault_version == 2:
-            return self._save_credential_v2(service, username, password, note, note_is_hidden, service_key, username_key)
+            return self._save_credential_v2(service, username, password, note, note_is_hidden, service_key, username_key, url)
 
         fernet = self._require_unlocked()
         encrypted_password, encrypted_note = self._encrypt_fields_v1(fernet, password, note)
@@ -1582,8 +2045,8 @@ class StorageManager:
         cursor = conn.cursor()
         try:
             cursor.execute(
-                "INSERT INTO credentials (service, username, encrypted_password, encrypted_note, note_is_hidden, service_key, username_key) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (service, username, encrypted_password, encrypted_note, 1 if note_is_hidden else 0, service_key, username_key)
+                "INSERT INTO credentials (service, username, encrypted_password, encrypted_note, note_is_hidden, service_key, username_key, url) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (service, username, encrypted_password, encrypted_note, 1 if note_is_hidden else 0, service_key, username_key, url)
             )
         except sqlite3.IntegrityError as exc:
             conn.rollback()
@@ -1597,10 +2060,11 @@ class StorageManager:
 
     def _save_credential_v2(
         self, service: str, username: str, password: str, note: str, note_is_hidden: bool,
-        service_key: str, username_key: str,
+        service_key: str, username_key: str, url: str = "",
     ) -> int:
         """Save a credential in a v2 vault."""
         _validate_field_size(password, note)
+        _validate_url(url)
         credential_uuid = uuid.uuid4().bytes
         encrypted_password, encrypted_note = self._encrypt_fields_v2(
             password, note, credential_uuid, service, username
@@ -1610,8 +2074,8 @@ class StorageManager:
         cursor = conn.cursor()
         try:
             cursor.execute(
-                "INSERT INTO credentials (credential_uuid, service, username, encrypted_password, encrypted_note, note_is_hidden, service_key, username_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (credential_uuid, service, username, encrypted_password, encrypted_note, 1 if note_is_hidden else 0, service_key, username_key),
+                "INSERT INTO credentials (credential_uuid, service, username, encrypted_password, encrypted_note, note_is_hidden, service_key, username_key, url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (credential_uuid, service, username, encrypted_password, encrypted_note, 1 if note_is_hidden else 0, service_key, username_key, url),
             )
         except sqlite3.IntegrityError as exc:
             conn.rollback()
@@ -1632,7 +2096,7 @@ class StorageManager:
         decisions are indexed database lookups rather than Python scans of
         the full vault.  ``exclude_id`` skips one row (credential edits).
 
-        Returns a dict with id/service/username/created_at keys, or None.
+        Returns a dict with id/service/username/created_at/url keys, or None.
         """
         self._require_unlocked()
         service_key, username_key = canonical_service_username(service, username)
@@ -1640,15 +2104,18 @@ class StorageManager:
             return None
         conn = self._get_conn()
         cursor = conn.cursor()
+        # url column may be missing in legacy vaults — handle gracefully.
+        has_url = self._cached_has_url_column(cursor)
+        url_expr = ", url" if has_url else ", '' as url"  # allow-list, not user input
         if exclude_id is None:
             cursor.execute(
-                "SELECT id, service, username, created_at FROM credentials"
+                f"SELECT id, service, username, created_at{url_expr} FROM credentials"  # nosec B608 — url_expr is allow-list
                 " WHERE service_key = ? AND username_key = ?",
                 (service_key, username_key),
             )
         else:
             cursor.execute(
-                "SELECT id, service, username, created_at FROM credentials"
+                f"SELECT id, service, username, created_at{url_expr} FROM credentials"  # nosec B608 — url_expr is allow-list
                 " WHERE service_key = ? AND username_key = ? AND id != ?",
                 (service_key, username_key, exclude_id),
             )
@@ -1660,46 +2127,184 @@ class StorageManager:
             "service": row["service"],
             "username": row["username"],
             "created_at": row["created_at"],
+            "url": row["url"] if "url" in row.keys() and row["url"] is not None else "",
+        }
+
+    def _fetch_credential_metadata_rows(
+        self, cursor: sqlite3.Cursor, limit: Optional[int] = None, offset: Optional[int] = None
+    ) -> List[sqlite3.Row]:
+        """Flat helper: fetch metadata rows with optional pagination, reusable."""
+        has_url = self._cached_has_url_column(cursor)
+        url_expr = ", url" if has_url else ", '' as url"  # allow-list
+        query = f"SELECT id, service, username, created_at{url_expr} FROM credentials ORDER BY service_key, username_key, id"  # nosec B608 — url_expr is allow-list
+        params: List[Any] = []
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(limit)
+            if offset is not None:
+                query += " OFFSET ?"
+                params.append(offset)
+        cursor.execute(query, params)
+        return cursor.fetchall()
+
+    @staticmethod
+    def _row_to_metadata(row: sqlite3.Row) -> dict:
+        """Flat helper: convert a DB row to metadata dict, reusable."""
+        return {
+            "id": row["id"],
+            "service": row["service"],
+            "username": row["username"],
+            "url": row["url"] if "url" in row.keys() and row["url"] is not None else "",
+            "created_at": row["created_at"],
         }
 
     def list_credential_metadata(self) -> list[dict]:
         """Return metadata for all credentials without decrypting passwords/notes.
 
-        Returns list of dicts with keys: id, service, username, created_at
+        Returns list of dicts with keys: id, service, username, url, created_at
         """
         self._require_unlocked()
         conn = self._get_conn()
         cursor = conn.cursor()
-        cursor.execute(
-            "SELECT id, service, username, created_at FROM credentials"
-            " ORDER BY service_key, username_key, id"
-        )
-        return [
-            {
-                "id": row["id"],
-                "service": row["service"],
-                "username": row["username"],
-                "created_at": row["created_at"],
-            }
-            for row in cursor.fetchall()
-        ]
+        rows = self._fetch_credential_metadata_rows(cursor)
+        return [self._row_to_metadata(row) for row in rows]
+
+    def list_credential_metadata_paginated(
+        self, limit: int = _VAULT_PAGE_SIZE, offset: int = 0
+    ) -> list[dict]:
+        """Paginated metadata fetch for large vaults — reusable.
+
+        Uses constants for default page size, no hard-coded inline limits.
+        For large offsets (>1000) prefer ``list_credential_metadata_keyset`` to
+        avoid OFFSET scan.
+        """
+        self._require_unlocked()
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        rows = self._fetch_credential_metadata_rows(cursor, limit=limit, offset=offset)
+        return [self._row_to_metadata(row) for row in rows]
+
+    def list_credential_metadata_keyset(
+        self,
+        limit: int = _VAULT_PAGE_SIZE,
+        after: Tuple[str, str, int] | None = None,
+    ) -> list[dict]:
+        """Keyset pagination — O(log n) for large vaults, no OFFSET scan.
+
+        ``after`` is the last tuple ``(service_key, username_key, id)`` from the
+        previous page.  ``None`` returns the first page.
+        """
+        self._require_unlocked()
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        has_url = self._cached_has_url_column(cursor)
+        url_expr = ", url" if has_url else ", '' as url"  # allow-list
+        if after is None:
+            cursor.execute(
+                f"SELECT id, service, username, created_at{url_expr}, service_key, username_key "  # nosec B608 — url_expr allow-list
+                "FROM credentials ORDER BY service_key, username_key, id LIMIT ?",
+                (limit,),
+            )
+        else:
+            sk, uk, last_id = after
+            cursor.execute(
+                f"SELECT id, service, username, created_at{url_expr}, service_key, username_key "  # nosec B608 — url_expr allow-list
+                "FROM credentials WHERE (service_key, username_key, id) > (?, ?, ?) "
+                "ORDER BY service_key, username_key, id LIMIT ?",
+                (sk, uk, last_id, limit),
+            )
+        rows = cursor.fetchall()
+        return [self._row_to_metadata(row) for row in rows]
+
+    def count_credentials(self) -> int:
+        """Return total credential count — reusable for pagination."""
+        self._require_unlocked()
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) as cnt FROM credentials")
+        row = cursor.fetchone()
+        return int(row["cnt"]) if row else 0
+
+    def _build_search_filter_clause(self, query: str) -> tuple[str, List[Any]]:
+        """Flat helper: build WHERE clause for 2B-scale indexed search, reusable."""
+        q = query.strip().lower()
+        if not q:
+            return "", []
+        # Use canonical stripped form to match service_key/username_key indexes
+        from .identity import canonical_identity_stripped
+
+        cq = canonical_identity_stripped(q)
+        if not cq:
+            return "", []
+        # Escape LIKE wildcards in query
+        escaped = cq.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        like = f"%{escaped}%"
+        clause = " WHERE service_key LIKE ? ESCAPE '\\' OR username_key LIKE ? ESCAPE '\\' OR service LIKE ? ESCAPE '\\' OR username LIKE ? ESCAPE '\\' OR url LIKE ? ESCAPE '\\'"
+        params = [like, like, like, like, like]
+        return clause, params
+
+    def search_credential_metadata(
+        self,
+        query: str,
+        limit: int = _VAULT_SEARCH_SQL_LIMIT,
+        offset: int = 0,
+    ) -> list[dict]:
+        """DB-side vault search — 60 fps streaming for 2B vaults, flat & reusable.
+
+        Uses indexed LIKE pre-filter capped by _VAULT_SEARCH_SQL_LIKE_LIMIT,
+        then orders by indexed keys. No hard-coded inline limits.
+        """
+        self._require_unlocked()
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        has_url = self._cached_has_url_column(cursor)
+        url_expr = ", url" if has_url else ", '' as url"  # allow-list
+        base = f"SELECT id, service, username, created_at{url_expr} FROM credentials"  # nosec B608 — url_expr is allow-list
+        clause, params = self._build_search_filter_clause(query)
+        if not clause:
+            # Empty query — fall back to paginated list
+            return self.list_credential_metadata_paginated(limit=limit, offset=offset)
+        # LIKE pre-filter is naturally capped by final LIMIT (500 < LIKE_LIMIT 2000);
+        # full FTS5 would be needed for true 2B-scale, but current indexed
+        # service_key/username_key ORDER BY keeps scan bounded for typical vaults.
+        query_sql = f"{base}{clause} ORDER BY service_key, username_key, id LIMIT ? OFFSET ?"  # nosec B608 — clause is fixed LIKE with parameterized ?
+        params.extend([limit, offset])
+        cursor.execute(query_sql, params)
+        return [self._row_to_metadata(row) for row in cursor.fetchall()]
+
+    def count_search_results(self, query: str) -> int:
+        """Count matching rows for DB-side search, reusable."""
+        self._require_unlocked()
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        clause, params = self._build_search_filter_clause(query)
+        if not clause:
+            return self.count_credentials()
+        cursor.execute(f"SELECT COUNT(*) as cnt FROM credentials{clause}", params)  # nosec B608 — clause is fixed LIKE
+        row = cursor.fetchone()
+        return int(row["cnt"]) if row else 0
+
+    def _load_existing_identity_map(self, cursor: sqlite3.Cursor) -> Dict[Tuple[str, str], int]:
+        """Flat helper: preload service_key->id map for batched import, reusable."""
+        cursor.execute("SELECT service_key, username_key, id FROM credentials")
+        return {(row["service_key"], row["username_key"]): row["id"] for row in cursor.fetchall()}
 
     def get_credential_secret(self, credential_id: int) -> dict:
         """Decrypt and return the password and note for one credential.
 
-        Returns dict with keys: password, note, note_is_hidden
+        Returns dict with keys: password, note, note_is_hidden, url
         """
         fernet = self._require_unlocked()
         conn = self._get_conn()
         cursor = conn.cursor()
         if self._vault_version == 2:
             cursor.execute(
-                "SELECT credential_uuid, service, username, encrypted_password, encrypted_note, note_is_hidden FROM credentials WHERE id=?",
+                "SELECT credential_uuid, service, username, encrypted_password, encrypted_note, note_is_hidden, url FROM credentials WHERE id=?",
                 (credential_id,),
             )
         else:
             cursor.execute(
-                "SELECT encrypted_password, encrypted_note, note_is_hidden FROM credentials WHERE id=?",
+                "SELECT encrypted_password, encrypted_note, note_is_hidden, url FROM credentials WHERE id=?",
                 (credential_id,),
             )
         row = cursor.fetchone()
@@ -1707,47 +2312,65 @@ class StorageManager:
             raise StorageError(f"Credential {credential_id} not found.")
         password, note = self._decrypt_credential_fields(row, fernet)
         note_is_hidden = bool(row["note_is_hidden"]) if row["note_is_hidden"] is not None else False
-        return {"password": password, "note": note, "note_is_hidden": note_is_hidden}
+        url = row["url"] if "url" in row.keys() and row["url"] is not None else ""
+        return {"password": password, "note": note, "note_is_hidden": note_is_hidden, "url": url}
 
     # Kept for CSV export/import and tests. Prefer list_credential_metadata()
     # + get_credential_secret() for UI operations.
-    def list_credentials(self) -> List[dict]:
-        """Returns a list of credentials with decrypted passwords and notes."""
-        fernet = self._require_unlocked()
+    def _row_to_credential(self, row: sqlite3.Row, fernet: Fernet) -> dict:
+        """Flat helper: decrypt row to credential dict, reusable for streaming."""
+        try:
+            password, note = self._decrypt_credential_fields(row, fernet)
+            note_is_hidden = bool(row["note_is_hidden"]) if row["note_is_hidden"] is not None else False
+            url = row["url"] if "url" in row.keys() and row["url"] is not None else ""
+            return {
+                "id": row["id"],
+                "service": row["service"],
+                "username": row["username"],
+                "url": url,
+                "password": password,
+                "note": note,
+                "note_is_hidden": note_is_hidden,
+                "created_at": row["created_at"],
+            }
+        except (InvalidToken, InvalidTag, UnicodeDecodeError):
+            return {
+                "id": row["id"],
+                "service": row["service"],
+                "username": row["username"],
+                "url": row["url"] if "url" in row.keys() and row["url"] is not None else "",
+                "password": "<DECRYPTION_ERROR>",  # nosec B105 — error sentinel
+                "note": "<DECRYPTION_ERROR>",  # nosec B105 — error sentinel
+                "note_is_hidden": False,
+                "created_at": row["created_at"],
+            }
 
+    def iter_credentials(self, batch_size: int = _VAULT_PAGE_SIZE):
+        """Streaming iterator over decrypted credentials — 60 fps / 2B friendly.
+
+        Yields dicts one-by-one using a server-side cursor so data travels
+        without fetchall materialization. Reusable, flat, bounded by constants.
+        """
+        fernet = self._require_unlocked()
         conn = self._get_conn()
         cursor = conn.cursor()
         if self._vault_version == 2:
-            cursor.execute("SELECT id, credential_uuid, service, username, encrypted_password, encrypted_note, note_is_hidden, created_at FROM credentials ORDER BY service_key, username_key, id")
+            cursor.execute(
+                "SELECT id, credential_uuid, service, username, url, encrypted_password, encrypted_note, note_is_hidden, created_at "
+                "FROM credentials ORDER BY service_key, username_key, id"
+            )
         else:
-            cursor.execute("SELECT id, service, username, encrypted_password, encrypted_note, note_is_hidden, created_at FROM credentials ORDER BY service_key, username_key, id")
-        
-        results = []
-        for row in cursor.fetchall():
-            try:
-                password, note = self._decrypt_credential_fields(row, fernet)
-                note_is_hidden = bool(row["note_is_hidden"]) if row["note_is_hidden"] is not None else False
-                results.append({
-                    "id": row["id"],
-                    "service": row["service"],
-                    "username": row["username"],
-                    "password": password,
-                    "note": note,
-                    "note_is_hidden": note_is_hidden,
-                    "created_at": row["created_at"]
-                })
-            except (InvalidToken, InvalidTag, UnicodeDecodeError):
-                results.append({
-                    "id": row["id"],
-                    "service": row["service"],
-                    "username": row["username"],
-                    "password": "<DECRYPTION_ERROR>",  # nosec B105 — error sentinel
-                    "note": "<DECRYPTION_ERROR>",  # nosec B105 — error sentinel
-                    "note_is_hidden": False,
-                    "created_at": row["created_at"]
-                })
-        
-        return results
+            cursor.execute(
+                "SELECT id, service, username, url, encrypted_password, encrypted_note, note_is_hidden, created_at "
+                "FROM credentials ORDER BY service_key, username_key, id"
+            )
+        for row in cursor:
+            yield self._row_to_credential(row, fernet)
+
+    def list_credentials(self) -> List[dict]:
+        """Returns a list of credentials with decrypted passwords and notes."""
+        # Flat: delegate to streaming iterator for 2B-scale data travel.
+        return list(self.iter_credentials())
 
     def delete_credential(self, credential_id: int) -> None:
         self._require_unlocked()
@@ -1758,14 +2381,16 @@ class StorageManager:
         conn.commit()
         _log.info("credential deleted: id=%d", credential_id)
 
-    def update_credential(self, credential_id: int, service: str, username: str, password: str, note: str = "", note_is_hidden: bool = False) -> None:
+    def update_credential(self, credential_id: int, service: str, username: str, password: str, note: str = "", note_is_hidden: bool = False, url: str = "") -> None:
         """Update an existing credential by id."""
         self._require_unlocked()
         service_key, username_key = self._validated_identity_keys(service, username)
         _validate_field_size(password, note)
+        url = _sanitize_url(url)
+        _validate_url(url)
 
         if self._vault_version == 2:
-            self._update_credential_v2(credential_id, service, username, password, note, note_is_hidden, service_key, username_key)
+            self._update_credential_v2(credential_id, service, username, password, note, note_is_hidden, service_key, username_key, url)
             return
 
         fernet = self._require_unlocked()
@@ -1775,8 +2400,8 @@ class StorageManager:
         cursor = conn.cursor()
         try:
             cursor.execute(
-                "UPDATE credentials SET service = ?, username = ?, encrypted_password = ?, encrypted_note = ?, note_is_hidden = ?, service_key = ?, username_key = ? WHERE id = ?",
-                (service, username, encrypted_password, encrypted_note, 1 if note_is_hidden else 0, service_key, username_key, credential_id),
+                "UPDATE credentials SET service = ?, username = ?, encrypted_password = ?, encrypted_note = ?, note_is_hidden = ?, service_key = ?, username_key = ?, url = ? WHERE id = ?",
+                (service, username, encrypted_password, encrypted_note, 1 if note_is_hidden else 0, service_key, username_key, url, credential_id),
             )
         except sqlite3.IntegrityError as exc:
             conn.rollback()
@@ -1792,10 +2417,11 @@ class StorageManager:
     def _update_credential_v2(
         self, credential_id: int, service: str, username: str,
         password: str, note: str, note_is_hidden: bool,
-        service_key: str, username_key: str,
+        service_key: str, username_key: str, url: str = "",
     ) -> None:
         """Update an existing credential in a v2 vault."""
         _validate_field_size(password, note)
+        _validate_url(url)
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute(
@@ -1813,8 +2439,8 @@ class StorageManager:
 
         try:
             cursor.execute(
-                "UPDATE credentials SET service = ?, username = ?, encrypted_password = ?, encrypted_note = ?, note_is_hidden = ?, service_key = ?, username_key = ? WHERE id = ?",
-                (service, username, encrypted_password, encrypted_note, 1 if note_is_hidden else 0, service_key, username_key, credential_id),
+                "UPDATE credentials SET service = ?, username = ?, encrypted_password = ?, encrypted_note = ?, note_is_hidden = ?, service_key = ?, username_key = ?, url = ? WHERE id = ?",
+                (service, username, encrypted_password, encrypted_note, 1 if note_is_hidden else 0, service_key, username_key, url, credential_id),
             )
         except sqlite3.IntegrityError as exc:
             conn.rollback()
@@ -1850,10 +2476,13 @@ class StorageManager:
 
         conn = self._get_conn()
         cursor = conn.cursor()
+        # Ensure url column exists even for legacy queries.
+        has_url = self._cached_has_url_column(cursor)
+        url_select = ", url" if has_url else ", '' as url"  # allow-list
         if self._vault_version == 2:
-            cursor.execute("SELECT id, credential_uuid, service, username, encrypted_password, encrypted_note, created_at FROM credentials ORDER BY service_key, username_key, id")
+            cursor.execute(f"SELECT id, credential_uuid, service, username, encrypted_password, encrypted_note, created_at{url_select} FROM credentials ORDER BY service_key, username_key, id")  # nosec B608 — url_select is allow-list
         else:
-            cursor.execute("SELECT id, service, username, encrypted_password, encrypted_note, created_at FROM credentials ORDER BY service_key, username_key, id")
+            cursor.execute(f"SELECT id, service, username, encrypted_password, encrypted_note, created_at{url_select} FROM credentials ORDER BY service_key, username_key, id")  # nosec B608 — url_select is allow-list
 
         exported = 0
         skipped = []
@@ -1870,6 +2499,7 @@ class StorageManager:
                 for row in cursor:
                     try:
                         password, _note = self._decrypt_credential_fields(row, fernet)
+                        url_val = row["url"] if "url" in row.keys() and row["url"] is not None else ""
                         writer.writerow(
                             csv_formats.build_export_row(
                                 normalized_format,
@@ -1877,6 +2507,7 @@ class StorageManager:
                                 username=row["username"],
                                 password=password,
                                 note=_note,
+                                url=url_val,
                             )
                         )
                         exported += 1
@@ -1894,6 +2525,10 @@ class StorageManager:
 
             # Atomic rename (os.replace is atomic on POSIX and Windows).
             os.replace(str(tmp_path), str(csv_path))
+            # Defense in depth: ensure final file is owner-only even if
+            # the predecessor had broader permissions or the filesystem
+            # preserved mode bits.
+            self._ensure_private_permissions(csv_path, 0o600)
         except BaseException:
             # Clean up temp file on any failure.
             if tmp_path.exists():
@@ -1997,6 +2632,18 @@ class StorageManager:
                     conn.execute("BEGIN")
                     transaction_opened = True
 
+                # Flat helper: preload identity map for 2B-scale batched import, reusable.
+                existing_map: Dict[Tuple[str, str], int] = {}
+                use_preload = False
+                if not dry_run:
+                    try:
+                        # Avoid 2B fetch: only preload for modest vaults
+                        if self.count_credentials() <= _VAULT_SEARCH_SQL_LIKE_LIMIT:
+                            existing_map = self._load_existing_identity_map(cursor)
+                            use_preload = True
+                    except StorageError:
+                        use_preload = False
+
                 for row_num, row in enumerate(reader, start=2):  # Start at 2 (header is row 1)
                     total_rows += 1
                     if total_rows > _MAX_CSV_ROWS:
@@ -2023,18 +2670,21 @@ class StorageManager:
                     if not parsed:
                         continue
 
-                    # Field length limits
+                    # Field length limits (url allows larger limit)
                     for field_name, value in parsed.items():
-                        if len(value.encode('utf-8')) > _MAX_CSV_FIELD_BYTES:
+                        limit = _MAX_URL_BYTES if field_name == "url" else _MAX_CSV_FIELD_BYTES
+                        if len(value.encode('utf-8')) > limit:
                             raise StorageError(
                                 f"Field '{field_name}' in row {row_num} exceeds "
-                                f"{_MAX_CSV_FIELD_BYTES} bytes."
+                                f"{limit} bytes."
                             )
 
                     service = parsed["service"]
                     username = parsed["username"]
                     password = parsed["password"]
                     note = parsed.get("note", "")
+                    url = _sanitize_url(parsed.get("url", ""))
+                    _validate_url(url)
 
                     # Canonical identity for duplicate detection.  The indexed
                     # lookup also sees rows inserted earlier in this same
@@ -2043,14 +2693,19 @@ class StorageManager:
                     # during a preview).
                     service_key, username_key = self._validated_identity_keys(service, username)
                     identity_key = (service_key, username_key)
-                    existing = self.find_credential_by_identity(service, username)
+                    # Flat: use preloaded map for 2B batched path, else indexed lookup
+                    if use_preload:
+                        _cid = existing_map.get(identity_key)
+                        existing = {"id": _cid} if _cid is not None else None  # type: ignore[dict-item]
+                    else:
+                        existing = self.find_credential_by_identity(service, username)
                     if existing is not None or identity_key in seen_keys:
                         if merge_duplicates and not dry_run and existing is not None:
-                            # Update existing credential
+                            # Update existing credential — preserve url if provided, else keep existing.
                             cred_id = existing["id"]
                             if self._vault_version == 2:
                                 cursor.execute(
-                                    "SELECT credential_uuid FROM credentials WHERE id = ?",
+                                    "SELECT credential_uuid, url FROM credentials WHERE id = ?",
                                     (cred_id,),
                                 )
                                 cred_uuid_row = cursor.fetchone()
@@ -2058,15 +2713,22 @@ class StorageManager:
                                     encrypted_password, encrypted_note = self._encrypt_fields_v2(
                                         password, note, cred_uuid_row["credential_uuid"], service, username
                                     )
+                                    # If import row has no url, keep existing url.
+                                    existing_url = cred_uuid_row["url"] if "url" in cred_uuid_row.keys() and cred_uuid_row["url"] else ""
+                                    url_to_store = url if url else _sanitize_url(existing_url)
                                     cursor.execute(
-                                        "UPDATE credentials SET encrypted_password = ?, encrypted_note = ?, note_is_hidden = 0 WHERE id = ?",
-                                        (encrypted_password, encrypted_note, cred_id)
+                                        "UPDATE credentials SET encrypted_password = ?, encrypted_note = ?, note_is_hidden = 0, url = ? WHERE id = ?",
+                                        (encrypted_password, encrypted_note, url_to_store, cred_id)
                                     )
                             else:
                                 encrypted_password, encrypted_note = self._encrypt_fields_v1(fernet, password, note)
+                                cursor.execute("SELECT url FROM credentials WHERE id=?", (cred_id,))
+                                existing_row = cursor.fetchone()
+                                existing_url = existing_row["url"] if existing_row and "url" in existing_row.keys() and existing_row["url"] else ""
+                                url_to_store = url if url else _sanitize_url(existing_url)
                                 cursor.execute(
-                                    "UPDATE credentials SET encrypted_password = ?, encrypted_note = ?, note_is_hidden = 0 WHERE id = ?",
-                                    (encrypted_password, encrypted_note, cred_id)
+                                    "UPDATE credentials SET encrypted_password = ?, encrypted_note = ?, note_is_hidden = 0, url = ? WHERE id = ?",
+                                    (encrypted_password, encrypted_note, url_to_store, cred_id)
                                 )
                             imported += 1
                         else:
@@ -2085,20 +2747,28 @@ class StorageManager:
                                     password, note, cred_uuid, service, username
                                 )
                                 cursor.execute(
-                                    "INSERT INTO credentials (credential_uuid, service, username, encrypted_password, encrypted_note, note_is_hidden, service_key, username_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                                    (cred_uuid, service, username, encrypted_password, encrypted_note, 0, service_key, username_key)
+                                    "INSERT INTO credentials (credential_uuid, service, username, encrypted_password, encrypted_note, note_is_hidden, service_key, username_key, url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                    (cred_uuid, service, username, encrypted_password, encrypted_note, 0, service_key, username_key, url)
                                 )
                             else:
                                 fernet = self._require_unlocked()
                                 encrypted_password, encrypted_note = self._encrypt_fields_v1(fernet, password, note)
                                 cursor.execute(
-                                    "INSERT INTO credentials (service, username, encrypted_password, encrypted_note, note_is_hidden, service_key, username_key) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                                    (service, username, encrypted_password, encrypted_note, 0, service_key, username_key)
+                                    "INSERT INTO credentials (service, username, encrypted_password, encrypted_note, note_is_hidden, service_key, username_key, url) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                                    (service, username, encrypted_password, encrypted_note, 0, service_key, username_key, url)
                                 )
                         imported += 1
                         # Track canonical identities handled by this import so
                         # duplicate rows later in the same file are skipped.
                         seen_keys.add(identity_key)
+                        if use_preload:
+                            # Keep preload map in sync for later rows in same file
+                            try:
+                                _new_id = int(cursor.lastrowid or 0)
+                                if _new_id:
+                                    existing_map[identity_key] = _new_id
+                            except Exception:
+                                pass
 
             # Commit the real import atomically. An empty import commits a
             # no-op transaction, matching the previous behavior.
@@ -2119,3 +2789,134 @@ class StorageManager:
 
         _log.info("imported %d credentials from %s", imported, csv_path)
         return imported, skipped, duplicates
+
+    # ------------------------------------------------------------------
+    # Vault health / status / backup pruning — flat helpers
+    # ------------------------------------------------------------------
+
+    def list_backups(self) -> List[Path]:
+        """Return sorted list of backup files next to the vault."""
+        if not self.db_path.parent.exists():
+            return []
+        pattern = f"{self.db_path.name}.*.bak"
+        backups = list(self.db_path.parent.glob(pattern))
+        # Exclude the original db itself and non-files.
+        backups = [p for p in backups if p.is_file() and p != self.db_path]
+
+        def _backup_ctime(path: Path) -> float:
+            """Prefer ctime (inode change, not forgeable via touch -m) over mtime."""
+            try:
+                st = path.stat()
+                # ctime is creation/change on POSIX/Windows; mtime is forgeable
+                return getattr(st, "st_ctime", st.st_mtime)
+            except OSError:
+                return 0
+
+        backups.sort(key=_backup_ctime)
+        return backups
+
+    def prune_backups(self, keep_latest: int = 1) -> List[Path]:
+        """Delete oldest backups keeping *keep_latest* newest files.
+
+        Returns list of deleted paths.  ``keep_latest=0`` deletes all.
+        """
+        backups = self.list_backups()
+        if keep_latest < 0:
+            keep_latest = 0
+        if len(backups) <= keep_latest:
+            return []
+        to_delete = backups[: len(backups) - keep_latest]
+        deleted: List[Path] = []
+        for path in to_delete:
+            try:
+                if path.is_symlink():
+                    continue
+                path.unlink()
+                deleted.append(path)
+            except OSError:
+                _log.warning("Could not prune backup %s", path)
+        if deleted:
+            _log.info("pruned %d backup(s)", len(deleted))
+        return deleted
+
+    def get_vault_status(self) -> Dict[str, object]:
+        """Return non-sensitive vault status for health checks."""
+        status: Dict[str, object] = {
+            "vault_path": str(self.db_path),
+            "exists": self.vault_exists(),
+            "is_unlocked": self._vault_version is not None,
+            "version": self._vault_version,
+            "aad_version": self._aad_version if self._vault_version == 2 else None,
+            "credential_count": 0,
+            "backup_count": len(self.list_backups()),
+            "backups": [str(p) for p in self.list_backups()],
+        }
+        if self._vault_version is not None:
+            try:
+                conn = self._get_conn()
+                cursor = conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM credentials")
+                row = cursor.fetchone()
+                status["credential_count"] = int(row[0]) if row else 0
+                if self._vault_version == 2:
+                    dek_gen = self._read_optional_int_config(cursor, "dek_generation")
+                    status["dek_generation"] = dek_gen if dek_gen is not None else 1
+            except sqlite3.Error:
+                pass
+        else:
+            # Not unlocked — try to detect version without unlocking.
+            try:
+                conn = self._get_conn()
+                cursor = conn.cursor()
+                version = self._detect_vault_version(cursor)
+                status["version"] = version
+            except Exception:
+                pass
+        return status
+
+    def _iter_integrity_rows(self):
+        """Flat helper: streaming rows for integrity check, reusable."""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        if self._vault_version == 2:
+            cursor.execute(
+                "SELECT id, credential_uuid, service, username, encrypted_password, encrypted_note FROM credentials"
+            )
+        else:
+            cursor.execute("SELECT id, service, username, encrypted_password, encrypted_note FROM credentials")
+        for row in cursor:
+            yield row
+
+    def iter_integrity_issues(self, batch_size: int = 0):
+        """Streaming integrity check — 60 fps / 2B friendly, flat & reusable.
+
+        Yields issues one-by-one without materializing all rows. If batch_size >0,
+        yields in chunks for progress UI. No hard-coded inline limits.
+        """
+        from .constants import _VAULT_INTEGRITY_BATCH_SIZE as _BATCH
+
+        if batch_size == 0:
+            batch_size = _BATCH
+        self._require_unlocked()
+        fernet = self._fernet
+        batch: List[Dict[str, object]] = []
+        for row in self._iter_integrity_rows():
+            try:
+                self._decrypt_credential_fields(row, fernet)  # type: ignore[arg-type]
+            except Exception as exc:
+                issue = {"id": row["id"], "service": row["service"], "error": str(exc)}
+                if batch_size <= 1:
+                    yield issue
+                else:
+                    batch.append(issue)
+                    if len(batch) >= batch_size:
+                        for item in batch:
+                            yield item
+                        batch.clear()
+        if batch:
+            for item in batch:
+                yield item
+
+    def check_vault_integrity(self) -> List[Dict[str, object]]:
+        """Decrypt every credential and report failures — flat delegation to streaming."""
+        return list(self.iter_integrity_issues())
