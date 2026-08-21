@@ -1,0 +1,4 @@
+# Windows CI dependencies for Generate-It
+# Extends ci.in with windows-curses for Windows platform support.
+-r ci.in
+windows-curses
