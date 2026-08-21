@@ -47,7 +47,7 @@ HEADER_SMALL = ["Generate It"]
 _PIXEL_BANNER_CACHE: dict[str, list[str]] = {}
 _HEADER_LINES_CACHE: dict[int, list[str]] = {}
 _OUTPUT_WRAP_CACHE: dict[tuple[str, int], list[str]] = {}
-_ENTROPY_CACHE: dict[tuple[str, int, bool, bool, bool, int, str, int, bool], tuple[float, str, str]] = {}
+_ENTROPY_CACHE: dict[tuple[str, int, bool, bool, bool, int, bool, bool, int], tuple[float, str, str]] = {}
 _MAX_BITS_CACHE: dict[int, float] = {}
 
 # A compact 5-row pixel font (only the glyphs we need).
@@ -494,7 +494,7 @@ def _render_settings_box(
 ) -> None:
     if state.mode == "vault":
         # Vault mode renders its own full-height panel, so settings box might be unused or reused.
-        # We will handle this in the main loop by hiding settings/actions/output/info 
+        # We will handle this in the main loop by hiding settings/actions/output/info
         # and showing a big vault box instead.
         return
 
@@ -718,7 +718,7 @@ def _render_vault_box(
 ) -> None:
     """Renders the full-screen vault list."""
     _draw_box(stdscr, y, x, h, w, title="VAULT", border_attr=theme.border, title_attr=theme.title)
-    
+
     if not state.vault_unlocked:
         msg = "Vault is locked."
         _addstr_safe(stdscr, y + h//2, x + (w-len(msg))//2, msg, theme.warn)
@@ -728,13 +728,13 @@ def _render_vault_box(
     inner_h = max(0, h - 2)
     list_x = x + 2
     list_y = y + 1
-    
+
     # Headers
     headers = f"{'Service':<20} {'Username':<20}"
     _addstr_safe(stdscr, list_y, list_x, headers[:inner_w], theme.dim | curses.A_UNDERLINE)
     list_y += 1
     inner_h -= 1
-    
+
     if not state.vault_credentials:
         _addstr_safe(stdscr, list_y + 1, list_x, "No credentials saved yet.", theme.dim)
         return
@@ -742,26 +742,26 @@ def _render_vault_box(
     # Scrolling logic
     visible_count = inner_h
     total_count = len(state.vault_credentials)
-    
+
     # Ensure selection is visible
     if state.vault_selected_idx < state.vault_scroll_y:
         state.vault_scroll_y = state.vault_selected_idx
     elif state.vault_selected_idx >= state.vault_scroll_y + visible_count:
         state.vault_scroll_y = state.vault_selected_idx - visible_count + 1
-        
+
     start_idx = state.vault_scroll_y
     end_idx = min(total_count, start_idx + visible_count)
-    
+
     for i in range(start_idx, end_idx):
         cred = state.vault_credentials[i]
         is_selected = (i == state.vault_selected_idx) and (focus_id == "vault_list")
-        
+
         attr = theme.focus if is_selected else 0
-        
+
         # Format row
         s_serv = cred['service']
         s_user = cred['username']
-        
+
         row_str = f"{s_serv:<20} {s_user:<20}"
         _addstr_safe(stdscr, list_y + (i - start_idx), list_x, row_str[:inner_w], attr)
 
@@ -899,7 +899,7 @@ def _render_info_box(
             state.add_special,
             wordlist_size,
         )
-        cached = _ENTROPY_CACHE.get(cache_key)  # type: ignore[arg-type]
+        cached = _ENTROPY_CACHE.get(cache_key)
         if cached is not None:
             bits, label, kind = cached
         else:
@@ -908,7 +908,7 @@ def _render_info_box(
             if len(_ENTROPY_CACHE) >= TUI_ENTROPY_CACHE_SIZE:
                 oldest = next(iter(_ENTROPY_CACHE))
                 del _ENTROPY_CACHE[oldest]
-            _ENTROPY_CACHE[cache_key] = (bits, label, kind)  # type: ignore[arg-type]
+            _ENTROPY_CACHE[cache_key] = (bits, label, kind)
 
         if kind == "bad":
             kind_attr = theme.bad

@@ -295,7 +295,7 @@ def _try_unlock_vault(
         return False
     finally:
         try:
-            pwd = "\x00" * len(pwd)  # type: ignore[assignment]
+            pwd = "\x00" * len(pwd)
         except Exception:
             pass
         try:
@@ -394,7 +394,7 @@ def _prompt_unlock_vault(
             delattr(state, _UNLOCK_CANCELLED_FLAG)
             # Minimize lifetime of plaintext master password.
             try:
-                pwd = "\x00" * len(pwd)  # type: ignore[assignment]
+                pwd = "\x00" * len(pwd)
             except Exception:
                 pass
             try:
@@ -459,7 +459,7 @@ def prompt_change_master_password(
         state.message = "Password change cancelled."
         # Clear current promptly even on cancel.
         try:
-            current = "\x00" * len(current)  # type: ignore[assignment]
+            current = "\x00" * len(current)
         except Exception:
             pass
         try:
@@ -472,15 +472,15 @@ def prompt_change_master_password(
         tui_modal._run_modal(stdscr, theme, "ERROR", "New passwords do not match.")
         state.message = "Password change failed: mismatch."
         try:
-            current = "\x00" * len(current)  # type: ignore[assignment]
+            current = "\x00" * len(current)
         except Exception:
             pass
         try:
-            new_pass = "\x00" * len(new_pass)  # type: ignore[assignment]
+            new_pass = "\x00" * len(new_pass)
         except Exception:
             pass
         try:
-            confirm = "\x00" * len(confirm)  # type: ignore[assignment]
+            confirm = "\x00" * len(confirm)
         except Exception:
             pass
         try:
@@ -492,15 +492,15 @@ def prompt_change_master_password(
         _execute_password_change(stdscr, theme, state, current, new_pass)
     finally:
         try:
-            current = "\x00" * len(current)  # type: ignore[assignment]
+            current = "\x00" * len(current)
         except Exception:
             pass
         try:
-            new_pass = "\x00" * len(new_pass)  # type: ignore[assignment]
+            new_pass = "\x00" * len(new_pass)
         except Exception:
             pass
         try:
-            confirm = "\x00" * len(confirm)  # type: ignore[assignment]
+            confirm = "\x00" * len(confirm)
         except Exception:
             pass
         try:
@@ -531,8 +531,8 @@ def _execute_password_change(
         # Ensure caller's references are not retained beyond this scope;
         # actual wiping is done by caller, but clear local copies too.
         try:
-            current = "\x00" * len(current)  # type: ignore[assignment]
-            new_pass = "\x00" * len(new_pass)  # type: ignore[assignment]
+            current = "\x00" * len(current)
+            new_pass = "\x00" * len(new_pass)
         except Exception:
             pass
 
@@ -571,7 +571,7 @@ def prompt_rotate_dek(
         state.message = "DEK rotated."
     finally:
         try:
-            current = "\x00" * len(current)  # type: ignore[assignment]
+            current = "\x00" * len(current)
         except Exception:
             pass
         try:

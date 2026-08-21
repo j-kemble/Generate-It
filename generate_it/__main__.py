@@ -78,7 +78,7 @@ def _run_check_integrity(args: argparse.Namespace) -> int:
     finally:
         # Minimize lifetime of plaintext master password.
         try:
-            password = "\x00" * len(password)  # type: ignore[assignment]
+            password = "\x00" * len(password)
         except Exception:
             pass
         try:
@@ -108,15 +108,15 @@ def _run_change_password_cli(args: argparse.Namespace) -> int:
         # Clear promptly even on mismatch — overwrite each variable explicitly
         # (loop variable rebinding would not affect the originals).
         try:
-            current = "\x00" * len(current)  # type: ignore[assignment]
+            current = "\x00" * len(current)
         except Exception:
             pass
         try:
-            new_one = "\x00" * len(new_one)  # type: ignore[assignment]
+            new_one = "\x00" * len(new_one)
         except Exception:
             pass
         try:
-            confirm = "\x00" * len(confirm)  # type: ignore[assignment]
+            confirm = "\x00" * len(confirm)
         except Exception:
             pass
         try:
@@ -136,15 +136,15 @@ def _run_change_password_cli(args: argparse.Namespace) -> int:
         return 1
     finally:
         try:
-            current = "\x00" * len(current)  # type: ignore[assignment]
+            current = "\x00" * len(current)
         except Exception:
             pass
         try:
-            new_one = "\x00" * len(new_one)  # type: ignore[assignment]
+            new_one = "\x00" * len(new_one)
         except Exception:
             pass
         try:
-            confirm = "\x00" * len(confirm)  # type: ignore[assignment]
+            confirm = "\x00" * len(confirm)
         except Exception:
             pass
         try:

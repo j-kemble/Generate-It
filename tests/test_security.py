@@ -292,7 +292,7 @@ class TestWeakPatternResistance:
 
     def test_no_sequential_characters(self) -> None:
         """Check that sequential characters are rare (not completely eliminated).
-        
+
         Note: Truly random passwords CAN contain sequential characters by chance.
         This test verifies they are rare (<10% of passwords), not impossible.
         """
@@ -324,7 +324,7 @@ class TestWeakPatternResistance:
 
     def test_no_repeated_character_sequences(self) -> None:
         """Check that 3+ repeated characters are rare (not completely eliminated).
-        
+
         Note: Truly random passwords CAN contain repeated characters by chance.
         This test verifies they are rare (<5% of passwords), not impossible.
         """

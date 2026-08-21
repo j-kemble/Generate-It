@@ -137,16 +137,16 @@ def test_get_export_headers() -> None:
     assert "username" in generic_headers
     assert "password" in generic_headers
     assert "note" in generic_headers
-    
+
     bitwarden_headers = csv_formats.get_export_headers("bitwarden")
     assert "name" in bitwarden_headers
     assert "login_username" in bitwarden_headers
     assert "login_password" in bitwarden_headers
-    
+
     apple_headers = csv_formats.get_export_headers("apple")
     assert "Title" in apple_headers
     assert "Username" in apple_headers
-    
+
     nordpass_headers = csv_formats.get_export_headers("nordpass")
     assert "name" in nordpass_headers
     assert "username" in nordpass_headers
@@ -163,7 +163,7 @@ def test_build_export_row() -> None:
     assert row[0] == "GitHub"
     assert row[3] == "secret123"
     assert row[4] == "My note"
-    
+
     bw_row = csv_formats.build_export_row(
         "bitwarden",
         service="GitHub",
@@ -194,7 +194,7 @@ def test_parse_import_row_all_formats() -> None:
     )
     assert parsed is not None
     assert parsed["note"] == "test note"
-    
+
     parsed, issue = csv_formats.parse_import_row(
         {"title": "Test", "username": "user", "password": "pass"},
         import_format="apple",
@@ -202,7 +202,7 @@ def test_parse_import_row_all_formats() -> None:
     )
     assert parsed is not None
     assert parsed["service"] == "Test"
-    
+
     parsed, issue = csv_formats.parse_import_row(
         {"name": "Test", "username": "user", "password": "pass", "notes": "nordpass note"},
         import_format="nordpass",

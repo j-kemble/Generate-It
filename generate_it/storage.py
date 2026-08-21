@@ -208,7 +208,7 @@ class StorageManager:
             self.data_dir.mkdir(parents=True, exist_ok=True)
             self._ensure_private_permissions(self.data_dir, 0o700)
             self.db_path = self.data_dir / "vault.db"
-        
+
         self._fernet: Optional[Fernet] = None
         self._db_connection: Optional[sqlite3.Connection] = None
 
@@ -511,13 +511,13 @@ class StorageManager:
         salt = os.urandom(_DEFAULT_SALT_LENGTH)
         key = self._derive_key(master_password, salt, _DEFAULT_PBKDF2_ITERATIONS)
         fernet = Fernet(key)
-        
+
         # Encrypt a known value to verify password later
         verification_token = fernet.encrypt(b"VERIFICATION_TOKEN")
 
         conn = self._get_conn()
         cursor = conn.cursor()
-        
+
         # Create tables
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS config (
@@ -525,7 +525,7 @@ class StorageManager:
                 value BLOB
             )
         """)
-        
+
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS credentials (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -560,7 +560,7 @@ class StorageManager:
         cursor.execute("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", ("pbkdf2_iterations", str(_DEFAULT_PBKDF2_ITERATIONS)))
         cursor.execute("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", ("salt_length", str(_DEFAULT_SALT_LENGTH)))
         cursor.execute("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", ("identity_schema_version", str(_IDENTITY_SCHEMA_VERSION)))
-        
+
         conn.commit()
 
         # Defense in depth: ensure the file is owner-only after creation.
@@ -574,7 +574,7 @@ class StorageManager:
     def vault_exists(self) -> bool:
         if not self.db_path.exists():
             return False
-        
+
         try:
             conn = self._get_conn()
             cursor = conn.cursor()
@@ -609,11 +609,11 @@ class StorageManager:
             )
 
         # ── v1 unlock ────────────────────────────────────────────────
-        
+
         try:
             cursor.execute("SELECT value FROM config WHERE key=?", ("salt",))
             salt = cursor.fetchone()["value"]
-            
+
             cursor.execute("SELECT value FROM config WHERE key=?", ("verification",))
             verification_token = cursor.fetchone()["value"]
         except TypeError:
@@ -655,9 +655,9 @@ class StorageManager:
                 stored_iters, _DEFAULT_PBKDF2_ITERATIONS,
             )
             # Expose via attribute so UI can prompt upgrade.
-            self._legacy_pbkdf2_needs_upgrade = True  # type: ignore[attr-defined]
+            self._legacy_pbkdf2_needs_upgrade = True
         else:
-            self._legacy_pbkdf2_needs_upgrade = False  # type: ignore[attr-defined]
+            self._legacy_pbkdf2_needs_upgrade = False
         self._ensure_identity_schema()
         _log.info("vault unlocked")
 
@@ -2390,7 +2390,7 @@ class StorageManager:
 
     def delete_credential(self, credential_id: int) -> None:
         self._require_unlocked()
-            
+
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute("DELETE FROM credentials WHERE id = ?", (credential_id,))
@@ -2472,7 +2472,7 @@ class StorageManager:
         export_format: str = "generic",
     ) -> Tuple[int, List[Dict[str, str]]]:
         """Export credentials to CSV file in provider-compatible format.
-        
+
         Returns:
             Tuple of (exported_count, skipped_rows)
             skipped_rows is a list of dicts with 'service', 'username', 'error' keys
@@ -2565,17 +2565,17 @@ class StorageManager:
         import_format: str = "auto",
     ) -> Tuple[int, int, List[Dict[str, str]]]:
         """Import credentials from CSV file.
-        
+
         Supports format presets for common providers.
-        
+
         Detects duplicates by case-insensitive (service, username) match.
-        
+
         Args:
             csv_path: Path to CSV file
             merge_duplicates: If True, overwrite existing duplicates. If False, skip them.
             dry_run: If True, do not modify the database; just report counts/issues.
             import_format: One of auto/generic/bitwarden/apple/nordpass.
-        
+
         Returns:
             Tuple of (imported_count, skipped_count, duplicate_list)
             duplicate_list contains dicts with 'service', 'username', 'reason' keys
@@ -2712,7 +2712,7 @@ class StorageManager:
                     # Flat: use preloaded map for 2B batched path, else indexed lookup
                     if use_preload:
                         _cid = existing_map.get(identity_key)
-                        existing = {"id": _cid} if _cid is not None else None  # type: ignore[dict-item]
+                        existing = {"id": _cid} if _cid is not None else None
                     else:
                         existing = self.find_credential_by_identity(service, username)
                     if existing is not None or identity_key in seen_keys:
