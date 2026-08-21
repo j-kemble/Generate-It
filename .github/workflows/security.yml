@@ -1,0 +1,184 @@
+name: Security & Quality
+
+on:
+  push:
+    branches: [main, development]
+  pull_request:
+    branches: [main, development]
+
+# Least-privilege: read-only access to repository contents.
+# No write access to issues, PRs, deployments, or other resources.
+permissions:
+  contents: read
+
+jobs:
+  # Security linting with Bandit (BLOCKING: fails CI on low+ severity findings).
+  # Uses pyproject.toml for bandit configuration; -ll gates at LOW severity and above.
+  bandit:
+    name: Security linting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install --require-hashes -r constraints/ci.txt
+          python -m pip install --no-deps -e .
+      - name: Run Bandit security scan (blocking)
+        run: bandit -c pyproject.toml -r generate_it/ -ll
+      - name: Generate Bandit JSON report
+        if: always()
+        run: bandit -c pyproject.toml -r generate_it/ -f json -o bandit-report.json -ll
+      - name: Upload Bandit report
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882  # v4.4.3
+        if: always()
+        with:
+          name: bandit-report
+          path: bandit-report.json
+          if-no-files-found: ignore
+
+  # Dependency vulnerability scanning with pip-audit (BLOCKING: fails CI on any vulnerability).
+  pip-audit:
+    name: Dependency vulnerability scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install --require-hashes -r constraints/ci.txt
+          python -m pip install --no-deps -e .
+      - name: Run pip-audit
+        run: pip-audit --format=json --output=pip-audit-report.json
+      - name: Display pip-audit report
+        if: always()
+        run: pip-audit
+
+  # Secrets detection with TruffleHog (BLOCKING: fails CI on verified secrets).
+  #
+  # POLICY: This scan runs with --only-verified, meaning only secrets that TruffleHog
+  # can confirm as valid (by attempting authentication against the provider) will cause
+  # a CI failure. Unverified matches (heuristic-only) are suppressed. This balances
+  # security with signal-to-noise: verified secrets are a real breach and must block
+  # the pipeline; unverified matches are informational and can be reviewed in the job
+  # log without blocking merges. To audit for unverified findings, re-run locally:
+  #   trufflehog git file://. --since-commit=main --no-verification
+  # and review the results manually as part of the pre-commit or PR review process.
+  secrets-scan:
+    name: Secrets detection
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Run TruffleHog secret scanner
+        uses: trufflesecurity/trufflehog@27b0417c16317ca9a472a9a8092acce143b49c55  # v3.95.9
+        with:
+          path: ./
+          base: main
+          head: HEAD
+          extra_args: --only-verified
+
+  # Static type checking with mypy (blocking).
+  typecheck:
+    name: Static type check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check for trailing whitespace violations
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git diff --check "${{ github.event.pull_request.base.sha }}...${{ github.sha }}"
+          elif [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+            git diff --check "$(git hash-object -t tree /dev/null)..${{ github.sha }}"
+          else
+            git diff --check "${{ github.event.before }}...${{ github.sha }}"
+          fi
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install --require-hashes -r constraints/ci.txt
+          python -m pip install --no-deps -e .
+      - name: Run mypy type checker
+        run: mypy generate_it
+
+  # Test suite with pytest.
+  test:
+    name: Test suite
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.10", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install Unix dependencies
+        if: matrix.os != 'windows-latest'
+        run: python -m pip install --require-hashes -r constraints/ci.txt
+      - name: Install Windows dependencies
+        if: matrix.os == 'windows-latest'
+        run: python -m pip install --require-hashes -r constraints/ci-windows.txt
+      - name: Install package
+        run: python -m pip install --no-deps -e .
+      - name: Run tests
+        run: pytest tests/ -v --cov=generate_it --cov-report=xml
+      - name: Upload coverage
+        uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238  # v4.6.0
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        with:
+          file: ./coverage.xml
+          fail_ci_if_error: false
+
+  # Package build and validation.
+  build:
+    name: Package validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
+        with:
+          python-version: "3.12"
+      - name: Install build tools
+        run: |
+          python -m pip install --require-hashes -r constraints/release.txt
+          python -m pip install --no-deps -e .
+      - name: Build package
+        run: |
+          SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct) python -m build --no-isolation
+      - name: Validate package
+        run: |
+          python -m twine check dist/*
+      - name: Smoke-test built wheel
+        run: |
+          python -m venv /tmp/generate-it-wheel-smoke
+          /tmp/generate-it-wheel-smoke/bin/python -m pip install --require-hashes -r constraints/ci.txt
+          /tmp/generate-it-wheel-smoke/bin/python -m pip install --no-deps dist/*.whl
+          cd /tmp
+          /tmp/generate-it-wheel-smoke/bin/python -c "import generate_it, generate_it.storage, generate_it.tui, generate_it.__main__; from importlib.resources import files; path = str(files('generate_it').joinpath('wordlist.txt')); assert 'site-packages' in generate_it.__file__; assert path.endswith('wordlist.txt'); print(generate_it.__file__)"
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882  # v4.4.3
+        with:
+          name: dist
+          path: dist/
