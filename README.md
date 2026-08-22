@@ -1,3 +1,5 @@
+***SUNSET***
+
 # Generate It
 
 A terminal credential generator and local manager with a curses-based UI.
